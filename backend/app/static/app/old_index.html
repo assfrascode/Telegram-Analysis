@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat Analyse MVP</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="intel-grid"></div>
+  <div class="scanline"></div>
+  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <main id="loginView" class="login-view">
+    <section class="login-card" id="loginPanel">
+      <div class="mark-row">
+        <span class="app-mark">CA</span>
+        <span class="eyebrow">Chat Analyse</span>
+      </div>
+      <h1>Analysekonsole</h1>
+      <p class="login-copy">Authentifizierung für Uploads, Jobs, WebSocket-Monitoring und Report-Download.</p>
+
+      <label class="field">
+        <span>E-Mail</span>
+        <input id="email" autocomplete="username" value="admin@example.local">
+      </label>
+      <label class="field">
+        <span>Passwort</span>
+        <input id="password" type="password" autocomplete="current-password" value="change-me">
+      </label>
+      <button id="login" class="button button-primary button-full" type="button">Login</button>
+    </section>
+  </main>
+
+  <div id="appView" class="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="app-mark">CA</span>
+        <div>
+          <strong>Chat Analyse</strong>
+          <span>Telegram Export Intelligence Pipeline</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="newJob" class="button button-secondary button-small" type="button">Neuer Auftrag</button>
+        <button id="openCapacity" class="button button-secondary button-small" type="button">Kapazität</button>
+        <span id="sessionBadge" class="badge badge-muted">nicht eingeloggt</span>
+        <button id="logout" type="button" class="button button-ghost button-small" hidden>Logout</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="left-rail panel" id="jobsPanel">
+        <div class="panel-header compact split">
+          <div>
+            <span class="section-kicker">Historie</span>
+            <h2>Jobs</h2>
+          </div>
+          <button id="refreshJobs" class="button button-icon" type="button" title="Jobliste aktualisieren">↻</button>
+        </div>
+        <div id="jobsList" class="jobs-list empty-state">Noch keine Jobliste geladen.</div>
+      </aside>
+
+      <section class="main-stage">
+        <section class="panel content-panel" id="createPanel">
+          <div class="panel-header">
+            <div>
+              <span class="section-kicker">Neuer Auftrag</span>
+              <h2>Telegram-Export hochladen</h2>
+              <p>ZIP auswählen, Fragen definieren, Analyse starten. Danach wechselt die Konsole automatisch ins Monitoring.</p>
+            </div>
+          </div>
+
+          <label class="upload-zone" for="file" id="uploadZone">
+            <input id="file" type="file" accept=".zip,application/zip">
+            <div class="upload-icon">⇧</div>
+            <div>
+              <strong>Telegram-ZIP auswählen oder hier ablegen</strong>
+              <p id="fileInfo">Keine Datei ausgewählt.</p>
+            </div>
+          </label>
+
+          <div class="progress-row" id="uploadProgressWrap" hidden>
+            <div class="progress-label">
+              <span>Upload</span>
+              <span id="uploadProgressText">0%</span>
+            </div>
+            <div class="progressbar"><div id="uploadProgressBar"></div></div>
+          </div>
+
+          <div class="options-strip">
+            <label class="switch option-card">
+              <input id="translate" type="checkbox">
+              <span>
+                <strong>Übersetzung</strong>
+                <small>optional</small>
+              </span>
+            </label>
+            <label class="switch option-card">
+              <input id="analyzeMedia" type="checkbox" checked>
+              <span>
+                <strong>Medienanalyse</strong>
+                <small>Bilder/Videos</small>
+              </span>
+            </label>
+            <label class="field inline-field option-number">
+              <span>Retrieval-K</span>
+              <input id="retrievalK" type="number" min="1" max="200" value="50">
+            </label>
+            <label class="field inline-field option-number">
+              <span>Rerank-K</span>
+              <input id="rerankK" type="number" min="1" max="100" value="15">
+            </label>
+          </div>
+
+          <div class="question-set-card">
+            <div class="json-header">
+              <div>
+                <strong>Gespeicherte Fragensets</strong>
+                <p class="hint compact-hint">Wiederkehrende Fragenkataloge laden, speichern oder aktualisieren.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="refreshQuestionSets" class="button button-secondary button-small" type="button">↻</button>
+                <button id="saveQuestionSet" class="button button-secondary button-small" type="button">Speichern</button>
+                <button id="updateQuestionSet" class="button button-secondary button-small" type="button">Aktualisieren</button>
+              </div>
+            </div>
+            <div class="question-set-controls">
+              <label class="field inline-field">
+                <span>Set auswählen</span>
+                <select id="questionSetSelect">
+                  <option value="">Kein Set ausgewählt</option>
+                </select>
+              </label>
+              <button id="loadQuestionSet" class="button button-secondary" type="button">Laden</button>
+              <button id="duplicateQuestionSet" class="button button-secondary" type="button">Duplizieren</button>
+              <button id="deleteQuestionSet" class="button button-danger" type="button">Archivieren</button>
+            </div>
+            <div id="questionSetStatus" class="hint">Keine gespeicherte Vorlage ausgewählt.</div>
+          </div>
+
+          <div class="questions-builder-card">
+            <div class="json-header">
+              <div>
+                <strong>Fragenkatalog</strong>
+                <p class="hint compact-hint">Fragen als einzelne Felder erfassen. Das JSON wird automatisch daraus erzeugt.</p>
+              </div>
+              <div class="inline-actions">
+                <button id="addQuestion" class="button button-secondary button-small" type="button">+ Frage</button>
+                <button id="exampleQuestions" class="button button-secondary button-small" type="button">Beispiel</button>
+              </div>
+            </div>
+            <div id="questionFields" class="question-fields"></div>
+            <div id="questionsStatus" class="hint">Noch nicht validiert.</div>
+          </div>
+
+          <details class="json-advanced" id="jsonAdvanced">
+            <summary>JSON anzeigen / bearbeiten</summary>
+            <div class="json-header compact-json-header">
+              <label for="questions"><strong>Fragenkatalog JSON</strong></label>
+              <div class="inline-actions">
+                <button id="validateQuestions" class="button button-secondary button-small" type="button">Validieren</button>
+                <button id="formatQuestions" class="button button-secondary button-small" type="button">Formatieren</button>
+                <button id="loadJsonToFields" class="button button-secondary button-small" type="button">In Felder übernehmen</button>
+              </div>
+            </div>
+            <textarea id="questions" rows="7" spellcheck="false">[
+  {"id": "q1", "text": "Welche Narrative verbreitet der Chat?"}
+]</textarea>
+          </details>
+
+          <div class="actions-row sticky-actions">
+            <button id="start" class="button button-primary" type="button">Upload & Analyse starten</button>
+            <button id="clearForm" class="button button-secondary" type="button">Formular zurücksetzen</button>
+          </div>
+        </section>
+
+        <section class="panel content-panel" id="jobPanel" hidden>
+          <div class="panel-header split">
+            <div>
+              <span class="section-kicker">Monitoring</span>
+              <h2>Aktiver Job</h2>
+              <p>Nur aktuelle Laufzeitinformationen. Details stehen bei Bedarf im Event-Log.</p>
+            </div>
+            <div class="inline-actions">
+              <button id="refreshJob" class="button button-secondary button-small" type="button">Aktualisieren</button>
+              <button id="cancel" class="button button-danger button-small" type="button" hidden>Abbrechen</button>
+            </div>
+          </div>
+
+          <div id="activeJobEmpty" class="empty-state">Kein aktiver Job ausgewählt.</div>
+          <div id="activeJob" hidden>
+            <div class="job-meta">
+              <div><span class="meta-label">Job-ID</span><code id="activeJobId">-</code></div>
+              <div><span class="meta-label">Status</span><span id="activeJobStatus" class="badge">-</span></div>
+              <div><span class="meta-label">WebSocket</span><span id="wsStatus" class="badge badge-muted">getrennt</span></div>
+              <div><span class="meta-label">Erstellt</span><span id="activeJobCreated">-</span></div>
+            </div>
+
+            <div class="job-dashboard">
+              <div class="dashboard-card dashboard-card-wide">
+                <div class="dashboard-label">Pipeline</div>
+                <div class="dashboard-value" id="pipelineProgressLabel">0/11</div>
+                <div class="progressbar slim"><div id="pipelineProgressBar"></div></div>
+              </div>
+              <div class="dashboard-card">
+                <div class="dashboard-label">Phase</div>
+                <div class="dashboard-value small" id="currentStageLabel">-</div>
+              </div>
+              <div class="dashboard-card">
+                <div class="dashboard-label">Events</div>
+                <div class="dashboard-value" id="eventCountLabel">0</div>
+              </div>
+              <div class="dashboard-card">
+                <div class="dashboard-label">Dead Letters</div>
+                <div class="dashboard-value" id="deadLetterCountLabel">0</div>
+              </div>
+            </div>
+
+            <div id="jobError" class="alert alert-error" hidden></div>
+            <div id="deadLetterBox" class="alert alert-warning" hidden></div>
+
+            <div class="stage-list" id="stageList"></div>
+
+            <div class="actions-row sticky-actions">
+              <button id="download" class="button button-primary" type="button" hidden>Report herunterladen</button>
+              <button id="copyJobId" class="button button-secondary" type="button">Job-ID kopieren</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <aside class="right-rail panel" id="logPanel">
+        <div class="panel-header compact split">
+          <div>
+            <span class="section-kicker">Live</span>
+            <h2>Logs</h2>
+          </div>
+          <div class="inline-actions">
+            <select id="logFilter" class="select-small">
+              <option value="all">alle</option>
+              <option value="error">error</option>
+              <option value="warning">warning</option>
+              <option value="info">info</option>
+            </select>
+            <button id="clearLog" class="button button-icon" type="button" title="Log leeren">×</button>
+          </div>
+        </div>
+        <div id="eventLog" class="event-log" aria-live="polite"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="capacityModal" class="modal-backdrop" hidden>
+    <section class="modal panel" id="capacityPanel" role="dialog" aria-modal="true" aria-labelledby="capacityTitle">
+      <div class="panel-header split">
+        <div>
+          <span class="section-kicker">System</span>
+          <h2 id="capacityTitle">Kapazität</h2>
+          <p>Backend-, Queue- und Ressourcenstatus. Dieses Panel ist nur bei Bedarf sichtbar.</p>
+        </div>
+        <div class="inline-actions">
+          <button id="refreshCapacity" type="button" class="button button-secondary button-small">Prüfen</button>
+          <button id="closeCapacity" type="button" class="button button-icon" title="Schließen">×</button>
+        </div>
+      </div>
+      <div id="capacitySummary" class="capacity-summary muted">Noch keine Daten.</div>
+      <div id="resourceGrid" class="resource-grid"></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

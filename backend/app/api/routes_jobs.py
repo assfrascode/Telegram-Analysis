@@ -1,0 +1,177 @@
+import asyncio
+import uuid
+from io import BytesIO
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_session
+from app.dependencies import get_current_user
+from app.models import Job, JobEvent, JobStatus, User, WorkerDeadLetter
+from app.nats_client import nats_context
+from app.schemas import EventResponse, JobCreateRequest, JobResponse
+from app.services.access_control import get_owned_job_or_404, get_owned_report_or_404
+from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
+from app.services.jobs import create_job, request_cancel
+from app.services.events import record_event
+from app.services.worker_control import mark_job_cancelled
+from app.services.minio_store import get_bytes
+
+router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _job_response(job: Job) -> JobResponse:
+    return JobResponse(
+        id=job.id,
+        status=job.status.value,
+        created_at=job.created_at,
+        completed_at=job.completed_at,
+        error_message=job.error_message,
+    )
+
+
+@router.get("/capacity")
+async def get_jobs_capacity(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await capacity_snapshot(session)
+
+
+@router.post("", response_model=JobResponse)
+async def post_job(
+    payload: JobCreateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> JobResponse:
+    await ensure_accepting_jobs(session)
+    async with nats_context() as (_, js):
+        job = await create_job(session, js, user.id, payload)
+        await session.commit()
+        return _job_response(job)
+
+
+@router.get("", response_model=list[JobResponse])
+async def list_jobs(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[JobResponse]:
+    result = await session.execute(
+        select(Job).where(Job.owner_user_id == user.id).order_by(desc(Job.created_at)).limit(50)
+    )
+    return [_job_response(job) for job in result.scalars().all()]
+
+
+@router.get("/{job_id}", response_model=JobResponse)
+async def get_job(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> JobResponse:
+    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    return _job_response(job)
+
+
+@router.post("/{job_id}/cancel")
+async def cancel_job(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    await request_cancel(session, job)
+    async with nats_context() as (_, js):
+        await record_event(
+            session,
+            js=js,
+            job_id=job.id,
+            owner_user_id=job.owner_user_id,
+            event_type="job.cancel.requested",
+            level="warning",
+            message="Job-Abbruch wurde angefordert",
+            payload={"job_id": str(job.id)},
+        )
+        # Guarantees that WebSocket clients receive job.cancelled even when no
+        # worker is active for this job. Active workers still observe the DB
+        # status and stop before publishing subsequent pipeline subjects.
+        await mark_job_cancelled(session, job, js=js)
+    await session.commit()
+    return {"ok": True, "status": job.status.value}
+
+
+@router.get("/{job_id}/events", response_model=list[EventResponse])
+async def get_job_events(
+    job_id: uuid.UUID,
+    after_id: int = 0,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[EventResponse]:
+    await get_owned_job_or_404(session, job_id=job_id, user=user)
+
+    events_result = await session.execute(
+        select(JobEvent)
+        .where(JobEvent.job_id == job_id, JobEvent.id > after_id, JobEvent.owner_user_id == user.id)
+        .order_by(JobEvent.id)
+        .limit(1000)
+    )
+    events = events_result.scalars().all()
+    return [
+        EventResponse(
+            id=e.id,
+            event_type=e.event_type,
+            level=e.level,
+            message=e.message,
+            payload=e.payload,
+            created_at=e.created_at,
+        )
+        for e in events
+    ]
+
+
+@router.get("/{job_id}/dead-letters")
+async def get_job_dead_letters(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    await get_owned_job_or_404(session, job_id=job_id, user=user)
+
+    rows = (
+        await session.execute(
+            select(WorkerDeadLetter)
+            .where(WorkerDeadLetter.job_id == job_id)
+            .order_by(desc(WorkerDeadLetter.created_at))
+            .limit(500)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(row.id),
+            "task_key": row.task_key,
+            "subject": row.subject,
+            "attempts": row.attempts,
+            "reason": row.reason,
+            "error_message": row.error_message,
+            "payload": row.payload,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+@router.get("/{job_id}/report/download")
+async def download_report(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    job, report = await get_owned_report_or_404(session, job_id=job_id, user=user)
+    if job.status != JobStatus.completed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
+
+    data = await asyncio.to_thread(get_bytes, report.object_key)
+    filename = report.filename or "report.zip"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(BytesIO(data), media_type="application/zip", headers=headers)

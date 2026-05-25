@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat Analyse Intelligence Report</title>
+  <link rel="stylesheet" href="assets/report.css">
+  <script defer src="assets/report.js"></script>
+</head>
+<body>
+  <main class="report-shell report-shell--index">
+    <header class="dossier-header">
+      <div class="dossier-kicker">
+        <span class="classification">Analytical Dossier</span>
+        <span class="status-pill">Report-only artifact</span>
+      </div>
+      <div class="dossier-title-row">
+        <div>
+          <p class="eyebrow">Chat Analyse</p>
+          <h1>BLUF Intelligence Report</h1>
+          <p class="lead">Übersicht der untersuchten Fragen, Kurzbefunde und Evidenzbasis.</p>
+        </div>
+        <aside class="case-file case-file--compact">
+          <dl>
+            <div><dt>Report-ID</dt><dd>{{ job.id }}</dd></div>
+            <div><dt>Generiert</dt><dd>{{ generated_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</dd></div>
+            <div><dt>Format</dt><dd>Offline HTML</dd></div>
+          </dl>
+        </aside>
+      </div>
+    </header>
+
+    <section class="bluf-panel">
+      <div class="section-label">Executive Summary</div>
+      <h2>BLUF</h2>
+      <pre class="bluf-text">{{ bluf }}</pre>
+      <p class="placement-note">Dieser Download enthält nur den Ordner <code>report/</code>. Medien werden nicht kopiert. Lege den Ordner in den ursprünglichen Telegram-Export, damit relative Medienlinks funktionieren.</p>
+    </section>
+
+    <section class="panel">
+      <div class="section-label">Fragen</div>
+      <div class="section-heading-row">
+        <div>
+          <h2>Fragenkatalog</h2>
+          <p class="muted">Jede Kachel führt zu einem Subreport mit Antwort und den verwendeten Originalnachrichten.</p>
+        </div>
+      </div>
+      <div class="question-grid">
+        {% for q in questions %}
+        <a class="question-card" href="{{ q.filename }}">
+          <div class="question-card__top">
+            <span class="question-index">Q{{ "%02d"|format(q.index) }}</span>
+            <span class="evidence-chip">{{ q.evidence|length }} Evidenzabschnitte</span>
+          </div>
+          <h3>{{ q.question }}</h3>
+          <p>{{ q.short_answer }}</p>
+          <span class="open-link">Subreport öffnen</span>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="dashboard-grid dashboard-grid--appendix">
+      <article class="panel panel--wide">
+        <div class="section-label">Technischer Anhang</div>
+        <h2>Auswertungskorpus</h2>
+        <div class="stats-grid stats-grid--primary">
+          <div class="stat"><span>{{ stats.messages_total }}</span><small>Nachrichten</small></div>
+          <div class="stat"><span>{{ stats.chunks_total }}</span><small>Chunks</small></div>
+          <div class="stat"><span>{{ stats.questions_total }}</span><small>Fragen</small></div>
+          <div class="stat"><span>{{ stats.evidence_chunks_total }}</span><small>Evidenzabschnitte</small></div>
+        </div>
+        <div class="stats-grid stats-grid--secondary">
+          <div class="stat stat--compact"><span>{{ stats.media_total }}</span><small>Medienreferenzen</small></div>
+          <div class="stat stat--compact"><span>{{ stats.media_completed }}</span><small>analysiert</small></div>
+          <div class="stat stat--compact"><span>{{ stats.media_failed }}</span><small>fehlgeschlagen</small></div>
+          <div class="stat stat--compact"><span>{{ stats.media_missing }}</span><small>fehlend</small></div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="section-label">Technischer Anhang</div>
+        <h2>Methodik</h2>
+        <dl class="meta-list meta-list--compact">
+          <div><dt>Retrieval-K</dt><dd>{{ stats.retrieval_k or "–" }}</dd></div>
+          <div><dt>Rerank-K</dt><dd>{{ stats.rerank_k or "–" }}</dd></div>
+          <div><dt>Übersetzung</dt><dd>{{ "ja" if stats.translate else "nein" }}</dd></div>
+          <div><dt>Medienanalyse</dt><dd>{{ "ja" if stats.analyze_media else "nein" }}</dd></div>
+          <div><dt>Mock-Modus</dt><dd>{{ "ja" if stats.mock_enabled else "nein" }}</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel panel--models appendix-panel">
+      <div class="section-label">Technischer Anhang</div>
+      <h2>Modelle</h2>
+      <dl class="meta-list model-list">
+        <div><dt>Textmodell</dt><dd>{{ stats.text_model }}</dd></div>
+        <div><dt>Visionmodell</dt><dd>{{ stats.vision_model }}</dd></div>
+        <div><dt>Embedding-Modell</dt><dd>{{ stats.embedding_model }}</dd></div>
+        <div><dt>Reranker-Modell</dt><dd>{{ stats.reranker_model }}</dd></div>
+      </dl>
+    </section>
+  </main>
+</body>
+</html>
