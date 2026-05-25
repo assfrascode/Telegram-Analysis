@@ -1,7 +1,9 @@
 import asyncio
 import sys
 
-from app.db import init_db
+from app.db import SessionLocal, init_db
+from app.nats_client import nats_context
+from app.services.job_recovery import recover_stale_queued_jobs
 from app.workers.ingest_worker import ValidateWorker, ExtractWorker
 from app.workers.parser_worker import ParserWorker
 from app.workers.media_worker import MediaWorker
@@ -27,6 +29,9 @@ WORKERS = {
 
 async def main() -> None:
     await init_db()
+    async with nats_context() as (_, js):
+        async with SessionLocal() as session:
+            await recover_stale_queued_jobs(session, js)
 
     selected = sys.argv[1:] or ["all"]
     if selected == ["all"]:

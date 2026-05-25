@@ -15,6 +15,7 @@ from app.bootstrap import bootstrap_services
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.nats_client import nats_context
+from app.services.job_recovery import recover_stale_queued_jobs
 
 settings = get_settings()
 static_dir = Path(__file__).parent / "static" / "app"
@@ -25,8 +26,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     async with SessionLocal() as session:
         await bootstrap_services(session)
-    async with nats_context():
-        pass
+    async with nats_context() as (_, js):
+        async with SessionLocal() as session:
+            await recover_stale_queued_jobs(session, js)
     yield
 
 

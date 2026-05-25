@@ -56,8 +56,8 @@ async def ensure_streams(js: JetStreamContext) -> None:
             pass
 
 
-async def publish_json(js: JetStreamContext, subject: str, payload: dict[str, Any]) -> None:
-    await js.publish(subject, json.dumps(payload, default=str).encode("utf-8"))
+async def publish_json(js: JetStreamContext, subject: str, payload: dict[str, Any]) -> Any:
+    return await js.publish(subject, json.dumps(payload, default=str).encode("utf-8"))
 
 
 @asynccontextmanager

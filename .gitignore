@@ -5,19 +5,26 @@
 
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
+env/
 
 # Node / React
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+node_modules/
+dist/
 
-# Local runtime data
+# Docker / local runtime data
 postgres-data/
 nats-data/
 minio-data/
@@ -32,3 +39,4 @@ logs/
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -10,9 +11,16 @@ from app.config import get_settings
 from app.models import Job, JobStatus, Question, QuestionSet, Upload, UploadStatus
 from app.nats_client import publish_json
 from app.schemas import JobCreateRequest, QuestionInput
+from app.services.events import record_event, record_event_db_only
 from app.services.question_sets import question_inputs_from_set, question_set_snapshot
+from app.workers import subjects
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 async def _load_owned_upload(
@@ -81,7 +89,23 @@ async def _resolve_job_questions(
     return questions, question_set_snapshot_data
 
 
-async def create_job(session: AsyncSession, js, owner_user_id: uuid.UUID, payload: JobCreateRequest) -> Job:
+def initial_task_payload(job: Job) -> dict[str, str]:
+    return {
+        "job_id": str(job.id),
+        "owner_user_id": str(job.owner_user_id),
+        "upload_id": str(job.upload_id),
+        "task_key": f"validate:{job.id}",
+    }
+
+
+async def create_job_record(session: AsyncSession, owner_user_id: uuid.UUID, payload: JobCreateRequest) -> Job:
+    """Persist the job and its immutable question snapshot, but do not enqueue it.
+
+    The caller must commit this transaction before publishing the first NATS task.
+    Otherwise a worker can consume the task before the job row is visible and ack
+    it as job_not_found, leaving the job stuck in queued with no pending NATS
+    message.
+    """
     upload = await _load_owned_upload(session, upload_id=payload.upload_id, owner_user_id=owner_user_id)
     questions, question_set_data = await _resolve_job_questions(
         session,
@@ -110,17 +134,55 @@ async def create_job(session: AsyncSession, js, owner_user_id: uuid.UUID, payloa
         )
 
     await session.flush()
+    return job
 
-    await publish_json(
-        js,
-        "jobs.ingest.validate",
-        {
-            "job_id": str(job.id),
-            "owner_user_id": str(owner_user_id),
-            "upload_id": str(upload.id),
-            "task_key": f"validate:{job.id}",
-        },
+
+async def publish_initial_job_task(session: AsyncSession, js, job: Job) -> None:
+    """Publish the first task after the job has been committed to Postgres."""
+    payload = initial_task_payload(job)
+    logger.info("Publishing first task for job %s to %s", job.id, subjects.VALIDATE)
+    ack = await publish_json(js, subjects.VALIDATE, payload)
+    logger.info("Published first task for job %s to %s: %s", job.id, subjects.VALIDATE, ack)
+    await record_event(
+        session,
+        js=js,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.queued",
+        level="info",
+        message="Analyse wurde eingeplant.",
+        payload={"subject": subjects.VALIDATE, "task_key": payload["task_key"]},
+        raise_publish_errors=False,
     )
+
+
+async def mark_job_start_failed_db_only(session: AsyncSession, job_id: uuid.UUID, error: Exception) -> Job | None:
+    job = await session.get(Job, job_id)
+    if job is None:
+        return None
+    job.status = JobStatus.failed
+    job.error_message = f"Analysis could not be started: {error}"
+    job.completed_at = utc_now()
+    await record_event_db_only(
+        session,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.failed",
+        level="error",
+        message="Analyse konnte nicht gestartet werden. Die erste Queue-Nachricht wurde nicht veröffentlicht.",
+        payload={"error": str(error), "stage": "initial_publish"},
+    )
+    await session.flush()
+    return job
+
+
+# Backward-compatible wrapper for older imports/tests. It deliberately commits
+# the job before publishing so it cannot reproduce the queued-without-NATS race.
+async def create_job(session: AsyncSession, js, owner_user_id: uuid.UUID, payload: JobCreateRequest) -> Job:
+    job = await create_job_record(session, owner_user_id, payload)
+    await session.commit()
+    await publish_initial_job_task(session, js, job)
+    await session.commit()
     return job
 
 
@@ -130,7 +192,3 @@ async def request_cancel(session: AsyncSession, job: Job) -> Job:
     job.status = JobStatus.cancelling
     await session.flush()
     return job
-
-
-def utc_now():
-    return datetime.now(timezone.utc)

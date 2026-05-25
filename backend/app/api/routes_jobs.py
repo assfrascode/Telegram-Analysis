@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from io import BytesIO
 
@@ -14,12 +15,13 @@ from app.nats_client import nats_context
 from app.schemas import EventResponse, JobCreateRequest, JobResponse
 from app.services.access_control import get_owned_job_or_404, get_owned_report_or_404
 from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
-from app.services.jobs import create_job, request_cancel
+from app.services.jobs import create_job_record, mark_job_start_failed_db_only, publish_initial_job_task, request_cancel
 from app.services.events import record_event
 from app.services.worker_control import mark_job_cancelled
 from app.services.minio_store import get_bytes
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 
 def _job_response(job: Job) -> JobResponse:
@@ -47,10 +49,29 @@ async def post_job(
     session: AsyncSession = Depends(get_session),
 ) -> JobResponse:
     await ensure_accepting_jobs(session)
-    async with nats_context() as (_, js):
-        job = await create_job(session, js, user.id, payload)
+
+    # Persist and commit the job before publishing the first JetStream task.
+    # Otherwise a fast worker can consume the task before the job row is visible
+    # and ack it as job_not_found, leaving the job stuck in queued forever.
+    job = await create_job_record(session, user.id, payload)
+    await session.commit()
+    logger.info("Created analysis job %s for user %s", job.id, user.id)
+
+    try:
+        async with nats_context() as (_, js):
+            await publish_initial_job_task(session, js, job)
+            await session.commit()
+    except Exception as exc:
+        logger.exception("Failed to publish first task for job %s", job.id)
+        await session.rollback()
+        await mark_job_start_failed_db_only(session, job.id, exc)
         await session.commit()
-        return _job_response(job)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis job was created but could not be enqueued. Please retry.",
+        ) from exc
+
+    return _job_response(job)
 
 
 @router.get("", response_model=list[JobResponse])

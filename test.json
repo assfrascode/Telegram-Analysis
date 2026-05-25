@@ -1,0 +1,296 @@
+{
+  "memory": 0,
+  "storage": 41535,
+  "reserved_memory": 0,
+  "reserved_storage": 0,
+  "accounts": 1,
+  "ha_assets": 0,
+  "api": {
+    "total": 110,
+    "errors": 10
+  },
+  "server_id": "ND5YZMQQ2BVJVYKBI6EHWS5YFUZ57OOYN3EF2GNWTOQERGP2AMX5HOGL",
+  "now": "2026-05-25T09:00:49.214444728Z",
+  "config": {
+    "max_memory": 24377905152,
+    "max_storage": 108956482560,
+    "store_dir": "/data/jetstream",
+    "sync_interval": 120000000000
+  },
+  "streams": 3,
+  "consumers": 10,
+  "messages": 92,
+  "bytes": 41535,
+  "account_details": [
+    {
+      "name": "$G",
+      "id": "$G",
+      "memory": 0,
+      "storage": 41535,
+      "reserved_memory": 18446744073709551615,
+      "reserved_storage": 18446744073709551615,
+      "accounts": 0,
+      "ha_assets": 0,
+      "api": {
+        "total": 110,
+        "errors": 10
+      },
+      "stream_detail": [
+        {
+          "name": "CHAT_ANALYSE_TASKS",
+          "created": "2026-05-25T08:51:51.544816132Z",
+          "cluster": {
+            "leader": "ND5YZMQQ2BVJVYKBI6EHWS5YFUZ57OOYN3EF2GNWTOQERGP2AMX5HOGL"
+          },
+          "state": {
+            "messages": 21,
+            "bytes": 5438,
+            "first_seq": 1,
+            "first_ts": "2026-05-25T08:52:15.205552691Z",
+            "last_seq": 21,
+            "last_ts": "2026-05-25T08:53:07.816982098Z",
+            "num_subjects": 10,
+            "consumer_count": 10
+          },
+          "consumer_detail": [
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "media-worker",
+              "created": "2026-05-25T08:51:51.556611799Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 14,
+                "last_active": "2026-05-25T08:52:57.963263781Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 14,
+                "last_active": "2026-05-25T08:52:58.012617655Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214470937Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "answer-worker",
+              "created": "2026-05-25T08:51:51.557029056Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 19,
+                "last_active": "2026-05-25T08:52:58.261121799Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 19,
+                "last_active": "2026-05-25T08:52:58.297301578Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214475745Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "validate-worker",
+              "created": "2026-05-25T08:51:51.557276978Z",
+              "delivered": {
+                "consumer_seq": 3,
+                "stream_seq": 21,
+                "last_active": "2026-05-25T08:53:07.817087614Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 3,
+                "stream_seq": 21,
+                "last_active": "2026-05-25T08:53:07.821510505Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214477699Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "extract-worker",
+              "created": "2026-05-25T08:51:51.557544988Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 12,
+                "last_active": "2026-05-25T08:52:57.446189156Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 12,
+                "last_active": "2026-05-25T08:52:57.801184451Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214479973Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "retrieve-worker",
+              "created": "2026-05-25T08:51:51.557872949Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 17,
+                "last_active": "2026-05-25T08:52:58.13209976Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 17,
+                "last_active": "2026-05-25T08:52:58.220102353Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214481827Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "rerank-worker",
+              "created": "2026-05-25T08:51:51.5582708Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 18,
+                "last_active": "2026-05-25T08:52:58.21748704Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 18,
+                "last_active": "2026-05-25T08:52:58.263768019Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.21448379Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "chunk-worker",
+              "created": "2026-05-25T08:51:51.558578533Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 15,
+                "last_active": "2026-05-25T08:52:58.007820858Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 15,
+                "last_active": "2026-05-25T08:52:58.034799443Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214485424Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "report-worker",
+              "created": "2026-05-25T08:51:51.558880686Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 20,
+                "last_active": "2026-05-25T08:52:58.313589485Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 20,
+                "last_active": "2026-05-25T08:52:58.43641011Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214486956Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "embedding-worker",
+              "created": "2026-05-25T08:51:51.55967708Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 16,
+                "last_active": "2026-05-25T08:52:58.031383369Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 16,
+                "last_active": "2026-05-25T08:52:58.13596971Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214488319Z"
+            },
+            {
+              "stream_name": "CHAT_ANALYSE_TASKS",
+              "name": "parser-worker",
+              "created": "2026-05-25T08:51:51.560387664Z",
+              "delivered": {
+                "consumer_seq": 2,
+                "stream_seq": 13,
+                "last_active": "2026-05-25T08:52:57.828661184Z"
+              },
+              "ack_floor": {
+                "consumer_seq": 2,
+                "stream_seq": 13,
+                "last_active": "2026-05-25T08:52:57.969089054Z"
+              },
+              "num_ack_pending": 0,
+              "num_redelivered": 0,
+              "num_waiting": 1,
+              "num_pending": 0,
+              "ts": "2026-05-25T09:00:49.214489611Z"
+            }
+          ]
+        },
+        {
+          "name": "CHAT_ANALYSE_EVENTS",
+          "created": "2026-05-25T08:51:51.547843622Z",
+          "cluster": {
+            "leader": "ND5YZMQQ2BVJVYKBI6EHWS5YFUZ57OOYN3EF2GNWTOQERGP2AMX5HOGL"
+          },
+          "state": {
+            "messages": 70,
+            "bytes": 35731,
+            "first_seq": 1,
+            "first_ts": "2026-05-25T08:52:15.412386146Z",
+            "last_seq": 70,
+            "last_ts": "2026-05-25T08:52:58.432590002Z",
+            "num_subjects": 2,
+            "consumer_count": 0
+          }
+        },
+        {
+          "name": "CHAT_ANALYSE_DLQ",
+          "created": "2026-05-25T08:51:51.551393216Z",
+          "cluster": {
+            "leader": "ND5YZMQQ2BVJVYKBI6EHWS5YFUZ57OOYN3EF2GNWTOQERGP2AMX5HOGL"
+          },
+          "state": {
+            "messages": 1,
+            "bytes": 366,
+            "first_seq": 1,
+            "first_ts": "2026-05-25T08:53:07.82046681Z",
+            "last_seq": 1,
+            "last_ts": "2026-05-25T08:53:07.82046681Z",
+            "num_subjects": 1,
+            "consumer_count": 0
+          }
+        }
+      ]
+    }
+  ],
+  "total": 1
+}

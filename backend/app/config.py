@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     capacity_check_vllm: bool = False
     capacity_require_vllm: bool = False
     max_worker_task_attempts: int = 3
+    recover_stale_queued_jobs: bool = True
+    stale_queued_job_after_seconds: int = 120
+    stale_queued_job_recovery_limit: int = 100
 
     # Subject-specific retry limits override MAX_WORKER_TASK_ATTEMPTS.
     # JSON env example: {"jobs.embedding.create":5,"jobs.report.render":2}
