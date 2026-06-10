@@ -12,10 +12,16 @@ from app.db import get_session
 from app.dependencies import get_current_user
 from app.models import Job, JobEvent, JobStatus, User, WorkerDeadLetter
 from app.nats_client import nats_context
-from app.schemas import EventResponse, JobCreateRequest, JobResponse
+from app.schemas import EventResponse, JobCreateRequest, JobResponse, TelegramReportCreateRequest
 from app.services.access_control import get_owned_job_or_404, get_owned_report_or_404
 from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
-from app.services.jobs import create_job_record, mark_job_start_failed_db_only, publish_initial_job_task, request_cancel
+from app.services.jobs import (
+    create_job_record,
+    create_telegram_job_record,
+    mark_job_start_failed_db_only,
+    publish_initial_job_task,
+    request_cancel,
+)
 from app.services.events import record_event
 from app.services.worker_control import mark_job_cancelled
 from app.services.minio_store import get_bytes
@@ -28,6 +34,10 @@ def _job_response(job: Job) -> JobResponse:
     return JobResponse(
         id=job.id,
         status=job.status.value,
+        source_type=job.source_type.value,
+        telegram_chat_id=job.telegram_chat_id,
+        report_start_at=job.report_start_at,
+        report_end_at=job.report_end_at,
         created_at=job.created_at,
         completed_at=job.completed_at,
         error_message=job.error_message,
@@ -71,6 +81,30 @@ async def post_job(
             detail="Analysis job was created but could not be enqueued. Please retry.",
         ) from exc
 
+    return _job_response(job)
+
+
+@router.post("/telegram", response_model=JobResponse)
+async def post_telegram_job(
+    payload: TelegramReportCreateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> JobResponse:
+    await ensure_accepting_jobs(session)
+    job = await create_telegram_job_record(session, user.id, payload)
+    await session.commit()
+    try:
+        async with nats_context() as (_, js):
+            await publish_initial_job_task(session, js, job)
+            await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        await mark_job_start_failed_db_only(session, job.id, exc)
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis job was created but could not be enqueued. Please retry.",
+        ) from exc
     return _job_response(job)
 
 

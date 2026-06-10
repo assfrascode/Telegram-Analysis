@@ -11,12 +11,14 @@ from app.workers.chunk_worker import ChunkWorker
 from app.workers.embedding_worker import EmbeddingWorker
 from app.workers.rag_worker import RetrieveWorker, RerankWorker, AnswerWorker
 from app.workers.report_worker import ReportWorker
+from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
 
 
 WORKERS = {
     "validate": ValidateWorker,
     "extract": ExtractWorker,
     "parser": ParserWorker,
+    "telegram-snapshot": TelegramSnapshotWorker,
     "media": MediaWorker,
     "chunk": ChunkWorker,
     "embedding": EmbeddingWorker,

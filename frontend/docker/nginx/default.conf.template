@@ -28,7 +28,7 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    location ~ ^/(auth|capacity|uploads|jobs|question-sets)(/|$) {
+    location ~ ^/(auth|capacity|uploads|jobs|question-sets|telegram)(/|$) {
         proxy_pass ${BACKEND_URL};
         proxy_http_version 1.1;
         proxy_set_header Host $host;

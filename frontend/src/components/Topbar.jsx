@@ -5,7 +5,7 @@ export function Topbar({ isLoggedIn, onLogout, onNewJob }) {
         <span className="app-mark">CA</span>
         <div>
           <strong>Chat Analyse</strong>
-          <span>Telegram-Exporte einfach auswerten</span>
+          <span>Telegram-Chats sammeln und auswerten</span>
         </div>
       </div>
       <div className="top-actions">

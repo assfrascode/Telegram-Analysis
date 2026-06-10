@@ -1,4 +1,5 @@
 VALIDATE = "jobs.ingest.validate"
+TELEGRAM_SNAPSHOT = "jobs.telegram.snapshot"
 EXTRACT = "jobs.ingest.extract"
 PARSE = "jobs.telegram.parse"
 MEDIA_DESCRIBE = "jobs.media.describe"

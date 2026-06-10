@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
@@ -185,7 +184,11 @@ def build_report_media(media: TelegramMedia, analysis: MediaAnalysis | None) -> 
         id=str(media.id),
         media_type=media.media_type,
         original_path=media.original_path,
-        relative_href=relative_media_href_from_subreport(media.original_path),
+        relative_href=(
+            None
+            if media.source_media_id is not None
+            else relative_media_href_from_subreport(media.original_path)
+        ),
         status=status_label(media.status),
         missing_reason=media.missing_reason,
         size_bytes=media.size_bytes,

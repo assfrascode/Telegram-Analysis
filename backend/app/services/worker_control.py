@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 import json
@@ -53,6 +52,7 @@ DEFAULT_ATTEMPTS_BY_SUBJECT = {
     "jobs.ingest.validate": 1,
     "jobs.ingest.extract": 1,
     "jobs.telegram.parse": 1,
+    "jobs.telegram.snapshot": 5,
     "jobs.media.describe": 1,
     "jobs.chunk.create": 2,
     "jobs.embedding.create": 3,

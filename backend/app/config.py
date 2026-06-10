@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     app_base_url: str = "http://localhost:8000"
     secret_key: str
     access_token_expire_minutes: int = 720
+    telegram_credentials_encryption_key: str = ""
+    telegram_login_challenge_minutes: int = 15
+    telegram_sync_poll_seconds: int = 30
+    telegram_sync_lease_minutes: int = 30
+    telegram_sync_overlap_hours: int = 48
+    telegram_sync_concurrency: int = 2
+    telegram_sync_timeout_seconds: int = 20 * 60
+    telegram_media_download_timeout_seconds: int = 10 * 60
+    telegram_sync_retry_minutes: int = 5
 
     bootstrap_admin_email: str = "admin@example.local"
     bootstrap_admin_password: str = "change-me"

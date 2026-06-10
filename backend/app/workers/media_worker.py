@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 import uuid
@@ -12,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.llm.vllm_gateway import DEFAULT_MEDIA_DESCRIPTION_PROMPT, VLLMGateway
-from app.models import Job, MediaAnalysis, StepStatus, TelegramMedia
+from app.models import (
+    CollectedMediaAnalysis,
+    Job,
+    MediaAnalysis,
+    StepStatus,
+    TelegramMedia,
+)
 from app.services.media_sources import build_media_source_url
 from app.workers import subjects
 from app.services.worker_control import WorkerCancelled
@@ -367,6 +372,30 @@ class MediaWorker(Worker):
             row.status = StepStatus.completed
             row.missing_reason = None
             row.analyzed_at = datetime.now(timezone.utc)
+            if row.source_media_id is not None:
+                source_analysis = (
+                    await session.execute(
+                        select(CollectedMediaAnalysis).where(
+                            CollectedMediaAnalysis.media_id == row.source_media_id,
+                            CollectedMediaAnalysis.model_name == settings.vision_model,
+                            CollectedMediaAnalysis.prompt_version
+                            == settings.media_analysis_prompt_version,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if source_analysis is None:
+                    session.add(
+                        CollectedMediaAnalysis(
+                            media_id=row.source_media_id,
+                            model_name=settings.vision_model,
+                            prompt_version=settings.media_analysis_prompt_version,
+                            description=existing.description,
+                            raw_response=existing.raw_response,
+                        )
+                    )
+                else:
+                    source_analysis.description = existing.description
+                    source_analysis.raw_response = existing.raw_response
             await session.flush()
             return None
 

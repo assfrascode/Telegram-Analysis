@@ -386,6 +386,68 @@ input:focus, textarea:focus, select:focus { border-color: var(--green); box-shad
   .event-row { grid-template-columns: 1fr; gap: 0.2rem; }
 }
 
+.telegram-sources-card {
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: rgba(4, 22, 19, 0.78);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.telegram-form-grid,
+.telegram-report-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 0.7rem;
+  align-items: end;
+  margin-top: 1rem;
+}
+.telegram-form-grid .field,
+.telegram-report-grid .field,
+.telegram-code-row .field {
+  margin-bottom: 0;
+}
+.telegram-code-row,
+.telegram-dialog-actions {
+  margin-top: 1rem;
+  align-items: end;
+}
+.telegram-chat-list {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+.telegram-chat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  border: 1px solid rgba(75,226,178,.14);
+  border-radius: 13px;
+  padding: 0.75rem;
+  background: rgba(2,12,10,.42);
+}
+.telegram-chat-row p { margin-bottom: 0; }
+.telegram-chat-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.source-toggle { display: flex; gap: 0.6rem; margin-bottom: 1rem; }
+.error-text { color: var(--red); }
+
+@media (max-width: 920px) {
+  .telegram-form-grid,
+  .telegram-report-grid {
+    grid-template-columns: 1fr;
+  }
+  .telegram-chat-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* Layout guardrails: avoid side-panel overlap on narrower screens. */
 .workspace {
   grid-template-columns: minmax(240px, 300px) minmax(430px, 1fr) minmax(300px, 360px);

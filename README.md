@@ -85,6 +85,19 @@ LLM_MOCK_ENABLED=true
 
 For real model calls, disable mock mode and point the application to compatible vLLM endpoints for vision, embeddings, reranking, and text generation.
 
+Telegram account sessions and user-provided API hashes are encrypted at rest. Set
+a dedicated Fernet key in production:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+```env
+TELEGRAM_CREDENTIALS_ENCRYPTION_KEY=replace-with-generated-key
+```
+
+When omitted in local development, a stable key is derived from `SECRET_KEY`.
+
 Optional local embedding and reranking containers can be started with:
 
 ```bash

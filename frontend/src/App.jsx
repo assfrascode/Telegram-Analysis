@@ -21,8 +21,18 @@ function makeDerivedEvent(stage, currentJob, message = `${stage.label} abgeschlo
   };
 }
 
+function localDateTimeValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 function getStageState(events, currentJob) {
-  const rawStates = STAGES.map((stage) => {
+  const applicableStages = STAGES.filter((stage) => {
+    if (currentJob?.source_type === "telegram_chat") {
+      return !["upload", "validate", "extract", "parse"].includes(stage.key);
+    }
+    return stage.key !== "telegram_sync";
+  });
+  const rawStates = applicableStages.map((stage) => {
     const matching = events.filter((event) => stage.events.includes(event.event_type));
     const latest = matching.at(-1);
     const completed = matching.some((event) => /completed$/.test(event.event_type) || event.event_type === "job.completed");
@@ -102,6 +112,16 @@ export default function App() {
   const [selectedQuestionSetId, setSelectedQuestionSetId] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadInProgress, setUploadInProgress] = useState(false);
+  const [sourceMode, setSourceMode] = useState("upload");
+  const [telegramConnection, setTelegramConnection] = useState(null);
+  const [telegramChats, setTelegramChats] = useState([]);
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [reportEnd, setReportEnd] = useState(() => localDateTimeValue(new Date()));
+  const [reportStart, setReportStart] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 14);
+    return localDateTimeValue(date);
+  });
 
   const eventIdsRef = useRef(new Set());
   const lastEventIdRef = useRef(0);
@@ -190,6 +210,21 @@ export default function App() {
     }
   }, [addLocalLog, request, token]);
 
+  const refreshTelegram = useCallback(async () => {
+    if (!token) return;
+    try {
+      const [connection, chats] = await Promise.all([
+        request("/telegram/connection"),
+        request("/telegram/chats"),
+      ]);
+      setTelegramConnection(connection);
+      setTelegramChats(chats);
+      setTelegramChatId((current) => current || chats.find((chat) => chat.status !== "archived")?.id || "");
+    } catch (error) {
+      addLocalLog(`Telegram-Status konnte nicht geladen werden: ${error.message}`, "warning");
+    }
+  }, [addLocalLog, request, token]);
+
   const refreshJobStatus = useCallback(async () => {
     if (!token || !currentJobId) return null;
     try {
@@ -244,8 +279,8 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    Promise.allSettled([refreshCapacity(), refreshJobs(), refreshQuestionSets()]);
-  }, [refreshCapacity, refreshJobs, refreshQuestionSets, token]);
+    Promise.allSettled([refreshCapacity(), refreshJobs(), refreshQuestionSets(), refreshTelegram()]);
+  }, [refreshCapacity, refreshJobs, refreshQuestionSets, refreshTelegram, token]);
 
 
   useEffect(() => {
@@ -253,9 +288,10 @@ export default function App() {
     const timer = window.setInterval(() => {
       refreshJobs();
       refreshQuestionSets();
+      refreshTelegram();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [refreshJobs, refreshQuestionSets, token]);
+  }, [refreshJobs, refreshQuestionSets, refreshTelegram, token]);
 
   const login = async ({ email, password }) => {
     setBusy(true);
@@ -280,6 +316,8 @@ export default function App() {
     setQuestionSets([]);
     setSelectedQuestionSetId(null);
     setCapacity(null);
+    setTelegramConnection(null);
+    setTelegramChats([]);
     resetJobEvents();
     sessionStorage.removeItem(STORAGE_TOKEN);
     sessionStorage.removeItem(STORAGE_JOB);
@@ -375,7 +413,7 @@ export default function App() {
     }
   };
 
-  const startJob = async (file) => {
+  const startJob = async ({ file, sourceMode: selectedSourceMode, telegramChatId: selectedChatId, reportStart: selectedStart, reportEnd: selectedEnd }) => {
     if (!token) {
       showToast("Bitte zuerst einloggen", "warning");
       return;
@@ -393,17 +431,22 @@ export default function App() {
       return;
     }
 
-    if (!file) {
-      showToast("Bitte eine ZIP-Datei auswählen", "warning");
-      return;
-    }
-    if (!file.name.toLowerCase().endsWith(".zip")) {
-      showToast("Bitte eine Datei im ZIP-Format auswählen", "error");
+    if (selectedSourceMode === "upload") {
+      if (!file) {
+        showToast("Bitte eine ZIP-Datei auswählen", "warning");
+        return;
+      }
+      if (!file.name.toLowerCase().endsWith(".zip")) {
+        showToast("Bitte eine Datei im ZIP-Format auswählen", "error");
+        return;
+      }
+    } else if (!selectedChatId || !selectedStart || !selectedEnd) {
+      showToast("Bitte Chat und Berichtszeitraum auswählen", "warning");
       return;
     }
 
     setBusy(true);
-    setUploadInProgress(true);
+    setUploadInProgress(selectedSourceMode === "upload");
     setUploadProgress(0);
 
     try {
@@ -412,16 +455,30 @@ export default function App() {
         throw new Error(`System nimmt aktuell keine neuen Jobs an: ${(currentCapacity.blockers || []).join(", ")}`);
       }
 
-      const upload = await request("/uploads", { method: "POST", body: { filename: file.name, size_bytes: file.size } });
-      addLocalLog("Upload vorbereitet");
-
-      await uploadFileViaBackend(upload, file, token, setUploadProgress);
-      addLocalLog("Datei hochgeladen, Analyse wird gestartet");
-
-      const payload = { upload_id: upload.upload_id, questions: normalizedQuestions, options: normalizedOptions };
-      if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;
-
-      const job = await request("/jobs", { method: "POST", body: payload });
+      let job;
+      if (selectedSourceMode === "upload") {
+        const upload = await request("/uploads", { method: "POST", body: { filename: file.name, size_bytes: file.size } });
+        addLocalLog("Upload vorbereitet");
+        await uploadFileViaBackend(upload, file, token, setUploadProgress);
+        addLocalLog("Datei hochgeladen, Analyse wird gestartet");
+        const payload = { upload_id: upload.upload_id, questions: normalizedQuestions, options: normalizedOptions };
+        if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;
+        job = await request("/jobs", { method: "POST", body: payload });
+      } else {
+        const startAt = new Date(selectedStart);
+        const endAt = new Date(selectedEnd);
+        if (!(startAt < endAt)) throw new Error("Der Beginn muss vor dem Ende liegen");
+        const payload = {
+          telegram_chat_id: selectedChatId,
+          start_at: startAt.toISOString(),
+          end_at: endAt.toISOString(),
+          questions: normalizedQuestions,
+          options: normalizedOptions,
+        };
+        if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;
+        job = await request("/jobs/telegram", { method: "POST", body: payload });
+        addLocalLog("Telegram-Synchronisierung und Analyse wurden gestartet");
+      }
       await selectJob(job.id);
       addLocalLog("Analyse gestartet");
       showToast("Analyse gestartet");
@@ -524,6 +581,19 @@ export default function App() {
               onSaveQuestionSet={saveCurrentQuestionSet}
               onUpdateQuestionSet={updateCurrentQuestionSet}
               onDeleteQuestionSet={deleteCurrentQuestionSet}
+              sourceMode={sourceMode}
+              setSourceMode={setSourceMode}
+              telegramConnection={telegramConnection}
+              telegramChats={telegramChats}
+              telegramChatId={telegramChatId}
+              setTelegramChatId={setTelegramChatId}
+              reportStart={reportStart}
+              setReportStart={setReportStart}
+              reportEnd={reportEnd}
+              setReportEnd={setReportEnd}
+              request={request}
+              refreshTelegram={refreshTelegram}
+              showToast={showToast}
             />
           )}
         </main>

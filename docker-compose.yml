@@ -146,6 +146,20 @@ services:
       qdrant:
         condition: service_started
 
+  telegram-collector:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    command: ["python", "-m", "app.workers.run_telegram_collector"]
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
   chat-analyse-frontend:
     build:
       context: ./frontend

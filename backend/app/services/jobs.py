@@ -8,9 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.models import Job, JobStatus, Question, QuestionSet, Upload, UploadStatus
+from app.models import (
+    Job,
+    JobSourceType,
+    JobStatus,
+    Question,
+    QuestionSet,
+    TelegramChat,
+    TelegramChatStatus,
+    Upload,
+    UploadStatus,
+)
 from app.nats_client import publish_json
-from app.schemas import JobCreateRequest, QuestionInput
+from app.schemas import JobCreateRequest, QuestionInput, TelegramReportCreateRequest
 from app.services.events import record_event, record_event_db_only
 from app.services.question_sets import question_inputs_from_set, question_set_snapshot
 from app.workers import subjects
@@ -89,13 +99,40 @@ async def _resolve_job_questions(
     return questions, question_set_snapshot_data
 
 
+async def _resolve_question_source(
+    session: AsyncSession,
+    *,
+    owner_user_id: uuid.UUID,
+    questions: list[QuestionInput] | None,
+    question_set_id: uuid.UUID | None,
+) -> tuple[list[QuestionInput], dict | None]:
+    question_set_snapshot_data = None
+    question_set = None
+    if question_set_id is not None:
+        question_set = await _load_owned_question_set(
+            session,
+            question_set_id=question_set_id,
+            owner_user_id=owner_user_id,
+        )
+        question_set_snapshot_data = question_set_snapshot(question_set)
+    resolved = questions or (question_inputs_from_set(question_set) if question_set else [])
+    if not resolved:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No questions provided")
+    return resolved, question_set_snapshot_data
+
+
 def initial_task_payload(job: Job) -> dict[str, str]:
-    return {
+    payload = {
         "job_id": str(job.id),
         "owner_user_id": str(job.owner_user_id),
-        "upload_id": str(job.upload_id),
-        "task_key": f"validate:{job.id}",
     }
+    if job.source_type == JobSourceType.telegram_chat:
+        payload["telegram_chat_id"] = str(job.telegram_chat_id)
+        payload["task_key"] = f"telegram-snapshot:{job.id}"
+    else:
+        payload["upload_id"] = str(job.upload_id)
+        payload["task_key"] = f"validate:{job.id}"
+    return payload
 
 
 async def create_job_record(session: AsyncSession, owner_user_id: uuid.UUID, payload: JobCreateRequest) -> Job:
@@ -119,7 +156,13 @@ async def create_job_record(session: AsyncSession, owner_user_id: uuid.UUID, pay
     if question_set_data is not None:
         options["question_set"] = question_set_data
 
-    job = Job(owner_user_id=owner_user_id, upload_id=upload.id, status=JobStatus.queued, options=options)
+    job = Job(
+        owner_user_id=owner_user_id,
+        source_type=JobSourceType.upload,
+        upload_id=upload.id,
+        status=JobStatus.queued,
+        options=options,
+    )
     session.add(job)
     await session.flush()
 
@@ -137,12 +180,68 @@ async def create_job_record(session: AsyncSession, owner_user_id: uuid.UUID, pay
     return job
 
 
+async def create_telegram_job_record(
+    session: AsyncSession,
+    owner_user_id: uuid.UUID,
+    payload: TelegramReportCreateRequest,
+) -> Job:
+    chat = (
+        await session.execute(
+            select(TelegramChat).where(
+                TelegramChat.id == payload.telegram_chat_id,
+                TelegramChat.owner_user_id == owner_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if chat is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telegram chat not found")
+    if chat.status == TelegramChatStatus.archived:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Telegram chat is archived")
+
+    questions, question_set_data = await _resolve_question_source(
+        session,
+        owner_user_id=owner_user_id,
+        questions=payload.questions,
+        question_set_id=payload.question_set_id,
+    )
+    options = payload.options.model_dump()
+    if question_set_data is not None:
+        options["question_set"] = question_set_data
+    job = Job(
+        owner_user_id=owner_user_id,
+        source_type=JobSourceType.telegram_chat,
+        telegram_chat_id=chat.id,
+        report_start_at=payload.start_at,
+        report_end_at=payload.end_at,
+        status=JobStatus.queued,
+        options=options,
+    )
+    session.add(job)
+    await session.flush()
+    for idx, question_input in enumerate(questions, start=1):
+        session.add(
+            Question(
+                job_id=job.id,
+                question_index=idx,
+                client_question_id=question_input.id,
+                text=question_input.text,
+            )
+        )
+    await session.flush()
+    return job
+
+
 async def publish_initial_job_task(session: AsyncSession, js, job: Job) -> None:
     """Publish the first task after the job has been committed to Postgres."""
     payload = initial_task_payload(job)
-    logger.info("Publishing first task for job %s to %s", job.id, subjects.VALIDATE)
-    ack = await publish_json(js, subjects.VALIDATE, payload)
-    logger.info("Published first task for job %s to %s: %s", job.id, subjects.VALIDATE, ack)
+    subject = (
+        subjects.TELEGRAM_SNAPSHOT
+        if job.source_type == JobSourceType.telegram_chat
+        else subjects.VALIDATE
+    )
+    logger.info("Publishing first task for job %s to %s", job.id, subject)
+    ack = await publish_json(js, subject, payload)
+    logger.info("Published first task for job %s to %s: %s", job.id, subject, ack)
     await record_event(
         session,
         js=js,
@@ -151,7 +250,7 @@ async def publish_initial_job_task(session: AsyncSession, js, job: Job) -> None:
         event_type="job.queued",
         level="info",
         message="Analyse wurde eingeplant.",
-        payload={"subject": subjects.VALIDATE, "task_key": payload["task_key"]},
+        payload={"subject": subject, "task_key": payload["task_key"]},
         raise_publish_errors=False,
     )
 

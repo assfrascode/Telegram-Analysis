@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
         "/uploads": proxyTarget,
         "/jobs": proxyTarget,
         "/question-sets": proxyTarget,
+        "/telegram": proxyTarget,
         "/ws": {
           target: proxyTarget,
           ws: true,

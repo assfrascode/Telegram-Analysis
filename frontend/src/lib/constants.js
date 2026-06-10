@@ -6,6 +6,11 @@ export const TERMINAL_STATUSES = new Set(["completed", "cancelled", "failed"]);
 export const BAD_STATUSES = new Set(["failed", "cancelled"]);
 
 export const STAGES = [
+  {
+    key: "telegram_sync",
+    label: "Telegram synchronisieren",
+    events: ["telegram.sync.started", "telegram.sync.completed", "telegram.snapshot.completed"],
+  },
   { key: "upload", label: "Datei hochladen", events: ["upload.completed"] },
   { key: "validate", label: "Datei prüfen", events: ["zip.scan.started", "zip.scan.completed"] },
   { key: "extract", label: "Chat vorbereiten", events: ["zip.extract.started", "zip.extract.completed"] },

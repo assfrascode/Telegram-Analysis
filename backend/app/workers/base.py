@@ -112,7 +112,7 @@ class Worker(abc.ABC):
                 batch=self.fetch_batch_size,
                 timeout=self.fetch_timeout_seconds,
             )
-        except NATSTimeoutError:
+        except (NATSTimeoutError, asyncio.TimeoutError):
             return []
 
     async def run_forever(self) -> None:
@@ -222,6 +222,12 @@ class Worker(abc.ABC):
                 await session.commit()
                 return "ack"
 
+            # Persist the attempt before entering the handler. Handlers may fail
+            # before their first commit; without this commit the rollback below
+            # removes the task row/increment and every redelivery becomes
+            # "attempt 1" forever.
+            await session.commit()
+
             try:
                 await self.handle(session, payload)
                 await session.flush()
@@ -311,13 +317,19 @@ class Worker(abc.ABC):
                 task.updated_at = datetime.now(timezone.utc)
 
             if decision.retry:
+                print(
+                    f"Worker task retrying subject={self.subject} "
+                    f"task_key={task_key} attempts={attempts}/{decision.max_attempts} "
+                    f"delay={decision.delay_seconds}s error={exc}",
+                    flush=True,
+                )
                 if job is not None:
                     await self.emit_event(
                         session,
                         job=job,
                         event_type="worker.task.retrying",
                         level="warning",
-                        message=f"Task wird erneut versucht: {self.subject}",
+                        message=f"Task wird erneut versucht: {self.subject}: {str(exc)[:500]}",
                         payload={
                             "subject": self.subject,
                             "task_key": task_key,
@@ -339,6 +351,12 @@ class Worker(abc.ABC):
                 payload=payload,
                 error=exc,
                 reason=decision.reason,
+            )
+            print(
+                f"Worker task failed permanently subject={self.subject} "
+                f"task_key={task_key} attempts={attempts}/{decision.max_attempts} "
+                f"reason={decision.reason} error={exc}",
+                flush=True,
             )
             if job is not None:
                 await self.emit_event(

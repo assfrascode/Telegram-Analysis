@@ -10,6 +10,7 @@ from app.api.routes_capacity import router as capacity_router
 from app.api.routes_jobs import router as jobs_router
 from app.api.routes_question_sets import router as question_sets_router
 from app.api.routes_uploads import router as uploads_router
+from app.api.routes_telegram import router as telegram_router
 from app.api.routes_ws import router as ws_router
 from app.bootstrap import bootstrap_services
 from app.config import get_settings
@@ -39,6 +40,7 @@ app.include_router(capacity_router)
 app.include_router(uploads_router)
 app.include_router(jobs_router)
 app.include_router(question_sets_router)
+app.include_router(telegram_router)
 app.include_router(ws_router)
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

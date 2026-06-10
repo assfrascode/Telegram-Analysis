@@ -3,6 +3,7 @@ import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS } from "../lib/constants";
 import { formatBytes } from "../lib/format";
 import { QuestionBuilder } from "./QuestionBuilder";
 import { QuestionSetsPanel } from "./QuestionSetsPanel";
+import { TelegramSourcesPanel } from "./TelegramSourcesPanel";
 
 function WorkflowStep({ number, title, description, children }) {
   return (
@@ -17,6 +18,10 @@ function WorkflowStep({ number, title, description, children }) {
       <div className="step-body">{children}</div>
     </section>
   );
+}
+
+function localDateTimeValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
 export function CreateJobPanel({
@@ -36,6 +41,19 @@ export function CreateJobPanel({
   onSaveQuestionSet,
   onUpdateQuestionSet,
   onDeleteQuestionSet,
+  sourceMode,
+  setSourceMode,
+  telegramConnection,
+  telegramChats,
+  telegramChatId,
+  setTelegramChatId,
+  reportStart,
+  setReportStart,
+  reportEnd,
+  setReportEnd,
+  request,
+  refreshTelegram,
+  showToast,
 }) {
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState(null);
@@ -61,7 +79,13 @@ export function CreateJobPanel({
     setFile(next);
   };
 
-  const start = () => onStartJob(file);
+  const start = () => onStartJob({
+    file,
+    sourceMode,
+    telegramChatId,
+    reportStart,
+    reportEnd,
+  });
 
   const onDrop = (event) => {
     event.preventDefault();
@@ -77,8 +101,25 @@ export function CreateJobPanel({
         <p>Folgen Sie den vier Schritten. Die Analyse startet erst, wenn eine ZIP-Datei ausgewählt und mindestens eine Frage eingetragen ist.</p>
       </div>
 
+      <TelegramSourcesPanel
+        connection={telegramConnection}
+        chats={telegramChats}
+        request={request}
+        onRefresh={refreshTelegram}
+        showToast={showToast}
+      />
+
       <div className="workflow-list">
-        <WorkflowStep number="1" title="Export hochladen" description="Wählen Sie den ZIP-Export aus Telegram aus.">
+        <WorkflowStep number="1" title="Datenquelle wählen" description="Analysieren Sie einen Export oder einen laufend gesammelten Chat.">
+          <div className="source-toggle">
+            <button className={`button ${sourceMode === "upload" ? "button-primary" : "button-secondary"}`} type="button" onClick={() => setSourceMode("upload")}>
+              ZIP-Export
+            </button>
+            <button className={`button ${sourceMode === "telegram_chat" ? "button-primary" : "button-secondary"}`} type="button" onClick={() => setSourceMode("telegram_chat")} disabled={!telegramConnection?.connected}>
+              Gesammelter Chat
+            </button>
+          </div>
+          {sourceMode === "upload" ? (
           <label
             className={`upload-zone${dragging ? " is-dragging" : ""}`}
             onDragEnter={(event) => {
@@ -98,8 +139,38 @@ export function CreateJobPanel({
               </p>
             </div>
           </label>
+          ) : (
+            <div className="telegram-report-grid">
+              <label className="field">
+                <span>Gruppe oder Kanal</span>
+                <select value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)}>
+                  <option value="">Bitte auswählen</option>
+                  {telegramChats.filter((chat) => chat.status !== "archived").map((chat) => (
+                    <option key={chat.id} value={chat.id}>{chat.title}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Von</span>
+                <input type="datetime-local" value={reportStart} onChange={(event) => setReportStart(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Bis</span>
+                <input type="datetime-local" value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} />
+              </label>
+              <button className="button button-secondary" type="button" onClick={() => {
+                const end = new Date();
+                const start = new Date(end);
+                start.setDate(start.getDate() - 14);
+                setReportStart(localDateTimeValue(start));
+                setReportEnd(localDateTimeValue(end));
+              }}>
+                Letzte 14 Tage
+              </button>
+            </div>
+          )}
 
-          {uploadInProgress && (
+          {sourceMode === "upload" && uploadInProgress && (
             <div className="progress-row">
               <div className="progress-label">
                 <span>Datei wird hochgeladen</span>

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -8,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Job, JobStatus
+from app.models import Job, JobSourceType, JobStatus
 from app.nats_client import publish_json
 from app.services.events import record_event
 from app.services.jobs import initial_task_payload
@@ -46,8 +45,13 @@ async def recover_stale_queued_jobs(session: AsyncSession, js) -> list[dict[str,
     recovered: list[dict[str, Any]] = []
     for job in rows:
         payload = initial_task_payload(job)
-        logger.warning("Republishing stale queued job %s to %s", job.id, subjects.VALIDATE)
-        ack = await publish_json(js, subjects.VALIDATE, payload)
+        subject = (
+            subjects.TELEGRAM_SNAPSHOT
+            if job.source_type == JobSourceType.telegram_chat
+            else subjects.VALIDATE
+        )
+        logger.warning("Republishing stale queued job %s to %s", job.id, subject)
+        ack = await publish_json(js, subject, payload)
         await record_event(
             session,
             js=js,
@@ -57,14 +61,14 @@ async def recover_stale_queued_jobs(session: AsyncSession, js) -> list[dict[str,
             level="warning",
             message="Analyse wurde erneut eingeplant, weil der Job in queued ohne Verarbeitung festhing.",
             payload={
-                "subject": subjects.VALIDATE,
+                "subject": subject,
                 "task_key": payload["task_key"],
                 "cutoff_seconds": settings.stale_queued_job_after_seconds,
                 "ack": str(ack),
             },
             raise_publish_errors=False,
         )
-        recovered.append({"job_id": str(job.id), "subject": subjects.VALIDATE})
+        recovered.append({"job_id": str(job.id), "subject": subject})
 
     if recovered:
         await session.commit()
