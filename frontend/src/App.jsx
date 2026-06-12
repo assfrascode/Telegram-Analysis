@@ -1,18 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiJson, downloadBlob, uploadFileViaBackend } from "./api/client";
-import { CapacityModal } from "./components/CapacityModal";
+import { AppSidebar } from "./components/AppSidebar";
 import { CreateJobPanel } from "./components/CreateJobPanel";
-import { EventLogPanel } from "./components/EventLogPanel";
 import { JobMonitorPanel } from "./components/JobMonitorPanel";
-import { JobsRail } from "./components/JobsRail";
 import { LoginView } from "./components/LoginView";
+import { TelegramSourcesPanel } from "./components/TelegramSourcesPanel";
 import { Toast } from "./components/Toast";
-import { Topbar } from "./components/Topbar";
 import { useJobSocket } from "./hooks/useJobSocket";
 import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS, MAX_EVENTS, STAGES, STORAGE_JOB, STORAGE_TOKEN } from "./lib/constants";
 import { normalizeEvent, normalizeQuestions, optionsFromState, shortId } from "./lib/format";
 
-function makeDerivedEvent(stage, currentJob, message = `${stage.label} abgeschlossen`) {
+function makeDerivedEvent(stage, currentJob, message = `${stage.label} completed`) {
   return {
     event_type: `${stage.key}.completed`,
     level: "info",
@@ -62,7 +60,7 @@ function getStageState(events, currentJob) {
     if (item.stage.key === "upload" && currentJob?.id && item.status === "pending") {
       return {
         ...item,
-        latest: makeDerivedEvent(item.stage, currentJob, "Datei hochgeladen"),
+        latest: makeDerivedEvent(item.stage, currentJob, "File uploaded"),
         started: true,
         completed: true,
         failed: false,
@@ -94,19 +92,18 @@ function getStageState(events, currentJob) {
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(STORAGE_TOKEN));
   const [currentJobId, setCurrentJobId] = useState(() => sessionStorage.getItem(STORAGE_JOB));
-  const [mainMode, setMainMode] = useState(() => (sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "create"));
+  const [activeView, setActiveView] = useState(() => (sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "analysis"));
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
-  const [capacityOpen, setCapacityOpen] = useState(false);
   const [capacity, setCapacity] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [currentJob, setCurrentJob] = useState(null);
   const [events, setEvents] = useState([]);
   const [visibleEvents, setVisibleEvents] = useState([]);
   const [eventFilter, setEventFilter] = useState("all");
-  const [wsStatus, setWsStatus] = useState("getrennt");
+  const [, setWsStatus] = useState("disconnected");
   const [questions, setQuestions] = useState(DEFAULT_QUESTIONS);
-  const [questionStatus, setQuestionStatus] = useState({ kind: "muted", message: "Tragen Sie mindestens eine Frage ein." });
+  const [questionStatus, setQuestionStatus] = useState({ kind: "muted", message: "" });
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
   const [questionSets, setQuestionSets] = useState([]);
   const [selectedQuestionSetId, setSelectedQuestionSetId] = useState(null);
@@ -187,7 +184,7 @@ export default function App() {
     } catch (error) {
       const fallback = { accepting_jobs: false, blockers: ["capacity_request_failed"], resources: {}, error: error.message };
       setCapacity(fallback);
-      addLocalLog(`Kapazität konnte nicht geprüft werden: ${error.message}`, "error");
+      addLocalLog(`Could not check system capacity: ${error.message}`, "error");
       return null;
     }
   }, [addLocalLog, request, token]);
@@ -197,7 +194,7 @@ export default function App() {
     try {
       setJobs(await request("/jobs"));
     } catch (error) {
-      addLocalLog(`Jobliste konnte nicht geladen werden: ${error.message}`, "error");
+      addLocalLog(`Could not load analyses: ${error.message}`, "error");
     }
   }, [addLocalLog, request, token]);
 
@@ -206,7 +203,7 @@ export default function App() {
     try {
       setQuestionSets(await request("/question-sets"));
     } catch (error) {
-      addLocalLog(`Fragensets konnten nicht geladen werden: ${error.message}`, "warning");
+      addLocalLog(`Could not load question sets: ${error.message}`, "warning");
     }
   }, [addLocalLog, request, token]);
 
@@ -219,9 +216,13 @@ export default function App() {
       ]);
       setTelegramConnection(connection);
       setTelegramChats(chats);
-      setTelegramChatId((current) => current || chats.find((chat) => chat.status !== "archived")?.id || "");
+      setTelegramChatId((current) => (
+        chats.some((chat) => chat.id === current && chat.status !== "archived")
+          ? current
+          : chats.find((chat) => chat.status !== "archived")?.id || ""
+      ));
     } catch (error) {
-      addLocalLog(`Telegram-Status konnte nicht geladen werden: ${error.message}`, "warning");
+      addLocalLog(`Could not load Telegram status: ${error.message}`, "warning");
     }
   }, [addLocalLog, request, token]);
 
@@ -232,7 +233,7 @@ export default function App() {
       setCurrentJob(job);
       return job;
     } catch (error) {
-      addLocalLog(`Status konnte nicht geladen werden: ${error.message}`, "error");
+      addLocalLog(`Could not load analysis status: ${error.message}`, "error");
       return null;
     }
   }, [addLocalLog, currentJobId, request, token]);
@@ -243,7 +244,7 @@ export default function App() {
       const backlog = await request(`/jobs/${currentJobId}/events?after_id=${lastEventIdRef.current}`);
       backlog.forEach(appendEvent);
     } catch (error) {
-      addLocalLog(`Events konnten nicht geladen werden: ${error.message}`, "warning");
+      addLocalLog(`Could not load events: ${error.message}`, "warning");
     }
   }, [addLocalLog, appendEvent, currentJobId, request, token]);
 
@@ -253,7 +254,7 @@ export default function App() {
 
   const selectJob = useCallback(async (jobId) => {
     setCurrentJobId(jobId);
-    setMainMode("monitor");
+    setActiveView("monitor");
     sessionStorage.setItem(STORAGE_JOB, jobId);
     resetJobEvents();
   }, [resetJobEvents]);
@@ -299,11 +300,11 @@ export default function App() {
       const data = await apiJson("/auth/login", { method: "POST", body: { email, password } });
       setToken(data.access_token);
       sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
-      addLocalLog("Anmeldung erfolgreich");
-      setMainMode(currentJobId ? "monitor" : "create");
+      addLocalLog("Signed in");
+      setActiveView(currentJobId ? "monitor" : "analysis");
     } catch (error) {
-      showToast("Anmeldung fehlgeschlagen", "error");
-      addLocalLog(`Anmeldung fehlgeschlagen: ${error.message}`, "error");
+      showToast("Sign-in failed", "error");
+      addLocalLog(`Sign-in failed: ${error.message}`, "error");
     } finally {
       setBusy(false);
     }
@@ -321,20 +322,18 @@ export default function App() {
     resetJobEvents();
     sessionStorage.removeItem(STORAGE_TOKEN);
     sessionStorage.removeItem(STORAGE_JOB);
-    showToast("Abmeldung abgeschlossen");
+    setActiveView("analysis");
+    showToast("Signed out");
   };
 
-  const startNewJobView = () => {
-    setMainMode("create");
-    showToast("Neue Analyse vorbereitet");
-  };
+  const openTelegramSetup = () => setActiveView("telegram");
 
   const applyQuestionSet = (questionSet) => {
     setSelectedQuestionSetId(questionSet.id);
     setQuestions(normalizeQuestions(questionSet.questions || []));
     setOptions({ ...DEFAULT_OPTIONS, ...(questionSet.default_options || {}) });
-    setQuestionStatus({ kind: "success", message: `${questionSet.questions?.length || 0} Frage(n) bereit.` });
-    showToast(`Fragenset geladen: ${questionSet.name}`);
+    setQuestionStatus({ kind: "muted", message: "" });
+    showToast(`Question set loaded: ${questionSet.name}`);
   };
 
   const selectAndLoadQuestionSet = async (questionSetId) => {
@@ -351,7 +350,7 @@ export default function App() {
       });
       applyQuestionSet(questionSet);
     } catch (error) {
-      showToast(`Fragenset konnte nicht geladen werden: ${error.message}`, "error");
+      showToast(`Could not load question set: ${error.message}`, "error");
     }
   };
 
@@ -362,60 +361,63 @@ export default function App() {
     default_options: optionsFromState(options),
   });
 
-  const saveCurrentQuestionSet = async () => {
+  const saveCurrentQuestionSet = async ({ name, description }) => {
     try {
-      const selected = questionSets.find((item) => item.id === selectedQuestionSetId);
-      const name = window.prompt("Name des Fragensets", selected?.name || "Neues Fragenset");
-      if (!name) return;
-      const description = window.prompt("Kurzbeschreibung (optional)", selected?.description || "") || null;
-      const created = await request("/question-sets", { method: "POST", body: makeQuestionSetPayload(name, description) });
+      const created = await request("/question-sets", {
+        method: "POST",
+        body: makeQuestionSetPayload(name, description || null),
+      });
       setSelectedQuestionSetId(created.id);
       await refreshQuestionSets();
-      showToast(`Fragenset gespeichert: ${created.name}`);
+      showToast(`Question set saved: ${created.name}`);
+      return created;
     } catch (error) {
-      showToast(`Fragenset konnte nicht gespeichert werden: ${error.message}`, "error");
+      showToast(`Could not save question set: ${error.message}`, "error");
+      throw error;
     }
   };
 
-  const updateCurrentQuestionSet = async () => {
+  const updateCurrentQuestionSet = async ({ name, description }) => {
     const selected = questionSets.find((item) => item.id === selectedQuestionSetId);
     if (!selected) {
-      showToast("Bitte zuerst ein Fragenset auswählen", "warning");
+      showToast("Select a question set first", "warning");
       return;
     }
     try {
-      const name = window.prompt("Name des Fragensets", selected.name);
-      if (!name) return;
-      const description = window.prompt("Kurzbeschreibung (optional)", selected.description || "") || null;
-      const updated = await request(`/question-sets/${selected.id}`, { method: "PATCH", body: makeQuestionSetPayload(name, description) });
+      const updated = await request(`/question-sets/${selected.id}`, {
+        method: "PATCH",
+        body: makeQuestionSetPayload(name, description || null),
+      });
       setSelectedQuestionSetId(updated.id);
       await refreshQuestionSets();
-      showToast(`Fragenset aktualisiert: ${updated.name}`);
+      showToast(`Question set updated: ${updated.name}`);
+      return updated;
     } catch (error) {
-      showToast(`Fragenset konnte nicht aktualisiert werden: ${error.message}`, "error");
+      showToast(`Could not update question set: ${error.message}`, "error");
+      throw error;
     }
   };
 
   const deleteCurrentQuestionSet = async () => {
     const selected = questionSets.find((item) => item.id === selectedQuestionSetId);
     if (!selected) {
-      showToast("Bitte zuerst ein Fragenset auswählen", "warning");
+      showToast("Select a question set first", "warning");
       return;
     }
-    if (!window.confirm(`Fragenset „${selected.name}“ wirklich löschen? Bestehende Analysen bleiben erhalten.`)) return;
     try {
       await request(`/question-sets/${selected.id}`, { method: "DELETE" });
       setSelectedQuestionSetId(null);
       await refreshQuestionSets();
-      showToast("Fragenset gelöscht");
+      showToast("Question set deleted");
     } catch (error) {
-      showToast(`Fragenset konnte nicht gelöscht werden: ${error.message}`, "error");
+      showToast(`Could not delete question set: ${error.message}`, "error");
+      throw error;
     }
   };
 
   const startJob = async ({ file, sourceMode: selectedSourceMode, telegramChatId: selectedChatId, reportStart: selectedStart, reportEnd: selectedEnd }) => {
     if (!token) {
-      showToast("Bitte zuerst einloggen", "warning");
+      showToast("Sign in first", "warning");
       return;
     }
 
@@ -424,7 +426,7 @@ export default function App() {
     try {
       normalizedQuestions = normalizeQuestions(questions);
       normalizedOptions = optionsFromState(options);
-      setQuestionStatus({ kind: "success", message: `${normalizedQuestions.length} Frage(n) bereit.` });
+      setQuestionStatus({ kind: "muted", message: "" });
     } catch (error) {
       setQuestionStatus({ kind: "error", message: error.message });
       showToast(error.message, "error");
@@ -433,15 +435,15 @@ export default function App() {
 
     if (selectedSourceMode === "upload") {
       if (!file) {
-        showToast("Bitte eine ZIP-Datei auswählen", "warning");
+        showToast("Select a ZIP file", "warning");
         return;
       }
       if (!file.name.toLowerCase().endsWith(".zip")) {
-        showToast("Bitte eine Datei im ZIP-Format auswählen", "error");
+        showToast("Select a file in ZIP format", "error");
         return;
       }
     } else if (!selectedChatId || !selectedStart || !selectedEnd) {
-      showToast("Bitte Chat und Berichtszeitraum auswählen", "warning");
+      showToast("Select a chat and reporting period", "warning");
       return;
     }
 
@@ -452,22 +454,22 @@ export default function App() {
     try {
       const currentCapacity = await refreshCapacity();
       if (currentCapacity && !currentCapacity.accepting_jobs) {
-        throw new Error(`System nimmt aktuell keine neuen Jobs an: ${(currentCapacity.blockers || []).join(", ")}`);
+        throw new Error(`The system is not accepting new analyses: ${(currentCapacity.blockers || []).join(", ")}`);
       }
 
       let job;
       if (selectedSourceMode === "upload") {
         const upload = await request("/uploads", { method: "POST", body: { filename: file.name, size_bytes: file.size } });
-        addLocalLog("Upload vorbereitet");
+        addLocalLog("Upload prepared");
         await uploadFileViaBackend(upload, file, token, setUploadProgress);
-        addLocalLog("Datei hochgeladen, Analyse wird gestartet");
+        addLocalLog("File uploaded, starting analysis");
         const payload = { upload_id: upload.upload_id, questions: normalizedQuestions, options: normalizedOptions };
         if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;
         job = await request("/jobs", { method: "POST", body: payload });
       } else {
         const startAt = new Date(selectedStart);
         const endAt = new Date(selectedEnd);
-        if (!(startAt < endAt)) throw new Error("Der Beginn muss vor dem Ende liegen");
+        if (!(startAt < endAt)) throw new Error("The start time must be before the end time");
         const payload = {
           telegram_chat_id: selectedChatId,
           start_at: startAt.toISOString(),
@@ -477,15 +479,15 @@ export default function App() {
         };
         if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;
         job = await request("/jobs/telegram", { method: "POST", body: payload });
-        addLocalLog("Telegram-Synchronisierung und Analyse wurden gestartet");
+        addLocalLog("Telegram synchronization and analysis started");
       }
       await selectJob(job.id);
-      addLocalLog("Analyse gestartet");
-      showToast("Analyse gestartet");
+      addLocalLog("Analysis started");
+      showToast("Analysis started");
       await Promise.allSettled([refreshJobs(), refreshCapacity()]);
     } catch (error) {
       showToast(error.message, "error");
-      addLocalLog(`Analyse konnte nicht gestartet werden: ${error.message}`, "error");
+      addLocalLog(`Could not start analysis: ${error.message}`, "error");
     } finally {
       setBusy(false);
       setUploadInProgress(false);
@@ -494,14 +496,14 @@ export default function App() {
 
   const cancelJob = async () => {
     if (!token || !currentJobId) return;
-    if (!window.confirm("Analyse wirklich abbrechen?")) return;
+    if (!window.confirm("Cancel this analysis?")) return;
     try {
       const data = await request(`/jobs/${currentJobId}/cancel`, { method: "POST" });
-      addLocalLog(`Abbruch angefordert: ${data.status}`, "warning");
+      addLocalLog(`Cancellation requested: ${data.status}`, "warning");
       await refreshJobStatus();
     } catch (error) {
-      showToast(`Abbruch fehlgeschlagen: ${error.message}`, "error");
-      addLocalLog(`Abbruch fehlgeschlagen: ${error.message}`, "error");
+      showToast(`Cancellation failed: ${error.message}`, "error");
+      addLocalLog(`Cancellation failed: ${error.message}`, "error");
     }
   };
 
@@ -517,21 +519,16 @@ export default function App() {
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(url);
-      addLocalLog("Bericht wird heruntergeladen");
+      addLocalLog("Report download started");
     } catch (error) {
-      showToast(`Bericht konnte nicht heruntergeladen werden: ${error.message}`, "error");
-      addLocalLog(`Bericht konnte nicht heruntergeladen werden: ${error.message}`, "error");
+      showToast(`Could not download report: ${error.message}`, "error");
+      addLocalLog(`Could not download report: ${error.message}`, "error");
     }
-  };
-
-  const copyJobId = async (jobId) => {
-    await navigator.clipboard.writeText(jobId).catch(() => null);
-    showToast("Interne Kennung kopiert");
   };
 
   const stageStates = useMemo(() => getStageState(events, currentJob), [events, currentJob]);
   const isLoggedIn = Boolean(token);
-  const showMonitor = mainMode === "monitor" && Boolean(currentJobId);
+  const showMonitor = activeView === "monitor" && Boolean(currentJobId);
 
   if (!isLoggedIn) {
     return (
@@ -543,18 +540,25 @@ export default function App() {
   }
 
   return (
-    <div className="app-view">
-      <Topbar
-        isLoggedIn={isLoggedIn}
+    <div className="app-shell">
+      <AppSidebar
+        activeView={activeView}
+        jobs={jobs}
+        chats={telegramChats}
+        currentJobId={currentJobId}
+        events={visibleEvents}
+        eventFilter={eventFilter}
+        setEventFilter={setEventFilter}
+        onClearEvents={clearVisibleLog}
+        capacity={capacity}
+        onRefreshCapacity={refreshCapacity}
+        onNavigate={setActiveView}
+        onSelectJob={selectJob}
         onLogout={logout}
-        onNewJob={startNewJobView}
       />
 
-      <div className="workspace">
-        <JobsRail jobs={jobs} token={token} currentJobId={currentJobId} onSelectJob={selectJob} />
-
-        <main className="main-stage">
-          {showMonitor ? (
+      <main className="app-content">
+        {showMonitor ? (
             <JobMonitorPanel
               currentJobId={currentJobId}
               currentJob={currentJob}
@@ -563,7 +567,15 @@ export default function App() {
               onCancel={cancelJob}
               onDownload={downloadReport}
             />
-          ) : (
+        ) : activeView === "telegram" ? (
+            <TelegramSourcesPanel
+              connection={telegramConnection}
+              chats={telegramChats}
+              request={request}
+              onRefresh={refreshTelegram}
+              showToast={showToast}
+            />
+        ) : (
             <CreateJobPanel
               questions={questions}
               setQuestions={setQuestions}
@@ -591,17 +603,10 @@ export default function App() {
               setReportStart={setReportStart}
               reportEnd={reportEnd}
               setReportEnd={setReportEnd}
-              request={request}
-              refreshTelegram={refreshTelegram}
-              showToast={showToast}
+              onOpenTelegram={openTelegramSetup}
             />
-          )}
-        </main>
-
-        <EventLogPanel events={visibleEvents} filter={eventFilter} setFilter={setEventFilter} onClear={clearVisibleLog} />
-      </div>
-
-      <CapacityModal open={capacityOpen} capacity={capacity} onClose={() => setCapacityOpen(false)} onRefresh={refreshCapacity} />
+        )}
+      </main>
       <Toast toast={toast} />
     </div>
   );

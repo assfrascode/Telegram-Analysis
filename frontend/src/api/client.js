@@ -75,8 +75,8 @@ export function uploadFileViaBackend(upload, file, token, onProgress) {
       }
     };
 
-    xhr.onerror = () => reject(new Error("Netzwerkfehler beim Upload"));
-    xhr.onabort = () => reject(new Error("Upload wurde abgebrochen"));
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onabort = () => reject(new Error("Upload was cancelled"));
     xhr.open("POST", buildApiUrl(upload.backend_upload_url));
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.send(form);

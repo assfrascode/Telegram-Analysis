@@ -14,17 +14,17 @@ export function LoginView({ onLogin, busy }) {
       <form className="login-card" onSubmit={submit}>
         <div className="mark-row">
           <span className="app-mark">CA</span>
-          <span className="eyebrow">Chat Analyse</span>
+          <span className="eyebrow">Chat Analysis</span>
         </div>
-        <h1>Analyseplattform</h1>
-        <p className="login-copy">Melden Sie sich an, um Telegram-Exporte hochzuladen, Fragen zu definieren und Berichte herunterzuladen.</p>
+        <h1>Intelligence workspace</h1>
+        <p className="login-copy">Sign in to analyse Telegram exports and collected chats.</p>
 
         <label className="field">
-          <span>E-Mail</span>
+          <span>Email</span>
           <input autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} />
         </label>
         <label className="field">
-          <span>Passwort</span>
+          <span>Password</span>
           <input
             type="password"
             autoComplete="current-password"
@@ -33,7 +33,7 @@ export function LoginView({ onLogin, busy }) {
           />
         </label>
         <button className="button button-primary button-full" type="submit" disabled={busy}>
-          Anmelden
+          {busy ? "Signing in..." : "Sign in"}
         </button>
       </form>
     </main>

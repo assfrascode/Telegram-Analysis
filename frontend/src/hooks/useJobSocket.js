@@ -8,7 +8,7 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
 
   useEffect(() => {
     if (!token || !currentJobId || TERMINAL_STATUSES.has(currentJobStatus)) {
-      callbacks.current.setWsStatus("getrennt");
+      callbacks.current.setWsStatus("disconnected");
       return undefined;
     }
 
@@ -30,12 +30,12 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
     const connect = () => {
       if (stopped) return;
       socket = new WebSocket(buildWsUrl(`/ws/jobs/${currentJobId}`, token));
-      callbacks.current.setWsStatus("verbinde");
+      callbacks.current.setWsStatus("connecting");
 
       socket.onopen = () => {
         stopPolling();
-        callbacks.current.setWsStatus("verbunden");
-        callbacks.current.appendEvent?.({ event_type: "frontend", level: "info", message: "WebSocket verbunden" });
+        callbacks.current.setWsStatus("connected");
+        callbacks.current.appendEvent?.({ event_type: "frontend", level: "info", message: "Live updates connected" });
       };
 
       socket.onmessage = (message) => {
@@ -49,15 +49,15 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
           callbacks.current.appendEvent?.({
             event_type: "frontend",
             level: "warning",
-            message: `Ungültige WebSocket-Nachricht: ${error.message}`,
+            message: `Invalid live update message: ${error.message}`,
           });
         }
       };
 
-      socket.onerror = () => callbacks.current.setWsStatus("fehler");
+      socket.onerror = () => callbacks.current.setWsStatus("error");
 
       socket.onclose = () => {
-        callbacks.current.setWsStatus("getrennt");
+        callbacks.current.setWsStatus("disconnected");
         if (stopped) return;
         startPolling();
         reconnectTimer = window.setTimeout(connect, 3000);
@@ -74,7 +74,7 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
         socket.onclose = null;
         socket.close();
       }
-      callbacks.current.setWsStatus("getrennt");
+      callbacks.current.setWsStatus("disconnected");
     };
   }, [token, currentJobId, currentJobStatus]);
 }

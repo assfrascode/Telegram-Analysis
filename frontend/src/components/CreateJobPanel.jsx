@@ -1,24 +1,8 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS } from "../lib/constants";
 import { formatBytes } from "../lib/format";
 import { QuestionBuilder } from "./QuestionBuilder";
 import { QuestionSetsPanel } from "./QuestionSetsPanel";
-import { TelegramSourcesPanel } from "./TelegramSourcesPanel";
-
-function WorkflowStep({ number, title, description, children }) {
-  return (
-    <section className="workflow-step">
-      <div className="step-header">
-        <span className="step-number">{number}</span>
-        <div>
-          <h3>{title}</h3>
-          {description && <p>{description}</p>}
-        </div>
-      </div>
-      <div className="step-body">{children}</div>
-    </section>
-  );
-}
 
 function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -51,17 +35,27 @@ export function CreateJobPanel({
   setReportStart,
   reportEnd,
   setReportEnd,
-  request,
-  refreshTelegram,
-  showToast,
+  onOpenTelegram,
 }) {
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState(null);
   const inputRef = useRef(null);
+  const activeChats = telegramChats.filter((chat) => chat.status !== "archived");
+  const selectedChat = telegramChats.find((chat) => chat.id === telegramChatId);
+  const questionCount = questions.filter((question) => question.text.trim()).length;
+  const questionsReady = questions.length > 0 && questions.every((question) => question.text.trim());
+  const sourceReady = sourceMode === "upload"
+    ? Boolean(file?.name.toLowerCase().endsWith(".zip"))
+    : Boolean(telegramConnection?.connected && telegramChatId && reportStart && reportEnd);
+
+  const sourceSummary = useMemo(() => {
+    if (sourceMode === "upload") return file?.name || "No export selected";
+    return selectedChat?.title || "No Telegram chat selected";
+  }, [file, selectedChat, sourceMode]);
 
   const fileText = file
-    ? `${file.name} · ${formatBytes(file.size)}${file.name.toLowerCase().endsWith(".zip") ? "" : " · Bitte ZIP-Datei auswählen"}`
-    : "Noch keine Datei ausgewählt.";
+    ? `${file.name} - ${formatBytes(file.size)}${file.name.toLowerCase().endsWith(".zip") ? "" : " - ZIP files only"}`
+    : "Choose a Telegram Desktop ZIP export";
 
   const setOption = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
 
@@ -71,13 +65,10 @@ export function CreateJobPanel({
     setQuestions(DEFAULT_QUESTIONS);
     setOptions(DEFAULT_OPTIONS);
     setSelectedQuestionSetId(null);
-    setQuestionStatus({ kind: "muted", message: "Tragen Sie mindestens eine Frage ein." });
+    setQuestionStatus({ kind: "muted", message: "" });
   };
 
-  const pickFile = (files) => {
-    const next = files?.[0] || null;
-    setFile(next);
-  };
+  const pickFile = (files) => setFile(files?.[0] || null);
 
   const start = () => onStartJob({
     file,
@@ -94,119 +85,160 @@ export function CreateJobPanel({
   };
 
   return (
-    <section className="panel content-panel create-panel-guided">
-      <div className="panel-header guided-intro">
-        <span className="section-kicker">Neue Analyse</span>
-        <h2>Telegram-Export auswerten</h2>
-        <p>Folgen Sie den vier Schritten. Die Analyse startet erst, wenn eine ZIP-Datei ausgewählt und mindestens eine Frage eingetragen ist.</p>
-      </div>
+    <section className="page analysis-page">
+      <header className="page-header">
+        <div>
+          <span className="page-kicker">Workspace</span>
+          <h1>New Analysis</h1>
+          <p>Choose a source and define the questions the report should answer.</p>
+        </div>
+      </header>
 
-      <TelegramSourcesPanel
-        connection={telegramConnection}
-        chats={telegramChats}
-        request={request}
-        onRefresh={refreshTelegram}
-        showToast={showToast}
-      />
-
-      <div className="workflow-list">
-        <WorkflowStep number="1" title="Datenquelle wählen" description="Analysieren Sie einen Export oder einen laufend gesammelten Chat.">
-          <div className="source-toggle">
-            <button className={`button ${sourceMode === "upload" ? "button-primary" : "button-secondary"}`} type="button" onClick={() => setSourceMode("upload")}>
-              ZIP-Export
-            </button>
-            <button className={`button ${sourceMode === "telegram_chat" ? "button-primary" : "button-secondary"}`} type="button" onClick={() => setSourceMode("telegram_chat")} disabled={!telegramConnection?.connected}>
-              Gesammelter Chat
-            </button>
-          </div>
-          {sourceMode === "upload" ? (
-          <label
-            className={`upload-zone${dragging ? " is-dragging" : ""}`}
-            onDragEnter={(event) => {
-              event.preventDefault();
-              setDragging(true);
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={() => setDragging(false)}
-            onDrop={onDrop}
-          >
-            <input ref={inputRef} type="file" accept=".zip" onChange={(event) => pickFile(event.target.files)} />
-            <div className="upload-icon">⇧</div>
-            <div>
-              <strong>ZIP-Datei auswählen oder hier ablegen</strong>
-              <p className="hint compact-hint" style={{ color: file && !file.name.toLowerCase().endsWith(".zip") ? "var(--red)" : undefined }}>
-                {fileText}
-              </p>
+      <div className="analysis-grid">
+        <div className="analysis-column">
+          <section className="surface analysis-section">
+            <div className="section-heading">
+              <div>
+                <span className="section-index">01</span>
+                <div>
+                  <h2>Source</h2>
+                  <p>Select an uploaded export or a collected Telegram chat.</p>
+                </div>
+              </div>
             </div>
-          </label>
-          ) : (
-            <div className="telegram-report-grid">
-              <label className="field">
-                <span>Gruppe oder Kanal</span>
-                <select value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)}>
-                  <option value="">Bitte auswählen</option>
-                  {telegramChats.filter((chat) => chat.status !== "archived").map((chat) => (
-                    <option key={chat.id} value={chat.id}>{chat.title}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Von</span>
-                <input type="datetime-local" value={reportStart} onChange={(event) => setReportStart(event.target.value)} />
-              </label>
-              <label className="field">
-                <span>Bis</span>
-                <input type="datetime-local" value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} />
-              </label>
-              <button className="button button-secondary" type="button" onClick={() => {
-                const end = new Date();
-                const start = new Date(end);
-                start.setDate(start.getDate() - 14);
-                setReportStart(localDateTimeValue(start));
-                setReportEnd(localDateTimeValue(end));
-              }}>
-                Letzte 14 Tage
+
+            <div className="segmented-control" aria-label="Analysis source">
+              <button
+                className={sourceMode === "upload" ? "is-active" : ""}
+                type="button"
+                onClick={() => setSourceMode("upload")}
+              >
+                ZIP export
+              </button>
+              <button
+                className={sourceMode === "telegram_chat" ? "is-active" : ""}
+                type="button"
+                onClick={() => setSourceMode("telegram_chat")}
+              >
+                Collected chat
               </button>
             </div>
-          )}
 
-          {sourceMode === "upload" && uploadInProgress && (
-            <div className="progress-row">
-              <div className="progress-label">
-                <span>Datei wird hochgeladen</span>
-                <span>{Math.round(uploadProgress)}%</span>
+            {sourceMode === "upload" ? (
+              <label
+                className={`upload-zone${dragging ? " is-dragging" : ""}${file ? " has-file" : ""}`}
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setDragging(true);
+                }}
+                onDragOver={(event) => event.preventDefault()}
+                onDragLeave={() => setDragging(false)}
+                onDrop={onDrop}
+              >
+                <input ref={inputRef} type="file" accept=".zip" onChange={(event) => pickFile(event.target.files)} />
+                <span className="upload-file-type">ZIP</span>
+                <span>
+                  <strong>{file ? "Export selected" : "Select or drop an export"}</strong>
+                  <small className={file && !file.name.toLowerCase().endsWith(".zip") ? "error-text" : ""}>{fileText}</small>
+                </span>
+              </label>
+            ) : !telegramConnection?.connected || !activeChats.length ? (
+              <div className="source-empty-state">
+                <div>
+                  <strong>{telegramConnection?.connected ? "No collected chats available" : "Telegram is not connected"}</strong>
+                  <p>Connect an account and add a group or channel before creating a chat-based analysis.</p>
+                </div>
+                <button className="button button-secondary" type="button" onClick={onOpenTelegram}>
+                  Open Telegram Setup
+                </button>
               </div>
-              <div className="progressbar">
-                <div style={{ width: `${uploadProgress}%` }} />
+            ) : (
+              <div className="telegram-source-fields">
+                <label className="field field-wide">
+                  <span>Group or channel</span>
+                  <select value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)}>
+                    <option value="">Select a chat</option>
+                    {activeChats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>From</span>
+                  <input type="datetime-local" value={reportStart} onChange={(event) => setReportStart(event.target.value)} />
+                </label>
+                <label className="field">
+                  <span>To</span>
+                  <input type="datetime-local" value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} />
+                </label>
+                <button
+                  className="text-button date-preset"
+                  type="button"
+                  onClick={() => {
+                    const end = new Date();
+                    const start = new Date(end);
+                    start.setDate(start.getDate() - 14);
+                    setReportStart(localDateTimeValue(start));
+                    setReportEnd(localDateTimeValue(end));
+                  }}
+                >
+                  Use the last 14 days
+                </button>
+              </div>
+            )}
+
+            {sourceMode === "upload" && uploadInProgress && (
+              <div className="upload-progress">
+                <div>
+                  <span>Uploading export</span>
+                  <strong>{Math.round(uploadProgress)}%</strong>
+                </div>
+                <div className="progressbar"><div style={{ width: `${uploadProgress}%` }} /></div>
+              </div>
+            )}
+          </section>
+
+          <section className="surface analysis-section">
+            <div className="section-heading">
+              <div>
+                <span className="section-index">02</span>
+                <div>
+                  <h2>Analysis options</h2>
+                </div>
               </div>
             </div>
-          )}
-        </WorkflowStep>
 
-        <WorkflowStep number="2" title="Analyseoptionen wählen" description="Die empfohlenen Einstellungen sind bereits vorausgewählt.">
-          <div className="options-strip user-options-strip">
-            <label className="switch option-card">
-              <input
-                type="checkbox"
-                checked={options.analyze_media !== false}
-                onChange={(event) => setOption("analyze_media", event.target.checked)}
-              />
-              <span>
-                <strong>Bilder und Videos auswerten</strong>
-                <small>Empfohlen, wenn der Export Medien enthält.</small>
-              </span>
-            </label>
-            <label className="switch option-card">
-              <input type="checkbox" checked={Boolean(options.translate)} onChange={(event) => setOption("translate", event.target.checked)} />
-              <span>
-                <strong>Fremdsprachige Inhalte übersetzen</strong>
-                <small>Optional für Chats mit mehreren Sprachen.</small>
-              </span>
-            </label>
+            <div className="option-list">
+              <label className="option-row">
+                <input
+                  type="checkbox"
+                  checked={options.analyze_media !== false}
+                  onChange={(event) => setOption("analyze_media", event.target.checked)}
+                />
+                <span>Analyse media</span>
+              </label>
+              <label className="option-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(options.translate)}
+                  onChange={(event) => setOption("translate", event.target.checked)}
+                />
+                <span>Translate</span>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <section className="surface analysis-section questions-section">
+          <div className="section-heading questions-heading">
+            <div>
+              <span className="section-index">03</span>
+              <div>
+                <h2>Report questions</h2>
+                <p>Each question becomes a separate section in the final report.</p>
+              </div>
+            </div>
+            <span className="question-count">{questionCount} question{questionCount === 1 ? "" : "s"}</span>
           </div>
-        </WorkflowStep>
 
-        <WorkflowStep number="3" title="Fragen festlegen" description="Sie können ein gespeichertes Fragenset verwenden oder eigene Fragen eintragen.">
           <QuestionSetsPanel
             questionSets={questionSets}
             selectedId={selectedQuestionSetId}
@@ -215,21 +247,36 @@ export function CreateJobPanel({
             onUpdate={onUpdateQuestionSet}
             onDelete={onDeleteQuestionSet}
           />
-
-          <QuestionBuilder questions={questions} setQuestions={setQuestions} status={questionStatus} setStatus={setQuestionStatus} />
-        </WorkflowStep>
-
-        <WorkflowStep number="4" title="Analyse starten" description="Nach dem Start sehen Sie automatisch den Fortschritt und können den Bericht herunterladen, sobald er fertig ist.">
-          <div className="actions-row start-actions">
-            <button className="button button-primary button-large" type="button" onClick={start} disabled={uploadInProgress}>
-              Analyse starten
-            </button>
-            <button className="button button-secondary" type="button" onClick={reset} disabled={uploadInProgress}>
-              Eingaben zurücksetzen
-            </button>
-          </div>
-        </WorkflowStep>
+          <QuestionBuilder
+            questions={questions}
+            setQuestions={setQuestions}
+            status={questionStatus}
+            setStatus={setQuestionStatus}
+          />
+        </section>
       </div>
+
+      <footer className="analysis-action-bar">
+        <div className="analysis-summary">
+          <span>Source</span>
+          <strong>{sourceSummary}</strong>
+          <span className="summary-divider" />
+          <span>{questionCount} question{questionCount === 1 ? "" : "s"}</span>
+        </div>
+        <div className="analysis-actions">
+          <button className="button button-ghost" type="button" onClick={reset} disabled={uploadInProgress}>
+            Reset
+          </button>
+          <button
+            className="button button-primary button-large"
+            type="button"
+            onClick={start}
+            disabled={uploadInProgress || !sourceReady || !questionsReady}
+          >
+            Start analysis
+          </button>
+        </div>
+      </footer>
     </section>
   );
 }

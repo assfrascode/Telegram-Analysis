@@ -2,19 +2,19 @@ import { BAD_STATUSES, TERMINAL_STATUSES } from "../lib/constants";
 import { badgeClassForStatus, formatDate, formatProgressPayload, statusLabel } from "../lib/format";
 
 function stageStatusText(status) {
-  if (status === "completed") return "Erledigt";
-  if (status === "running") return "Aktiv";
-  if (status === "failed") return "Fehler";
-  return "Offen";
+  if (status === "completed") return "Completed";
+  if (status === "running") return "Active";
+  if (status === "failed") return "Failed";
+  return "Pending";
 }
 
 function userProgressMessage(currentJob, current) {
-  if (!currentJob) return "Noch keine Analyse ausgewählt.";
-  if (currentJob.status === "completed") return "Die Analyse ist abgeschlossen. Der Bericht steht zum Herunterladen bereit.";
-  if (currentJob.status === "failed") return "Die Analyse konnte nicht abgeschlossen werden.";
-  if (currentJob.status === "cancelled") return "Die Analyse wurde abgebrochen.";
-  if (current?.status === "running") return `Aktueller Schritt: ${current.stage.label}.`;
-  return "Die Analyse wartet auf den nächsten Verarbeitungsschritt.";
+  if (!currentJob) return "No analysis selected.";
+  if (currentJob.status === "completed") return "The analysis is complete and the report is ready to download.";
+  if (currentJob.status === "failed") return "The analysis could not be completed.";
+  if (currentJob.status === "cancelled") return "The analysis was cancelled.";
+  if (current?.status === "running") return `Current step: ${current.stage.label}.`;
+  return "The analysis is waiting for the next processing step.";
 }
 
 function StageCard({ item, index }) {
@@ -53,24 +53,24 @@ export function JobMonitorPanel({
     <section className="panel content-panel monitor-panel-guided">
       <div className="panel-header split guided-intro">
         <div>
-          <span className="section-kicker">Fortschritt</span>
-          <h2>{jobFinished ? "Analyse abgeschlossen" : "Analyse wird verarbeitet"}</h2>
+          <span className="section-kicker">Progress</span>
+          <h2>{jobFinished ? "Analysis complete" : "Analysis in progress"}</h2>
           <p>{userProgressMessage(currentJob, current)}</p>
         </div>
         <div className="inline-actions">
           <button className="button button-secondary button-small" type="button" onClick={onRefresh}>
-            Aktualisieren
+            Refresh
           </button>
           {currentJob && !TERMINAL_STATUSES.has(currentJob.status) && (
             <button className="button button-danger button-small" type="button" onClick={onCancel}>
-              Analyse abbrechen
+              Cancel analysis
             </button>
           )}
         </div>
       </div>
 
       {!currentJobId || !currentJob ? (
-        <div className="empty-state">Wählen Sie links eine Analyse aus oder starten Sie eine neue Analyse.</div>
+        <div className="empty-state">Select an analysis from the sidebar or start a new one.</div>
       ) : (
         <div>
           <div className="job-summary-card">
@@ -79,12 +79,12 @@ export function JobMonitorPanel({
               <span className={badgeClassForStatus(currentJob.status)}>{statusLabel(currentJob.status)}</span>
             </div>
             <div>
-              <span className="meta-label">Gestartet</span>
+              <span className="meta-label">Started</span>
               <span>{formatDate(currentJob.created_at)}</span>
             </div>
             {currentJob.completed_at && (
               <div>
-                <span className="meta-label">Abgeschlossen</span>
+                <span className="meta-label">Completed</span>
                 <span>{formatDate(currentJob.completed_at)}</span>
               </div>
             )}
@@ -92,23 +92,23 @@ export function JobMonitorPanel({
 
           <div className="progress-summary-card">
             <div>
-              <div className="dashboard-label">Gesamtfortschritt</div>
+              <div className="dashboard-label">Overall progress</div>
               <div className="dashboard-value">{percent}%</div>
             </div>
             <div className="progressbar slim"><div style={{ width: `${percent}%` }} /></div>
-            <div className="current-step-text">{jobFinished ? "Fertig" : current?.stage?.label || "Noch nicht gestartet"}</div>
+            <div className="current-step-text">{jobFinished ? "Complete" : current?.stage?.label || "Not started"}</div>
           </div>
 
           {currentJob.error_message && (
             <div className="alert alert-error">
-              <strong>Die Analyse konnte nicht abgeschlossen werden.</strong>
+              <strong>The analysis could not be completed.</strong>
               <br />
               {currentJob.error_message}
             </div>
           )}
 
           {BAD_STATUSES.has(currentJob.status) && !currentJob.error_message && (
-            <div className="alert alert-warning">Die Analyse wurde mit Status „{statusLabel(currentJob.status)}“ beendet.</div>
+            <div className="alert alert-warning">The analysis ended with status "{statusLabel(currentJob.status)}".</div>
           )}
 
           <div className="stage-list user-stage-list">
@@ -118,7 +118,7 @@ export function JobMonitorPanel({
           <div className="actions-row sticky-actions">
             {currentJob.status === "completed" && (
               <button className="button button-primary button-large" type="button" onClick={onDownload}>
-                Bericht herunterladen
+                Download report
               </button>
             )}
           </div>

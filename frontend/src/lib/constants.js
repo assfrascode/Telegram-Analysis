@@ -8,52 +8,52 @@ export const BAD_STATUSES = new Set(["failed", "cancelled"]);
 export const STAGES = [
   {
     key: "telegram_sync",
-    label: "Telegram synchronisieren",
+    label: "Synchronize Telegram",
     events: ["telegram.sync.started", "telegram.sync.completed", "telegram.snapshot.completed"],
   },
-  { key: "upload", label: "Datei hochladen", events: ["upload.completed"] },
-  { key: "validate", label: "Datei prüfen", events: ["zip.scan.started", "zip.scan.completed"] },
-  { key: "extract", label: "Chat vorbereiten", events: ["zip.extract.started", "zip.extract.completed"] },
+  { key: "upload", label: "Upload file", events: ["upload.completed"] },
+  { key: "validate", label: "Validate file", events: ["zip.scan.started", "zip.scan.completed"] },
+  { key: "extract", label: "Prepare chat", events: ["zip.extract.started", "zip.extract.completed"] },
   {
     key: "parse",
-    label: "Nachrichten lesen",
+    label: "Read messages",
     events: ["telegram.parse.started", "telegram.parse.progress", "telegram.parse.completed"],
   },
   {
     key: "media",
-    label: "Medien prüfen",
+    label: "Analyse media",
     events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"],
   },
-  { key: "chunk", label: "Inhalte strukturieren", events: ["chunking.started", "chunking.progress", "chunking.completed"] },
+  { key: "chunk", label: "Structure content", events: ["chunking.started", "chunking.progress", "chunking.completed"] },
   {
     key: "embedding",
-    label: "Suchindex erstellen",
+    label: "Build search index",
     events: ["embedding.started", "embedding.progress", "embedding.completed"],
   },
   {
     key: "retrieval",
-    label: "Relevante Stellen finden",
+    label: "Find relevant passages",
     events: ["retrieval.started", "retrieval.progress", "retrieval.completed"],
   },
   {
     key: "reranking",
-    label: "Treffer sortieren",
+    label: "Rank results",
     events: ["reranking.started", "reranking.progress", "reranking.completed"],
   },
   {
     key: "answers",
-    label: "Fragen beantworten",
+    label: "Answer questions",
     events: ["answer.started", "answer.progress", "answer.completed", "question.answer.completed"],
   },
-  { key: "report", label: "Bericht erstellen", events: ["report.started", "report.completed", "job.completed"] },
+  { key: "report", label: "Create report", events: ["report.started", "report.completed", "job.completed"] },
 ];
 
-export const DEFAULT_QUESTIONS = [{ id: "q1", text: "Welche Narrative verbreitet der Chat?" }];
+export const DEFAULT_QUESTIONS = [{ id: "q1", text: "What narratives are being promoted in this chat?" }];
 
 export const EXAMPLE_QUESTIONS = [
-  { id: "q1", text: "Welche Narrative verbreitet der Chat?" },
-  { id: "q2", text: "Welche Personen, Gruppen oder Organisationen werden besonders positiv oder negativ dargestellt?" },
-  { id: "q3", text: "Welche Themen oder Aussagen wiederholen sich auffällig häufig?" },
+  { id: "q1", text: "What narratives are being promoted in this chat?" },
+  { id: "q2", text: "Which people, groups, or organisations are portrayed especially positively or negatively?" },
+  { id: "q3", text: "Which topics or claims are repeated unusually often?" },
 ];
 
 export const DEFAULT_OPTIONS = {
