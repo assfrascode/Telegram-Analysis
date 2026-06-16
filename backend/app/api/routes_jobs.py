@@ -12,7 +12,13 @@ from app.db import get_session
 from app.dependencies import get_current_user
 from app.models import Job, JobEvent, JobStatus, User, WorkerDeadLetter
 from app.nats_client import nats_context
-from app.schemas import EventResponse, JobCreateRequest, JobResponse, TelegramReportCreateRequest
+from app.schemas import (
+    EventResponse,
+    JobCreateRequest,
+    JobResponse,
+    ScheduledReportJobMetadata,
+    TelegramReportCreateRequest,
+)
 from app.services.access_control import get_owned_job_or_404, get_owned_report_or_404
 from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
 from app.services.jobs import (
@@ -30,6 +36,17 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
 
 
+def _scheduled_report_metadata(job: Job) -> ScheduledReportJobMetadata | None:
+    raw = (job.options or {}).get("scheduled_report")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ScheduledReportJobMetadata(**raw)
+    except Exception:
+        logger.warning("Ignoring invalid scheduled_report metadata on job %s", job.id)
+        return None
+
+
 def _job_response(job: Job) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -41,6 +58,7 @@ def _job_response(job: Job) -> JobResponse:
         created_at=job.created_at,
         completed_at=job.completed_at,
         error_message=job.error_message,
+        scheduled_report=_scheduled_report_metadata(job),
     )
 
 

@@ -1138,13 +1138,15 @@ async function cancelJob() {
 async function downloadReport() {
   if (!state.token || !state.currentJobId) return;
   try {
-    const res = await fetch(`/jobs/${state.currentJobId}/report/download`, {headers: authHeaders()});
+    const token = state.token;
+    const currentJobId = state.currentJobId;
+    const res = await fetch(`/jobs/${currentJobId}/report/download`, {headers: {"Authorization": `Bearer ${token}`}});
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `report-${shortId(state.currentJobId)}.zip`;
+    a.download = `report-${shortId(currentJobId)}.zip`;
     document.body.appendChild(a);
     a.click();
     a.remove();

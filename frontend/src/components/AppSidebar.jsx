@@ -3,7 +3,15 @@ import { formatDate, statusLabel } from "../lib/format";
 
 function jobTitle(job, chats) {
   if (job.source_type !== "telegram_chat") return "Uploaded export";
-  return chats.find((chat) => chat.id === job.telegram_chat_id)?.title || "Telegram chat";
+  const title = chats.find((chat) => chat.id === job.telegram_chat_id)?.title || "Telegram chat";
+  return job.scheduled_report ? `Scheduled: ${title}` : title;
+}
+
+function jobSubtitle(job) {
+  if (job.scheduled_report?.scheduled_for) {
+    return `Scheduled for ${formatDate(job.scheduled_report.scheduled_for)}`;
+  }
+  return formatDate(job.created_at);
 }
 
 function AnalysisList({ jobs, chats, currentJobId, onSelectJob }) {
@@ -27,7 +35,7 @@ function AnalysisList({ jobs, chats, currentJobId, onSelectJob }) {
             <span className={`status-dot status-dot-${job.status}`} aria-hidden="true" />
             <span className="analysis-list-copy">
               <strong>{jobTitle(job, chats)}</strong>
-              <span>{formatDate(job.created_at)}</span>
+              <span>{jobSubtitle(job)}</span>
             </span>
           </button>
         );

@@ -112,6 +112,7 @@ export default function App() {
   const [sourceMode, setSourceMode] = useState("upload");
   const [telegramConnection, setTelegramConnection] = useState(null);
   const [telegramChats, setTelegramChats] = useState([]);
+  const [telegramReportSchedules, setTelegramReportSchedules] = useState([]);
   const [telegramChatId, setTelegramChatId] = useState("");
   const [reportEnd, setReportEnd] = useState(() => localDateTimeValue(new Date()));
   const [reportStart, setReportStart] = useState(() => {
@@ -210,12 +211,14 @@ export default function App() {
   const refreshTelegram = useCallback(async () => {
     if (!token) return;
     try {
-      const [connection, chats] = await Promise.all([
+      const [connection, chats, schedules] = await Promise.all([
         request("/telegram/connection"),
         request("/telegram/chats"),
+        request("/telegram/report-schedules"),
       ]);
       setTelegramConnection(connection);
       setTelegramChats(chats);
+      setTelegramReportSchedules(schedules);
       setTelegramChatId((current) => (
         chats.some((chat) => chat.id === current && chat.status !== "archived")
           ? current
@@ -319,6 +322,7 @@ export default function App() {
     setCapacity(null);
     setTelegramConnection(null);
     setTelegramChats([]);
+    setTelegramReportSchedules([]);
     resetJobEvents();
     sessionStorage.removeItem(STORAGE_TOKEN);
     sessionStorage.removeItem(STORAGE_JOB);
@@ -571,8 +575,11 @@ export default function App() {
             <TelegramSourcesPanel
               connection={telegramConnection}
               chats={telegramChats}
+              schedules={telegramReportSchedules}
+              questionSets={questionSets}
               request={request}
               onRefresh={refreshTelegram}
+              onSelectJob={selectJob}
               showToast={showToast}
             />
         ) : (

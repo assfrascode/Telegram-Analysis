@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatDate } from "../lib/format";
 
 function chatStatusText(status) {
@@ -6,6 +6,18 @@ function chatStatusText(status) {
   if (status === "error") return "Sync failed";
   if (status === "archived") return "Archived";
   return "Active";
+}
+
+function browserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function rollingWindowLabel(days) {
+  return Number(days) === 1 ? "1 day" : `${days} days`;
 }
 
 function ConnectionSetup({
@@ -267,7 +279,211 @@ function CollectedChatsTable({ chats, busy, onSync, onUpdate }) {
   );
 }
 
-export function TelegramSourcesPanel({ connection, chats, request, onRefresh, showToast }) {
+function ScheduledReportsSection({
+  chats,
+  questionSets,
+  schedules,
+  busy,
+  onSave,
+  onDelete,
+  onToggle,
+  onOpenJob,
+}) {
+  const activeChats = chats.filter((chat) => chat.status !== "archived");
+  const [editingId, setEditingId] = useState(null);
+  const [chatId, setChatId] = useState("");
+  const [questionSetId, setQuestionSetId] = useState("");
+  const [runTime, setRunTime] = useState("05:00");
+  const [timezone, setTimezone] = useState(browserTimezone);
+  const [rollingWindowDays, setRollingWindowDays] = useState(1);
+  const [enabled, setEnabled] = useState(true);
+
+  useEffect(() => {
+    if (!activeChats.some((chat) => chat.id === chatId)) {
+      const nextChatId = activeChats[0]?.id || "";
+      if (chatId !== nextChatId) setChatId(nextChatId);
+    }
+  }, [activeChats, chatId]);
+
+  useEffect(() => {
+    if (!questionSets.some((set) => set.id === questionSetId)) {
+      const nextQuestionSetId = questionSets[0]?.id || "";
+      if (questionSetId !== nextQuestionSetId) setQuestionSetId(nextQuestionSetId);
+    }
+  }, [questionSetId, questionSets]);
+
+  const resetForm = () => {
+    setEditingId(null);
+    setChatId(activeChats[0]?.id || "");
+    setQuestionSetId(questionSets[0]?.id || "");
+    setRunTime("05:00");
+    setTimezone(browserTimezone());
+    setRollingWindowDays(1);
+    setEnabled(true);
+  };
+
+  const editSchedule = (schedule) => {
+    setEditingId(schedule.id);
+    setChatId(schedule.telegram_chat_id);
+    setQuestionSetId(schedule.question_set_id);
+    setRunTime(schedule.run_time_local);
+    setTimezone(schedule.timezone);
+    setRollingWindowDays(schedule.rolling_window_days);
+    setEnabled(schedule.enabled);
+  };
+
+  const save = async () => {
+    const saved = await onSave(editingId, {
+      telegram_chat_id: chatId,
+      question_set_id: questionSetId,
+      run_time_local: runTime,
+      timezone,
+      rolling_window_days: Number(rollingWindowDays),
+      enabled,
+    });
+    if (saved) resetForm();
+  };
+
+  const chatTitle = (id) => chats.find((chat) => chat.id === id)?.title || "Telegram chat";
+  const questionSetName = (id) => questionSets.find((set) => set.id === id)?.name || "Question set";
+  const formReady = Boolean(activeChats.length && questionSets.length && chatId && questionSetId && runTime && timezone);
+
+  return (
+    <section className="surface telegram-card scheduled-reports-card">
+      <div className="section-heading telegram-section-heading">
+        <div>
+          <span className="section-index">04</span>
+          <div>
+            <h2>Scheduled reports</h2>
+            <p>Generate recurring Telegram reports from collected chats and saved question sets.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="schedule-form">
+        <label className="field field-wide">
+          <span>Group or channel</span>
+          <select value={chatId} onChange={(event) => setChatId(event.target.value)} disabled={!activeChats.length}>
+            {activeChats.length ? (
+              activeChats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)
+            ) : (
+              <option value="">No active chats</option>
+            )}
+          </select>
+        </label>
+        <label className="field field-wide">
+          <span>Question set</span>
+          <select value={questionSetId} onChange={(event) => setQuestionSetId(event.target.value)} disabled={!questionSets.length}>
+            {questionSets.length ? (
+              questionSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)
+            ) : (
+              <option value="">No question sets</option>
+            )}
+          </select>
+        </label>
+        <label className="field">
+          <span>Run time</span>
+          <input type="time" value={runTime} onChange={(event) => setRunTime(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Timezone</span>
+          <input value={timezone} onChange={(event) => setTimezone(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Report window</span>
+          <select value={rollingWindowDays} onChange={(event) => setRollingWindowDays(Number(event.target.value))}>
+            <option value={1}>Last 1 day</option>
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+          </select>
+        </label>
+        <label className="option-row schedule-enabled">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          <span>Enabled</span>
+        </label>
+        <div className="schedule-form-actions">
+          {editingId && (
+            <button className="button button-ghost button-small" type="button" onClick={resetForm} disabled={busy}>
+              Cancel edit
+            </button>
+          )}
+          <button className="button button-primary button-small" type="button" onClick={save} disabled={busy || !formReady}>
+            {editingId ? "Update schedule" : "Add schedule"}
+          </button>
+        </div>
+      </div>
+
+      {schedules.length ? (
+        <div className="telegram-table-wrap schedule-table-wrap">
+          <table className="telegram-table schedule-table">
+            <thead>
+              <tr>
+                <th>Chat</th>
+                <th>Questions</th>
+                <th>Time</th>
+                <th>Window</th>
+                <th>Next run</th>
+                <th>Last run</th>
+                <th><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {schedules.map((schedule) => (
+                <tr key={schedule.id} className={!schedule.enabled ? "is-archived" : ""}>
+                  <td>
+                    <strong>{chatTitle(schedule.telegram_chat_id)}</strong>
+                    {schedule.last_error && <span className="table-error">{schedule.last_error}</span>}
+                  </td>
+                  <td>{questionSetName(schedule.question_set_id)}</td>
+                  <td>{schedule.run_time_local} <span className="muted-inline">{schedule.timezone}</span></td>
+                  <td>{rollingWindowLabel(schedule.rolling_window_days)}</td>
+                  <td>{schedule.enabled ? formatDate(schedule.next_run_at) : "-"}</td>
+                  <td>{formatDate(schedule.last_run_at)}</td>
+                  <td>
+                    <div className="table-actions schedule-actions">
+                      <button className="text-button" type="button" onClick={() => editSchedule(schedule)} disabled={busy}>
+                        Edit
+                      </button>
+                      <button className="text-button" type="button" onClick={() => onToggle(schedule)} disabled={busy}>
+                        {schedule.enabled ? "Pause" : "Enable"}
+                      </button>
+                      {schedule.last_job_id && (
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={() => onOpenJob(schedule.last_job_id)}
+                        >
+                          Last job
+                        </button>
+                      )}
+                      <button className="text-button" type="button" onClick={() => onDelete(schedule)} disabled={busy}>
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="subtle-empty-state">No scheduled reports yet.</div>
+      )}
+    </section>
+  );
+}
+
+export function TelegramSourcesPanel({
+  connection,
+  chats,
+  schedules,
+  questionSets,
+  request,
+  onRefresh,
+  onSelectJob,
+  showToast,
+}) {
   const [apiId, setApiId] = useState("");
   const [apiHash, setApiHash] = useState("");
   const [phone, setPhone] = useState("");
@@ -289,8 +505,10 @@ export function TelegramSourcesPanel({ connection, chats, request, onRefresh, sh
     setBusy(true);
     try {
       await action();
+      return true;
     } catch (error) {
       showToast(error.message, "error");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -375,6 +593,31 @@ export function TelegramSourcesPanel({ connection, chats, request, onRefresh, sh
     showToast(body.archived ? "Chat archived" : "Chat settings updated");
   });
 
+  const saveSchedule = (scheduleId, body) => run(async () => {
+    await request(scheduleId ? `/telegram/report-schedules/${scheduleId}` : "/telegram/report-schedules", {
+      method: scheduleId ? "PATCH" : "POST",
+      body,
+    });
+    await onRefresh();
+    showToast(scheduleId ? "Report schedule updated" : "Report schedule added");
+  });
+
+  const deleteSchedule = (schedule) => run(async () => {
+    if (!window.confirm(`Delete the scheduled report for ${schedule.run_time_local}?`)) return;
+    await request(`/telegram/report-schedules/${schedule.id}`, { method: "DELETE" });
+    await onRefresh();
+    showToast("Report schedule deleted");
+  });
+
+  const toggleSchedule = (schedule) => run(async () => {
+    await request(`/telegram/report-schedules/${schedule.id}`, {
+      method: "PATCH",
+      body: { enabled: !schedule.enabled },
+    });
+    await onRefresh();
+    showToast(schedule.enabled ? "Report schedule paused" : "Report schedule enabled");
+  });
+
   return (
     <section className="page telegram-page">
       <header className="page-header">
@@ -401,6 +644,16 @@ export function TelegramSourcesPanel({ connection, chats, request, onRefresh, sh
             onAddChat={addChat}
           />
           <CollectedChatsTable chats={chats} busy={busy} onSync={syncChat} onUpdate={updateChat} />
+          <ScheduledReportsSection
+            chats={chats}
+            questionSets={questionSets}
+            schedules={schedules}
+            busy={busy}
+            onSave={saveSchedule}
+            onDelete={deleteSchedule}
+            onToggle={toggleSchedule}
+            onOpenJob={onSelectJob}
+          />
         </>
       ) : (
         <ConnectionSetup

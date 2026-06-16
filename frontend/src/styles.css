@@ -1253,6 +1253,61 @@ select:focus {
   margin-bottom: 0;
 }
 
+.scheduled-reports-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.schedule-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(120px, 0.45fr) minmax(190px, 0.7fr) minmax(140px, 0.5fr) auto auto;
+  gap: 0.8rem;
+  align-items: end;
+}
+
+.schedule-form .field {
+  margin-bottom: 0;
+}
+
+.schedule-enabled {
+  min-height: 2.45rem;
+  margin-bottom: 0;
+}
+
+.schedule-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.schedule-table-wrap {
+  max-height: 360px;
+}
+
+.schedule-table {
+  min-width: 1120px;
+}
+
+.schedule-table th:nth-child(1) { width: 18%; }
+.schedule-table th:nth-child(2) { width: 16%; }
+.schedule-table th:nth-child(3) { width: 16%; }
+.schedule-table th:nth-child(4) { width: 9%; }
+.schedule-table th:nth-child(5) { width: 14%; }
+.schedule-table th:nth-child(6) { width: 14%; }
+.schedule-table th:nth-child(7) { width: 13%; }
+
+.schedule-actions {
+  flex-wrap: wrap;
+}
+
+.muted-inline {
+  display: inline;
+  margin-left: 0.25rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .collected-chats-card {
   display: flex;
   min-height: 0;

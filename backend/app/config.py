@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     telegram_sync_timeout_seconds: int = 20 * 60
     telegram_media_download_timeout_seconds: int = 10 * 60
     telegram_sync_retry_minutes: int = 5
+    report_scheduler_poll_seconds: int = 30
+    report_scheduler_lease_minutes: int = 5
 
     bootstrap_admin_email: str = "admin@example.local"
     bootstrap_admin_password: str = "change-me"

@@ -1,8 +1,12 @@
 import uuid
 from datetime import datetime
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+ALLOWED_REPORT_WINDOW_DAYS = {1, 7, 14, 30}
 
 
 class TokenResponse(BaseModel):
@@ -77,6 +81,15 @@ class TelegramReportCreateRequest(BaseModel):
         return self
 
 
+class ScheduledReportJobMetadata(BaseModel):
+    schedule_id: uuid.UUID
+    scheduled_for: datetime
+    rolling_window_days: int
+    timezone: str
+    run_time_local: str
+    question_set_id: uuid.UUID | None = None
+
+
 class JobResponse(BaseModel):
     id: uuid.UUID
     status: str
@@ -87,6 +100,7 @@ class JobResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     error_message: str | None = None
+    scheduled_report: ScheduledReportJobMetadata | None = None
 
 
 class EventResponse(BaseModel):
@@ -221,3 +235,71 @@ class TelegramChatResponse(BaseModel):
     next_sync_at: datetime
     coverage_start: datetime | None = None
     coverage_end: datetime | None = None
+
+
+class TelegramReportScheduleCreateRequest(BaseModel):
+    telegram_chat_id: uuid.UUID
+    question_set_id: uuid.UUID
+    run_time_local: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(min_length=1, max_length=128)
+    rolling_window_days: int
+    enabled: bool = True
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+    @field_validator("rolling_window_days")
+    @classmethod
+    def validate_window(cls, value: int) -> int:
+        if value not in ALLOWED_REPORT_WINDOW_DAYS:
+            raise ValueError("rolling_window_days must be one of 1, 7, 14, 30")
+        return value
+
+
+class TelegramReportScheduleUpdateRequest(BaseModel):
+    telegram_chat_id: uuid.UUID | None = None
+    question_set_id: uuid.UUID | None = None
+    run_time_local: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str | None = Field(default=None, min_length=1, max_length=128)
+    rolling_window_days: int | None = None
+    enabled: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+    @field_validator("rolling_window_days")
+    @classmethod
+    def validate_window(cls, value: int | None) -> int | None:
+        if value is not None and value not in ALLOWED_REPORT_WINDOW_DAYS:
+            raise ValueError("rolling_window_days must be one of 1, 7, 14, 30")
+        return value
+
+
+class TelegramReportScheduleResponse(BaseModel):
+    id: uuid.UUID
+    telegram_chat_id: uuid.UUID
+    question_set_id: uuid.UUID
+    enabled: bool
+    run_time_local: str
+    timezone: str
+    rolling_window_days: int
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_job_id: uuid.UUID | None = None
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime

@@ -22,6 +22,17 @@ from app.schemas import (
     TelegramLoginCodeRequest,
     TelegramLoginPasswordRequest,
     TelegramLoginStartRequest,
+    TelegramReportScheduleCreateRequest,
+    TelegramReportScheduleResponse,
+    TelegramReportScheduleUpdateRequest,
+)
+from app.services.report_schedules import (
+    create_report_schedule,
+    delete_report_schedule,
+    get_owned_report_schedule,
+    list_report_schedules,
+    response as report_schedule_response,
+    update_report_schedule,
 )
 from app.services.telegram_accounts import (
     disconnect_account,
@@ -176,6 +187,53 @@ async def list_chats(
         )
     ).scalars()
     return [chat_response(chat) for chat in rows]
+
+
+@router.get("/report-schedules", response_model=list[TelegramReportScheduleResponse])
+async def list_schedules(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[TelegramReportScheduleResponse]:
+    return await list_report_schedules(session, owner_user_id=user.id)
+
+
+@router.post("/report-schedules", response_model=TelegramReportScheduleResponse)
+async def create_schedule(
+    payload: TelegramReportScheduleCreateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TelegramReportScheduleResponse:
+    schedule = await create_report_schedule(session, owner_user_id=user.id, payload=payload)
+    await session.commit()
+    return report_schedule_response(schedule)
+
+
+@router.patch("/report-schedules/{schedule_id}", response_model=TelegramReportScheduleResponse)
+async def update_schedule(
+    schedule_id: uuid.UUID,
+    payload: TelegramReportScheduleUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TelegramReportScheduleResponse:
+    schedule = await get_owned_report_schedule(session, owner_user_id=user.id, schedule_id=schedule_id)
+    schedule = await update_report_schedule(
+        session,
+        owner_user_id=user.id,
+        schedule=schedule,
+        payload=payload,
+    )
+    await session.commit()
+    return report_schedule_response(schedule)
+
+
+@router.delete("/report-schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_schedule(
+    schedule_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    await delete_report_schedule(session, owner_user_id=user.id, schedule_id=schedule_id)
+    await session.commit()
 
 
 @router.post("/chats", response_model=TelegramChatResponse)
