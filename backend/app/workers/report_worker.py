@@ -16,6 +16,7 @@ from app.models import (
     JobStatus,
     MediaAnalysis,
     MessageChunk,
+    MessageTranslation,
     Question,
     QuestionRun,
     Report,
@@ -247,7 +248,16 @@ class ReportWorker(Worker):
                 .all()
             )
             messages_by_id = {message.id: message for message in message_rows}
-            media_by_message = await self._load_media_for_messages(session, question_run.job_id, message_ids)
+            media_by_message = await self._load_media_for_messages(
+                session,
+                question_run.job_id,
+                message_ids,
+            )
+            translations_by_message = await self._load_translations_for_messages(
+                session,
+                question_run.job_id,
+                message_ids,
+            )
 
             ordered_messages = []
             for message_id in message_ids:
@@ -255,7 +265,11 @@ class ReportWorker(Worker):
                 if message is None:
                     continue
                 ordered_messages.append(
-                    build_report_message(message, media_by_message.get(message.id, []))
+                    build_report_message(
+                        message,
+                        media_by_message.get(message.id, []),
+                        translation=translations_by_message.get(message.id),
+                    )
                 )
 
             evidence.append(build_report_evidence_chunk(hit=hit, chunk=chunk, messages=ordered_messages))
@@ -294,6 +308,32 @@ class ReportWorker(Worker):
             if media.message_id is not None:
                 grouped[media.message_id].append((media, analysis))
         return grouped
+
+    async def _load_translations_for_messages(
+        self,
+        session: AsyncSession,
+        job_id: uuid.UUID,
+        message_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, MessageTranslation]:
+        if not message_ids:
+            return {}
+
+        target_language = (settings.libretranslate_target_language or "en").strip() or "en"
+        rows = list(
+            (
+                await session.execute(
+                    select(MessageTranslation).where(
+                        MessageTranslation.job_id == job_id,
+                        MessageTranslation.message_id.in_(message_ids),
+                        MessageTranslation.provider == "libretranslate",
+                        MessageTranslation.target_language == target_language,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {row.message_id: row for row in rows if row.translated_text.strip()}
 
     async def _load_stats(self, session: AsyncSession, job: Job) -> dict[str, Any]:
         messages_total = await self._count(session, select(func.count()).select_from(TelegramMessage).where(TelegramMessage.job_id == job.id))

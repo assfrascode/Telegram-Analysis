@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     qdrant_collection: str = "chat_chunks"
     embedding_batch_size: int = 64
 
+    libretranslate_base_url: str = ""
+    libretranslate_api_key: str = ""
+    libretranslate_target_language: str = "en"
+    libretranslate_batch_size: int = 20
+    libretranslate_timeout_seconds: float = 60.0
+
     vllm_text_base_url: str = "http://vllm-text:8000/v1"
     vllm_vision_base_url: str = "http://vllm-vision:8000/v1"
     vllm_embedding_base_url: str = "http://vllm-embedding:8000/v1"

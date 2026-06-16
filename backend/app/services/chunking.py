@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from app.models import MediaAnalysis, StepStatus, TelegramMedia, TelegramMessage
+from app.models import MediaAnalysis, MessageTranslation, StepStatus, TelegramMedia, TelegramMessage
 
 
 @dataclass(slots=True)
@@ -67,9 +67,19 @@ def _media_label(media_type: str | None) -> str:
     return "MEDIA_DESCRIPTION"
 
 
+def _translation_label(target_language: str | None) -> str:
+    normalized = (target_language or "").strip().lower()
+    if normalized == "en":
+        return "ENGLISH_TRANSLATION"
+    if normalized:
+        return f"TRANSLATION_{normalized.upper()}"
+    return "TRANSLATION"
+
+
 def render_message_block(
     message: TelegramMessage,
     attachments: list[MediaAttachment] | None = None,
+    translation: MessageTranslation | None = None,
 ) -> MessageBlock:
     """Render one Telegram message into a retrieval-ready text block.
 
@@ -99,6 +109,10 @@ def render_message_block(
         lines.append(f"Reactions: {message.reactions}")
 
     lines.append(_clean_text(message.text))
+    if translation and translation.translated_text.strip():
+        lines.append("")
+        lines.append(f"{_translation_label(translation.target_language)}:")
+        lines.append(translation.translated_text.strip())
 
     media_ids: list[str] = []
     media_types: list[str] = []

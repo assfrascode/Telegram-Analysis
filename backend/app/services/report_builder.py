@@ -4,7 +4,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from app.models import MediaAnalysis, MessageChunk, RetrievalHit, StepStatus, TelegramMedia, TelegramMessage
+from app.models import (
+    MediaAnalysis,
+    MessageChunk,
+    MessageTranslation,
+    RetrievalHit,
+    StepStatus,
+    TelegramMedia,
+    TelegramMessage,
+)
 
 
 def isoformat_or_empty(value: datetime | None) -> str:
@@ -148,6 +156,11 @@ class ReportMessage:
     reactions: list[dict[str, Any]]
     reaction_chips: list[str]
     text: str
+    translation_text: str | None = None
+    translation_target_language: str | None = None
+    translation_source_language: str | None = None
+    translation_source_confidence: float | None = None
+    translation_provider: str | None = None
     media: list[ReportMedia] = field(default_factory=list)
 
 
@@ -203,7 +216,9 @@ def build_report_media(media: TelegramMedia, analysis: MediaAnalysis | None) -> 
 def build_report_message(
     message: TelegramMessage,
     media_items: list[tuple[TelegramMedia, MediaAnalysis | None]] | None = None,
+    translation: MessageTranslation | None = None,
 ) -> ReportMessage:
+    translation_text = translation.translated_text.strip() if translation else ""
     return ReportMessage(
         id=str(message.id),
         telegram_message_id=message.telegram_message_id,
@@ -219,6 +234,13 @@ def build_report_message(
         reactions=list(message.reactions or []),
         reaction_chips=format_reaction_chips(message.reactions or []),
         text=normalize_message_text(message.text),
+        translation_text=translation_text or None,
+        translation_target_language=(translation.target_language if translation else None),
+        translation_source_language=(translation.detected_source_language if translation else None),
+        translation_source_confidence=(
+            translation.detected_source_confidence if translation else None
+        ),
+        translation_provider=(translation.provider if translation else None),
         media=[build_report_media(media, analysis) for media, analysis in (media_items or [])],
     )
 

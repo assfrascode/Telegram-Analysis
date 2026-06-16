@@ -89,8 +89,17 @@ export function statusLabel(status) {
 
 export function formatProgressPayload(payload = {}) {
   if (!payload || typeof payload !== "object") return "";
-  const done = payload.done ?? payload.completed ?? payload.media_done ?? payload.questions_done ?? payload.chunks_done;
-  const total = payload.total ?? payload.media_total ?? payload.questions_total ?? payload.chunks_total;
+  const done = payload.done
+    ?? payload.completed
+    ?? payload.media_done
+    ?? payload.questions_done
+    ?? payload.chunks_done
+    ?? payload.texts_done;
+  const total = payload.total
+    ?? payload.media_total
+    ?? payload.questions_total
+    ?? payload.chunks_total
+    ?? payload.texts_total;
   if (done !== undefined && total !== undefined) return `${done}/${total}`;
   if (payload.progress !== undefined) return `${payload.progress}%`;
   return "";

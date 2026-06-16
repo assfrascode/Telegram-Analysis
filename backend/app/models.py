@@ -403,6 +403,28 @@ class TelegramMessage(Base):
     raw: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class MessageTranslation(Base):
+    __tablename__ = "message_translations"
+    __table_args__ = (UniqueConstraint("message_id", "provider", "target_language"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), index=True
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("telegram_messages.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), default="libretranslate", index=True)
+    source_text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    detected_source_language: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    detected_source_confidence: Mapped[float | None] = mapped_column(nullable=True)
+    target_language: Mapped[str] = mapped_column(String(16), index=True)
+    translated_text: Mapped[str] = mapped_column(Text)
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class TelegramMedia(Base):
     __tablename__ = "telegram_media"
     __table_args__ = (UniqueConstraint("job_id", "message_id", "original_path"),)

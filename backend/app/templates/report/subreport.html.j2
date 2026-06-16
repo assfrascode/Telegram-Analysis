@@ -84,6 +84,22 @@
 
                   <pre class="telegram-text">{{ msg.text }}</pre>
 
+                  {% if msg.translation_text %}
+                  <div class="translation-panel">
+                    <span>
+                      {% if msg.translation_target_language %}
+                      {{ msg.translation_target_language|upper }} translation
+                      {% else %}
+                      Translation
+                      {% endif %}
+                      {% if msg.translation_source_language %}
+                      · detected {{ msg.translation_source_language }}
+                      {% endif %}
+                    </span>
+                    <pre>{{ msg.translation_text }}</pre>
+                  </div>
+                  {% endif %}
+
                   {% if msg.media %}
                   <div class="telegram-media-stack">
                     {% for media in msg.media %}

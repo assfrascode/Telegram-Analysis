@@ -40,6 +40,16 @@ const STAGES = [
   {key: "validate", label: "ZIP-Prüfung", events: ["zip.scan.started", "zip.scan.completed"]},
   {key: "extract", label: "Extraktion", events: ["zip.extract.started", "zip.extract.completed"]},
   {key: "parse", label: "Telegram-Parsing", events: ["telegram.parse.started", "telegram.parse.progress", "telegram.parse.completed"]},
+  {
+    key: "translation",
+    label: "Übersetzung",
+    events: [
+      "translation.started",
+      "translation.progress",
+      "translation.completed",
+      "translation.failed",
+    ],
+  },
   {key: "media", label: "Medienanalyse", events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"]},
   {key: "chunk", label: "Chunking", events: ["chunking.started", "chunking.progress", "chunking.completed"]},
   {key: "embedding", label: "Embedding", events: ["embedding.started", "embedding.progress", "embedding.completed"]},
@@ -1007,8 +1017,17 @@ function renderJobDashboard(stageStates = getStageState()) {
 
 function formatProgressPayload(payload = {}) {
   if (!payload || typeof payload !== "object") return "";
-  const done = payload.done ?? payload.completed ?? payload.media_done ?? payload.questions_done ?? payload.chunks_done;
-  const total = payload.total ?? payload.media_total ?? payload.questions_total ?? payload.chunks_total;
+  const done = payload.done
+    ?? payload.completed
+    ?? payload.media_done
+    ?? payload.questions_done
+    ?? payload.chunks_done
+    ?? payload.texts_done;
+  const total = payload.total
+    ?? payload.media_total
+    ?? payload.questions_total
+    ?? payload.chunks_total
+    ?? payload.texts_total;
   if (done !== undefined && total !== undefined) return `${done}/${total}`;
   if (payload.progress !== undefined) return `${payload.progress}%`;
   return "";

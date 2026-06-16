@@ -20,6 +20,16 @@ export const STAGES = [
     events: ["telegram.parse.started", "telegram.parse.progress", "telegram.parse.completed"],
   },
   {
+    key: "translation",
+    label: "Translate messages",
+    events: [
+      "translation.started",
+      "translation.progress",
+      "translation.completed",
+      "translation.failed",
+    ],
+  },
+  {
     key: "media",
     label: "Analyse media",
     events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"],

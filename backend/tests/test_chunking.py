@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
-from app.models import MediaAnalysis, StepStatus, TelegramMedia, TelegramMessage
+from app.models import MediaAnalysis, MessageTranslation, StepStatus, TelegramMedia, TelegramMessage
 from app.services.chunking import MediaAttachment, build_chunks, render_message_block
 
 
@@ -65,6 +65,26 @@ def test_render_message_block_marks_missing_video() -> None:
     assert "[NO_TEXT]" in block.text
     assert "[VIDEO_DESCRIPTION_MISSING]" in block.text
     assert "not_included_in_export" in block.text
+
+
+def test_render_message_block_appends_saved_translation() -> None:
+    message = _message(11, "Guten Morgen")
+    translation = MessageTranslation(
+        job_id=message.job_id,
+        message_id=message.id,
+        provider="libretranslate",
+        source_text_hash="hash",
+        detected_source_language="de",
+        target_language="en",
+        translated_text="Good morning",
+        raw_response={},
+    )
+
+    block = render_message_block(message, translation=translation)
+
+    assert "Guten Morgen" in block.text
+    assert "ENGLISH_TRANSLATION:" in block.text
+    assert "Good morning" in block.text
 
 
 def test_build_chunks_preserves_order_and_overlap() -> None:

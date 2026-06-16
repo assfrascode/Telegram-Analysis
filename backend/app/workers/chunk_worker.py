@@ -6,7 +6,14 @@ from sqlalchemy import delete, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Job, MediaAnalysis, MessageChunk, TelegramMedia, TelegramMessage
+from app.models import (
+    Job,
+    MediaAnalysis,
+    MessageChunk,
+    MessageTranslation,
+    TelegramMedia,
+    TelegramMessage,
+)
 from app.services.chunking import MediaAttachment, build_chunks, render_message_block
 from app.workers import subjects
 from app.workers.base import Worker
@@ -43,13 +50,17 @@ class ChunkWorker(Worker):
                 await session.execute(
                     select(TelegramMessage)
                     .where(TelegramMessage.job_id == job.id)
-                    .order_by(nullslast(TelegramMessage.timestamp), TelegramMessage.telegram_message_id)
+                    .order_by(
+                        nullslast(TelegramMessage.timestamp),
+                        TelegramMessage.telegram_message_id,
+                    )
                 )
             )
             .scalars()
             .all()
         )
         attachments_by_message = await self._load_attachments(session, job.id)
+        translations_by_message = await self._load_translations(session, job.id)
 
         await self.checkpoint_cancelled(
             session,
@@ -60,7 +71,11 @@ class ChunkWorker(Worker):
         )
 
         blocks = [
-            render_message_block(message, attachments_by_message.get(message.id, []))
+            render_message_block(
+                message,
+                attachments_by_message.get(message.id, []),
+                translation=translations_by_message.get(message.id),
+            )
             for message in messages
         ]
         chunks = build_chunks(
@@ -174,3 +189,24 @@ class ChunkWorker(Worker):
                 continue
             grouped[media.message_id].append(MediaAttachment(media=media, analysis=analysis))
         return grouped
+
+    async def _load_translations(
+        self,
+        session: AsyncSession,
+        job_id: uuid.UUID,
+    ) -> dict[uuid.UUID, MessageTranslation]:
+        target_language = (settings.libretranslate_target_language or "en").strip() or "en"
+        rows = list(
+            (
+                await session.execute(
+                    select(MessageTranslation).where(
+                        MessageTranslation.job_id == job_id,
+                        MessageTranslation.provider == "libretranslate",
+                        MessageTranslation.target_language == target_language,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {row.message_id: row for row in rows if row.translated_text.strip()}

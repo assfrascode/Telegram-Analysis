@@ -21,6 +21,7 @@ from app.models import (
 from app.services.telegram_sync import TelegramSyncError, synchronize_chat
 from app.workers import subjects
 from app.workers.base import Worker
+from app.workers.pipeline import next_subject_after_messages
 
 settings = get_settings()
 
@@ -233,12 +234,7 @@ class TelegramSnapshotWorker(Worker):
             },
         )
         await session.commit()
-        next_subject = (
-            subjects.MEDIA_DESCRIBE
-            if job.options.get("analyze_media", True)
-            else subjects.CHUNK_CREATE
-        )
-        next_key = "media" if next_subject == subjects.MEDIA_DESCRIBE else "chunk"
+        next_subject, next_key = next_subject_after_messages(job)
         await self.enqueue(
             next_subject,
             {

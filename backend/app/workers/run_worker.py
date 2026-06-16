@@ -12,6 +12,7 @@ from app.workers.embedding_worker import EmbeddingWorker
 from app.workers.rag_worker import RetrieveWorker, RerankWorker, AnswerWorker
 from app.workers.report_worker import ReportWorker
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
+from app.workers.translation_worker import TranslateWorker
 
 
 WORKERS = {
@@ -19,6 +20,7 @@ WORKERS = {
     "extract": ExtractWorker,
     "parser": ParserWorker,
     "telegram-snapshot": TelegramSnapshotWorker,
+    "translation": TranslateWorker,
     "media": MediaWorker,
     "chunk": ChunkWorker,
     "embedding": EmbeddingWorker,
