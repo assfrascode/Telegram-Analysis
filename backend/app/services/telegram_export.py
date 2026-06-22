@@ -3,6 +3,7 @@ import json
 import posixpath
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, Iterable, Iterator
@@ -142,6 +143,18 @@ def parse_reactions(value: Any) -> list[dict[str, Any]]:
     return reactions
 
 
+def json_safe_export_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: json_safe_export_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe_export_value(item) for item in value]
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    return value
+
+
 def parse_reply_to_message_id(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -239,21 +252,23 @@ def parse_message(message: dict[str, Any]) -> ParsedMessage | None:
     except (TypeError, ValueError):
         return None
 
+    safe_message = json_safe_export_value(message)
+
     return ParsedMessage(
         telegram_message_id=telegram_message_id,
-        timestamp=parse_datetime(message.get("date"), message.get("date_unixtime")),
-        edited_timestamp=parse_datetime(message.get("edited"), message.get("edited_unixtime")),
-        sender_id=str(message.get("from_id")) if message.get("from_id") is not None else None,
-        sender_name=str(message.get("from")) if message.get("from") is not None else None,
-        message_type=str(message.get("type")) if message.get("type") is not None else None,
-        text=parse_text(message.get("text")),
-        reply_to_message_id=parse_reply_to_message_id(message.get("reply_to_message_id")),
+        timestamp=parse_datetime(safe_message.get("date"), safe_message.get("date_unixtime")),
+        edited_timestamp=parse_datetime(safe_message.get("edited"), safe_message.get("edited_unixtime")),
+        sender_id=str(safe_message.get("from_id")) if safe_message.get("from_id") is not None else None,
+        sender_name=str(safe_message.get("from")) if safe_message.get("from") is not None else None,
+        message_type=str(safe_message.get("type")) if safe_message.get("type") is not None else None,
+        text=parse_text(safe_message.get("text")),
+        reply_to_message_id=parse_reply_to_message_id(safe_message.get("reply_to_message_id")),
         forwarded_from=(
-            str(message.get("forwarded_from")) if message.get("forwarded_from") is not None else None
+            str(safe_message.get("forwarded_from")) if safe_message.get("forwarded_from") is not None else None
         ),
-        reactions=parse_reactions(message.get("reactions")),
-        raw=message,
-        media=extract_media_references(message),
+        reactions=parse_reactions(safe_message.get("reactions")),
+        raw=safe_message,
+        media=extract_media_references(safe_message),
     )
 
 

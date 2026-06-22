@@ -1,3 +1,5 @@
+import json
+from decimal import Decimal
 from datetime import timezone
 
 import pytest
@@ -52,6 +54,43 @@ def test_parse_message_preserves_core_metadata_and_media():
     assert parsed.text == "Siehe https://example.org"
     assert parsed.media[0].media_type == "image"
     assert parsed.media[0].original_path == "photos/photo_1.jpg"
+
+
+def test_parse_message_normalizes_decimal_values_for_json_columns():
+    large_id = 9_007_199_254_740_993
+    parsed = parse_message(
+        {
+            "id": large_id,
+            "type": "message",
+            "date_unixtime": Decimal("1735732800"),
+            "text": "Decimal metadata",
+            "reactions": [
+                {
+                    "type": "emoji",
+                    "count": Decimal("3"),
+                    "emoji": "👍",
+                    "recent": [{"weight": Decimal("1.25")}],
+                }
+            ],
+            "metadata": {
+                "fraction": Decimal("1.25"),
+                "large_integer": Decimal(str(large_id)),
+                "items": [Decimal("2.5")],
+            },
+        }
+    )
+
+    assert parsed is not None
+    assert parsed.telegram_message_id == large_id
+    assert parsed.raw["metadata"]["fraction"] == 1.25
+    assert isinstance(parsed.raw["metadata"]["fraction"], float)
+    assert parsed.raw["metadata"]["large_integer"] == large_id
+    assert isinstance(parsed.raw["metadata"]["large_integer"], int)
+    assert parsed.reactions[0]["count"] == 3
+    assert isinstance(parsed.reactions[0]["count"], int)
+    assert parsed.reactions[0]["recent"][0]["weight"] == 1.25
+    json.dumps(parsed.raw)
+    json.dumps(parsed.reactions)
 
 
 def test_extract_media_references_marks_missing_video_file():
