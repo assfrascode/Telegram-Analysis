@@ -11,6 +11,7 @@ from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.llm.vllm_gateway import VLLMGateway
 from app.models import (
     Job,
     JobStatus,
@@ -28,6 +29,8 @@ from app.models import (
 from app.services.minio_store import put_bytes
 from app.services.report_builder import (
     ReportQuestion,
+    bluf_source_questions,
+    build_bluf_synthesis_prompt,
     build_report_evidence_chunk,
     build_report_message,
     make_bluf,
@@ -84,7 +87,6 @@ class ReportWorker(Worker):
             message="Report-Erstellung wegen Job-Abbruch beendet",
             payload={"questions_total": len(questions)},
         )
-        bluf = make_bluf(questions)
 
         await self.emit_event(
             session,
@@ -100,8 +102,11 @@ class ReportWorker(Worker):
         )
         await session.commit()
 
+        bluf = await self._synthesize_bluf(session, job, questions)
+
         generated_at = datetime.now(timezone.utc)
-        index_html = env.get_template("index.html.j2").render(
+        report_bytes = self._render_report_zip(
+            env,
             job=job,
             generated_at=generated_at,
             questions=questions,
@@ -109,34 +114,16 @@ class ReportWorker(Worker):
             bluf=bluf,
         )
 
-        report_css = env.get_template("report.css.j2").render()
-        report_js = env.get_template("report.js.j2").render()
-
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("report/index.html", index_html)
-            zf.writestr("report/assets/report.css", report_css)
-            zf.writestr("report/assets/report.js", report_js)
-
-            for question in questions:
-                html = env.get_template("subreport.html.j2").render(
-                    job=job,
-                    question=question,
-                    generated_at=generated_at,
-                    stats=stats,
-                )
-                zf.writestr(f"report/{question.filename}", html)
-
         await self.checkpoint_cancelled(
             session,
             job,
             event_type="report.render.cancelled",
             message="Report-Erstellung vor Speichern wegen Job-Abbruch beendet",
-            payload={"report_bytes": len(zip_buffer.getvalue())},
+            payload={"report_bytes": len(report_bytes)},
         )
 
         object_key = f"users/{job.owner_user_id}/jobs/{job.id}/reports/report.zip"
-        put_bytes(object_key, zip_buffer.getvalue(), content_type="application/zip")
+        put_bytes(object_key, report_bytes, content_type="application/zip")
 
         existing = (await session.execute(select(Report).where(Report.job_id == job.id))).scalar_one_or_none()
         filename = _report_zip_name(job.id)
@@ -165,11 +152,121 @@ class ReportWorker(Worker):
             payload={
                 "report_object_key": object_key,
                 "report_filename": filename,
-                "report_bytes": len(zip_buffer.getvalue()),
+                "report_bytes": len(report_bytes),
                 "questions_total": len(questions),
                 "evidence_chunks_total": sum(len(question.evidence) for question in questions),
             },
         )
+
+    async def _synthesize_bluf(
+        self,
+        session: AsyncSession,
+        job: Job,
+        questions: list[ReportQuestion],
+    ) -> str:
+        source_questions = bluf_source_questions(questions)
+        prompt = build_bluf_synthesis_prompt(questions)
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="report.bluf.started",
+            message="Report-BLUF-Synthese gestartet",
+            payload={
+                "questions_total": len(questions),
+                "source_questions": len(source_questions),
+                "prompt_chars": len(prompt),
+                "text_model": settings.text_model,
+                "mock_enabled": settings.llm_mock_enabled,
+            },
+        )
+        await session.commit()
+
+        if not prompt:
+            bluf = make_bluf(questions)
+            await self.emit_event(
+                session,
+                job=job,
+                event_type="report.bluf.completed",
+                message="Report-BLUF ohne beantwortete Kurzantworten erstellt",
+                payload={
+                    "questions_total": len(questions),
+                    "source_questions": 0,
+                    "bluf_chars": len(bluf),
+                    "skipped_llm_reason": "no_completed_question_summaries",
+                },
+            )
+            await session.commit()
+            return bluf
+
+        bluf = await VLLMGateway().synthesize_bluf(prompt)
+        await self.checkpoint_cancelled(
+            session,
+            job,
+            event_type="report.render.cancelled",
+            message="Report-BLUF-Synthese wegen Job-Abbruch beendet",
+            payload={
+                "questions_total": len(questions),
+                "source_questions": len(source_questions),
+            },
+        )
+        bluf = bluf.strip()
+        if not bluf:
+            raise ValueError("BLUF synthesis returned empty text")
+
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="report.bluf.completed",
+            message="Report-BLUF-Synthese abgeschlossen",
+            payload={
+                "questions_total": len(questions),
+                "source_questions": len(source_questions),
+                "prompt_chars": len(prompt),
+                "bluf_chars": len(bluf),
+                "text_model": settings.text_model,
+                "mock_enabled": settings.llm_mock_enabled,
+            },
+        )
+        await session.commit()
+        return bluf
+
+    def _render_report_zip(
+        self,
+        env: Environment,
+        *,
+        job: Job,
+        generated_at: datetime,
+        questions: list[ReportQuestion],
+        stats: dict[str, Any],
+        bluf: str,
+    ) -> bytes:
+        index_html = env.get_template("index.html.j2").render(
+            job=job,
+            generated_at=generated_at,
+            questions=questions,
+            stats=stats,
+            bluf=bluf,
+        )
+
+        report_css = env.get_template("report.css.j2").render()
+        report_js = env.get_template("report.js.j2").render()
+
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("report/index.html", index_html)
+            zf.writestr("report/assets/report.css", report_css)
+            zf.writestr("report/assets/report.js", report_js)
+
+            for question in questions:
+                html = env.get_template("subreport.html.j2").render(
+                    job=job,
+                    question=question,
+                    generated_at=generated_at,
+                    stats=stats,
+                )
+                zf.writestr(f"report/{question.filename}", html)
+
+        return zip_buffer.getvalue()
 
     async def _load_questions(self, session: AsyncSession, job: Job) -> list[ReportQuestion]:
         question_rows = list(

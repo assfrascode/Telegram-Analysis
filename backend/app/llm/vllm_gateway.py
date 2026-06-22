@@ -194,6 +194,42 @@ class VLLMGateway:
         )
         return extract_chat_completion_text(result)
 
+    async def synthesize_bluf(self, prompt: str) -> str:
+        """Generate the main report BLUF from per-question summaries."""
+        if not prompt.strip():
+            raise ValueError("BLUF synthesis prompt is empty")
+
+        if settings.llm_mock_enabled:
+            prompt_preview = prompt.strip().replace("\n", " ")[:500]
+            return (
+                "[MOCK_BLUF] Diese BLUF wurde ohne vLLM-Server erzeugt. "
+                "Die Pipeline hat die Kurzantworten der beantworteten Fragen geladen "
+                "und einen Synthese-Prompt gebaut.\n\n"
+                f"Promptvorschau: {prompt_preview}"
+            )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Du erstellst eine knappe deutsche BLUF für einen analytischen Report. "
+                    "Nutze ausschließlich die bereitgestellten Fragen und Kurzantworten. "
+                    "Erfinde keine neuen Fakten, Belege oder Schlussfolgerungen."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        result = await self.chat_completion(
+            base_url=settings.vllm_text_base_url,
+            model=settings.text_model,
+            messages=messages,
+            max_tokens=1024,
+        )
+        bluf = extract_chat_completion_text(result)
+        if not bluf:
+            raise ValueError("vLLM BLUF synthesis returned empty text")
+        return bluf
+
     async def answer_question(self, question: str, context: str) -> str:
         """Backward-compatible helper for callers that pass question/context."""
         prompt = f"Frage:\n{question}\n\nEvidenz:\n{context}\n\nAntwort:"

@@ -15,6 +15,10 @@ from app.models import (
 )
 
 
+NO_ANSWER_BLUF = "Es wurden keine beantworteten Fragen gefunden."
+MISSING_SHORT_ANSWER = "Noch keine Kurzantwort gespeichert."
+
+
 def isoformat_or_empty(value: datetime | None) -> str:
     if value is None:
         return ""
@@ -34,6 +38,7 @@ def display_timestamp(value: datetime | None) -> str:
 def normalize_message_text(value: str | None) -> str:
     text = (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return text if text else "[NO_TEXT]"
+
 
 def format_reaction_chip(value: dict[str, Any]) -> str | None:
     """Return a compact Telegram-like reaction label, e.g. "👍 3".
@@ -124,6 +129,12 @@ def status_label(status: StepStatus | str | None) -> str:
     return value.replace("_", " ")
 
 
+def _normalized_status(status: StepStatus | str | None) -> str:
+    if isinstance(status, StepStatus):
+        return status.value
+    return str(status or "").strip()
+
+
 @dataclass(slots=True)
 class ReportMedia:
     id: str
@@ -190,6 +201,46 @@ class ReportQuestion:
     retrieval_k: int | None
     rerank_k: int | None
     evidence: list[ReportEvidenceChunk]
+
+
+def bluf_source_questions(questions: list[ReportQuestion]) -> list[ReportQuestion]:
+    """Return completed questions with real short summaries for BLUF synthesis."""
+    source_questions: list[ReportQuestion] = []
+    for question in questions:
+        short_answer = (question.short_answer or "").strip()
+        if _normalized_status(question.status) != StepStatus.completed.value:
+            continue
+        if not short_answer or short_answer == MISSING_SHORT_ANSWER:
+            continue
+        source_questions.append(question)
+    return source_questions
+
+
+def build_bluf_synthesis_prompt(questions: list[ReportQuestion]) -> str:
+    source_questions = bluf_source_questions(questions)
+    if not source_questions:
+        return ""
+
+    lines = [
+        "Erstelle eine knappe deutsche BLUF für den Hauptreport.",
+        "Nutze ausschließlich die folgenden Fragen und Kurzantworten.",
+        "Fasse die wichtigsten übergreifenden Befunde zusammen, "
+        "statt jede Frage einzeln aufzulisten.",
+        "Nenne Unsicherheiten oder fehlende Evidenz, wenn sie in den Kurzantworten enthalten sind.",
+        "Schreibe 3 bis 6 kurze Sätze oder kompakte Absätze.",
+        "",
+        "Fragen und Kurzantworten:",
+    ]
+    for question in source_questions:
+        lines.extend(
+            [
+                f"Frage {question.index}:",
+                f"Ausgangsfrage: {question.question.strip()}",
+                f"Kurzantwort: {question.short_answer.strip()}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
 
 
 def build_report_media(media: TelegramMedia, analysis: MediaAnalysis | None) -> ReportMedia:
@@ -267,9 +318,9 @@ def build_report_evidence_chunk(
 
 
 def make_bluf(questions: list[ReportQuestion], *, max_items: int = 5) -> str:
-    completed = [question for question in questions if question.short_answer]
+    completed = bluf_source_questions(questions)
     if not completed:
-        return "Es wurden keine beantworteten Fragen gefunden."
+        return NO_ANSWER_BLUF
 
     lines: list[str] = []
     for question in completed[:max_items]:

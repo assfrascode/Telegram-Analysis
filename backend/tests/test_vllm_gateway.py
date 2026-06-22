@@ -1,11 +1,16 @@
+import asyncio
 import os
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
+import pytest
+
 from app.llm.vllm_gateway import (
+    VLLMGateway,
     build_multimodal_content,
     extract_chat_completion_text,
     multimodal_content_type,
+    settings,
 )
 
 
@@ -48,3 +53,23 @@ def test_extract_chat_completion_text_from_segmented_content() -> None:
         ]
     }
     assert extract_chat_completion_text(response) == "Teil 1\nTeil 2"
+
+
+def test_synthesize_bluf_returns_mock_response(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "llm_mock_enabled", True)
+
+    bluf = asyncio.run(VLLMGateway().synthesize_bluf("Frage 1: Kurzantwort"))
+
+    assert bluf.startswith("[MOCK_BLUF]")
+    assert "Frage 1" in bluf
+
+
+def test_synthesize_bluf_rejects_empty_model_response(monkeypatch) -> None:
+    async def empty_chat_completion(self, **kwargs):
+        return {"choices": [{"message": {"content": "   "}}]}
+
+    monkeypatch.setattr(settings, "llm_mock_enabled", False)
+    monkeypatch.setattr(VLLMGateway, "chat_completion", empty_chat_completion)
+
+    with pytest.raises(ValueError, match="empty text"):
+        asyncio.run(VLLMGateway().synthesize_bluf("Frage 1: Kurzantwort"))
