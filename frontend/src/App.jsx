@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiJson, downloadBlob, uploadFileViaBackend } from "./api/client";
+import { apiJson, downloadBlob, uploadFileForAnalysis } from "./api/client";
 import { AppSidebar } from "./components/AppSidebar";
 import { CreateJobPanel } from "./components/CreateJobPanel";
 import { JobMonitorPanel } from "./components/JobMonitorPanel";
@@ -465,7 +465,7 @@ export default function App() {
       if (selectedSourceMode === "upload") {
         const upload = await request("/uploads", { method: "POST", body: { filename: file.name, size_bytes: file.size } });
         addLocalLog("Upload prepared");
-        await uploadFileViaBackend(upload, file, token, setUploadProgress);
+        await uploadFileForAnalysis(upload, file, token, setUploadProgress);
         addLocalLog("File uploaded, starting analysis");
         const payload = { upload_id: upload.upload_id, questions: normalizedQuestions, options: normalizedOptions };
         if (selectedQuestionSetId) payload.question_set_id = selectedQuestionSetId;

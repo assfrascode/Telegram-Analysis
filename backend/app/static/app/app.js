@@ -4,6 +4,7 @@ const STORAGE_JOB = "chat_analyse_current_job";
 const MAX_EVENTS = 300;
 const UI_RENDER_THROTTLE_MS = 80;
 const UPLOAD_PROGRESS_THROTTLE_MS = 140;
+const DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 const ui = {
   renderScheduled: false,
@@ -575,6 +576,44 @@ async function uploadFileViaBackend(upload, file) {
   });
 }
 
+async function uploadFileToObjectStore(upload, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    $("uploadProgressWrap").hidden = false;
+    setUploadProgress(0, {force: true});
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        setUploadProgress((event.loaded / event.total) * 100);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setUploadProgress(100, {force: true});
+        resolve({});
+      } else {
+        reject(new Error(`${xhr.status} ${xhr.responseText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Netzwerkfehler beim direkten Upload"));
+    xhr.onabort = () => reject(new Error("Upload wurde abgebrochen"));
+    xhr.open("PUT", upload.presigned_put_url);
+    xhr.setRequestHeader("Content-Type", file.type || "application/zip");
+    xhr.send(file);
+  });
+}
+
+async function uploadFileForAnalysis(upload, file) {
+  // Single presigned PUTs are not multipart; larger files use backend streaming.
+  if (!upload.presigned_put_url || file.size > DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES) {
+    return await uploadFileViaBackend(upload, file);
+  }
+
+  await uploadFileToObjectStore(upload, file);
+  return await apiJson(`/uploads/${upload.upload_id}/complete`, {method: "POST"});
+}
+
 function setUploadProgress(percent, {force = false} = {}) {
   const value = Math.max(0, Math.min(100, Number(percent || 0)));
   const now = Date.now();
@@ -628,7 +667,7 @@ async function startJob() {
     });
     addLocalLog("Upload-Ziel erhalten");
 
-    await uploadFileViaBackend(upload, file);
+    await uploadFileForAnalysis(upload, file);
     addLocalLog("Upload abgeschlossen, starte Job");
 
     const jobPayload = {upload_id: upload.upload_id, questions, options};

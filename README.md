@@ -2,12 +2,12 @@
 
 Chat Analyse is a Dockerized Python application for analysing Telegram chat exports. It provides an end-to-end pipeline for ingesting Telegram ZIP exports, parsing messages and media metadata, creating retrieval-ready chunks, running RAG-based question answering, and generating a static HTML report.
 
-The project is currently an MVP with a functional backend, worker pipeline, storage layer, and framework-free web frontend.
+The project is currently an MVP with a functional backend, worker pipeline, storage layer, and web frontend.
 
 ## Current capabilities
 
 - Authenticated web interface for creating and monitoring analysis jobs.
-- Backend-mediated Telegram ZIP upload with browser-side upload progress.
+- Telegram ZIP upload with browser-side progress, using direct object-store upload when possible and backend streaming for larger files.
 - Secure ZIP validation, extraction, Telegram `result.json` parsing, and media inventory creation.
 - Optional media analysis through an OpenAI-compatible vLLM vision endpoint.
 - Chunking, embedding, Qdrant retrieval, reranking, answer generation, and report rendering.
@@ -21,13 +21,13 @@ The project is currently an MVP with a functional backend, worker pipeline, stor
 
 | Component | Purpose |
 | --- | --- |
-| FastAPI | API, authentication, uploads, job control, report download |
+| FastAPI | API, authentication, upload preparation/verification, backend upload fallback, job control, report download |
 | PostgreSQL | Persistent state, ownership checks, audit trail, jobs, events, worker metadata |
 | NATS JetStream | Worker task queue and live progress events |
 | MinIO | Uploaded ZIPs, extracted exports, intermediate files, final report artefacts |
 | Qdrant | Vector storage for message chunks |
 | Workers | Ingest, parsing, media analysis, chunking, embedding, retrieval, reranking, answering, reporting |
-| Plain HTML/CSS/JS | Browser frontend without a JavaScript framework |
+| React/Vite | Browser frontend served by Nginx |
 
 ## Pipeline
 
@@ -106,7 +106,7 @@ docker compose --profile models up --build
 
 ## Frontend
 
-The frontend is implemented with static HTML, CSS, and JavaScript in `/static`. It supports login/logout, ZIP upload, saved question sets, question editing, job creation, live monitoring, capacity checks, cancellation, dead-letter inspection, and authenticated report downloads.
+The frontend is implemented with React/Vite in `frontend/`, with a legacy static version in `backend/app/static/app`. It supports login/logout, ZIP upload to MinIO or through backend streaming, saved question sets, question editing, job creation, live monitoring, capacity checks, cancellation, dead-letter inspection, and authenticated report downloads.
 
 ## Reports
 
@@ -124,7 +124,7 @@ Original Telegram media is not included in the report ZIP. Media links are relat
 
 ## Current limitations
 
-- Large resumable or multipart browser uploads are not implemented yet; the frontend currently uses the backend upload endpoint.
+- Resumable browser uploads are not implemented yet; uploads still run as one browser request, using backend streaming above the direct PUT size range.
 - The static report does not yet include full in-report search.
 - GPU placement for optional model containers should be configured explicitly before production use.
 - The project remains an MVP and should be hardened further before handling sensitive production workloads.

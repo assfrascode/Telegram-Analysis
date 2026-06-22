@@ -44,3 +44,22 @@ def test_frontend_proxies_telegram_api_routes() -> None:
 
     assert "question-sets|telegram" in nginx
     assert '"/telegram": proxyTarget' in vite
+
+
+def test_frontend_supports_larger_upload_path() -> None:
+    react_client = Path("frontend/src/api/client.js").read_text()
+    react_app = Path("frontend/src/App.jsx").read_text()
+    static_app = Path("backend/app/static/app/app.js").read_text()
+    compose = Path("docker-compose.yml").read_text()
+    dockerfile = Path("frontend/Dockerfile").read_text()
+
+    assert "DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES" in react_client
+    assert 'xhr.open("PUT", upload.presigned_put_url)' in react_client
+    assert "`/uploads/${upload.upload_id}/complete`" in react_client
+    assert "uploadFileViaBackend(upload, file, token, onProgress)" in react_client
+    assert "uploadFileForAnalysis(upload, file, token, setUploadProgress)" in react_app
+    assert "DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES" in static_app
+    assert 'xhr.open("PUT", upload.presigned_put_url)' in static_app
+    assert "`/uploads/${upload.upload_id}/complete`" in static_app
+    assert 'CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-50g}"' in compose
+    assert "CLIENT_MAX_BODY_SIZE=50g" in dockerfile

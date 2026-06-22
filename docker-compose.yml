@@ -188,7 +188,7 @@ services:
       - "${FRONTEND_PORT:-3000}:80"
     environment:
       BACKEND_URL: "${BACKEND_URL:-http://backend:8000}"
-      CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-1024m}"
+      CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-50g}"
       PROXY_READ_TIMEOUT: "${PROXY_READ_TIMEOUT:-3600s}"
       PROXY_SEND_TIMEOUT: "${PROXY_SEND_TIMEOUT:-3600s}"
     depends_on:

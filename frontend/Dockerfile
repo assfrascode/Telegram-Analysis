@@ -37,7 +37,7 @@ RUN npm run build
 FROM nginx:1.27-alpine AS runtime
 
 ENV BACKEND_URL=http://backend:8000 \
-    CLIENT_MAX_BODY_SIZE=1024m \
+    CLIENT_MAX_BODY_SIZE=50g \
     PROXY_READ_TIMEOUT=3600s \
     PROXY_SEND_TIMEOUT=3600s
 
