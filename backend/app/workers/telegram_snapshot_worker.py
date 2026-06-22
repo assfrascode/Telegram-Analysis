@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import (
     CollectedMediaAnalysis,
+    CollectedMediaTranscript,
     CollectedTelegramMedia,
     CollectedTelegramMessage,
     Job,
     JobStatus,
     MediaAnalysis,
+    MediaTranscript,
     StepStatus,
     TelegramChat,
     TelegramMedia,
@@ -186,6 +188,16 @@ class TelegramSnapshotWorker(Worker):
                     )
                 )
             ).scalar_one_or_none()
+            cached_transcript = (
+                await session.execute(
+                    select(CollectedMediaTranscript).where(
+                        CollectedMediaTranscript.media_id == source.id,
+                        CollectedMediaTranscript.provider == "openai",
+                        CollectedMediaTranscript.model_name == settings.openai_transcription_model,
+                        CollectedMediaTranscript.response_format == "text",
+                    )
+                )
+            ).scalar_one_or_none()
             analyzable = source.media_type in {"image", "video"}
             media_status = source.status
             if analyzable and source.minio_object_key and cached is None:
@@ -220,6 +232,23 @@ class TelegramSnapshotWorker(Worker):
                     )
                 )
                 media.analyzed_at = cached.created_at
+            if cached_transcript is not None:
+                session.add(
+                    MediaTranscript(
+                        job_id=job.id,
+                        media_id=media.id,
+                        provider=cached_transcript.provider,
+                        model_name=cached_transcript.model_name,
+                        response_format=cached_transcript.response_format,
+                        status=cached_transcript.status,
+                        attempts=cached_transcript.attempts,
+                        transcript_text=cached_transcript.transcript_text,
+                        error_message=cached_transcript.error_message,
+                        raw_response=cached_transcript.raw_response,
+                        created_at=cached_transcript.created_at,
+                        updated_at=cached_transcript.updated_at,
+                    )
+                )
 
         await self.emit_event(
             session,

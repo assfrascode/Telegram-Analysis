@@ -230,6 +230,26 @@ class CollectedMediaAnalysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class CollectedMediaTranscript(Base):
+    __tablename__ = "collected_media_transcripts"
+    __table_args__ = (UniqueConstraint("media_id", "provider", "model_name", "response_format"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    media_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("collected_telegram_media.id"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), default="openai", index=True)
+    model_name: Mapped[str] = mapped_column(String(512))
+    response_format: Mapped[str] = mapped_column(String(32), default="text")
+    status: Mapped[StepStatus] = mapped_column(Enum(StepStatus), default=StepStatus.pending, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    transcript_text: Mapped[str] = mapped_column(Text, default="")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class QuestionSet(Base):
     __tablename__ = "question_sets"
     __table_args__ = (UniqueConstraint("owner_user_id", "name"),)
@@ -457,6 +477,25 @@ class MediaAnalysis(Base):
     description: Mapped[str] = mapped_column(Text)
     raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class MediaTranscript(Base):
+    __tablename__ = "media_transcripts"
+    __table_args__ = (UniqueConstraint("media_id", "provider", "model_name", "response_format"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), index=True)
+    media_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_media.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="openai", index=True)
+    model_name: Mapped[str] = mapped_column(String(512))
+    response_format: Mapped[str] = mapped_column(String(32), default="text")
+    status: Mapped[StepStatus] = mapped_column(Enum(StepStatus), default=StepStatus.pending, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    transcript_text: Mapped[str] = mapped_column(Text, default="")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
 class MessageChunk(Base):

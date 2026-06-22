@@ -22,6 +22,7 @@ from app.services.media_sources import build_media_source_url
 from app.workers import subjects
 from app.services.worker_control import WorkerCancelled
 from app.workers.base import Worker
+from app.workers.pipeline import next_subject_after_media_analysis
 
 settings = get_settings()
 
@@ -199,9 +200,14 @@ class MediaWorker(Worker):
         )
         await session.commit()
 
+        next_subject, next_key = next_subject_after_media_analysis(job)
         await self.enqueue(
-            subjects.CHUNK_CREATE,
-            {"job_id": str(job.id), "owner_user_id": str(job.owner_user_id), "task_key": f"chunk:{job.id}"},
+            next_subject,
+            {
+                "job_id": str(job.id),
+                "owner_user_id": str(job.owner_user_id),
+                "task_key": f"{next_key}:{job.id}",
+            },
         )
 
     async def _analyze_batch_with_cancellation_checks(

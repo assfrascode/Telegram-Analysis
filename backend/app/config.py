@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     vllm_reranker_base_url: str = "http://reranker:8000"
     vllm_api_key: str = "local-key"
 
+    openai_api_key: str = ""
+    openai_transcription_base_url: str = "https://api.openai.com/v1"
+    openai_transcription_model: str = "whisper-1"
+    openai_transcription_max_bytes: int = 25 * 1024 * 1024
+    openai_transcription_timeout_seconds: float = 300.0
+    openai_transcription_batch_size: int = 20
+    openai_transcription_max_attempts: int = 3
+
     text_model: str = "google/gemma-4-E2B-it"
     vision_model: str = "google/gemma-4-E2B-it"
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"

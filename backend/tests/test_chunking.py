@@ -4,7 +4,14 @@ from datetime import datetime, timezone
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
-from app.models import MediaAnalysis, MessageTranslation, StepStatus, TelegramMedia, TelegramMessage
+from app.models import (
+    MediaAnalysis,
+    MediaTranscript,
+    MessageTranslation,
+    StepStatus,
+    TelegramMedia,
+    TelegramMessage,
+)
 from app.services.chunking import MediaAttachment, build_chunks, render_message_block
 
 
@@ -47,6 +54,74 @@ def test_render_message_block_appends_image_description() -> None:
     assert "Ein neutrales Mock-Bild." in block.text
     assert "MEDIA_PATH: photos/photo_1.jpg" in block.text
     assert block.has_media is True
+
+
+def test_render_message_block_appends_audio_transcript() -> None:
+    media = TelegramMedia(
+        id=uuid.uuid4(),
+        job_id=uuid.uuid4(),
+        message_id=uuid.uuid4(),
+        media_type="audio",
+        original_path="files/audio_1.mp3",
+        status=StepStatus.completed,
+    )
+    transcript = MediaTranscript(
+        job_id=media.job_id,
+        media_id=media.id,
+        provider="openai",
+        model_name="whisper-1",
+        response_format="text",
+        status=StepStatus.completed,
+        transcript_text="Das ist ein transkribierter Audiobeitrag.",
+        raw_response={},
+    )
+
+    block = render_message_block(
+        _message(43, "Audio anbei"),
+        attachments=[MediaAttachment(media=media, transcript=transcript)],
+    )
+
+    assert "AUDIO_TRANSCRIPT:" in block.text
+    assert "Das ist ein transkribierter Audiobeitrag." in block.text
+    assert "MEDIA_DESCRIPTION" not in block.text
+
+
+def test_render_message_block_keeps_video_description_and_transcript() -> None:
+    media = TelegramMedia(
+        id=uuid.uuid4(),
+        job_id=uuid.uuid4(),
+        message_id=uuid.uuid4(),
+        media_type="video",
+        original_path="videos/video_1.mp4",
+        status=StepStatus.completed,
+    )
+    analysis = MediaAnalysis(
+        media_id=media.id,
+        model_name="mock-vision",
+        prompt_version="neutral-v1",
+        description="Ein neutrales Mock-Video.",
+        raw_response={},
+    )
+    transcript = MediaTranscript(
+        job_id=media.job_id,
+        media_id=media.id,
+        provider="openai",
+        model_name="whisper-1",
+        response_format="text",
+        status=StepStatus.completed,
+        transcript_text="Gesprochener Inhalt des Videos.",
+        raw_response={},
+    )
+
+    block = render_message_block(
+        _message(44, "Video anbei"),
+        attachments=[MediaAttachment(media=media, analysis=analysis, transcript=transcript)],
+    )
+
+    assert "VIDEO_DESCRIPTION:" in block.text
+    assert "Ein neutrales Mock-Video." in block.text
+    assert "VIDEO_TRANSCRIPT:" in block.text
+    assert "Gesprochener Inhalt des Videos." in block.text
 
 
 def test_render_message_block_marks_missing_video() -> None:

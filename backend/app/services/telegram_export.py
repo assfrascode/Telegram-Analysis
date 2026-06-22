@@ -1,15 +1,15 @@
 
 import json
 import posixpath
-import re
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Any, BinaryIO, Iterable, Iterator
+from typing import Any, BinaryIO, Iterator
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpeg", ".mpg"}
+AUDIO_EXTENSIONS = {".flac", ".m4a", ".mp3", ".mpga", ".ogg", ".wav", ".webm"}
 MEDIA_PATH_FIELDS = ("photo", "file")
 
 MISSING_FILE_MARKERS = (
@@ -168,22 +168,32 @@ def classify_media(path: str | None, message: dict[str, Any], field_name: str | 
     mime_type = str(message.get("mime_type") or "").lower()
     media_type = str(message.get("media_type") or "").lower()
     message_type = str(message.get("type") or "").lower()
+    is_voice = "voice" in media_type or "voice" in message_type
 
     suffix = PurePosixPath(path or "").suffix.lower()
     if suffix in IMAGE_EXTENSIONS:
         return "image"
-    if suffix in VIDEO_EXTENSIONS:
-        return "video"
 
     if mime_type.startswith("image/"):
         return "image"
     if mime_type.startswith("video/"):
         return "video"
+    if mime_type.startswith("audio/"):
+        return "voice" if is_voice else "audio"
 
     if field_name == "photo" or "photo" in media_type:
         return "image"
     if "video" in media_type or "animation" in media_type or "video" in message_type:
         return "video"
+    if is_voice:
+        return "voice"
+    if "audio" in media_type or "audio" in message_type:
+        return "audio"
+
+    if suffix in VIDEO_EXTENSIONS:
+        return "video"
+    if suffix in AUDIO_EXTENSIONS:
+        return "voice" if is_voice else "audio"
 
     return None
 
@@ -201,7 +211,7 @@ def extract_media_references(message: dict[str, Any]) -> list[ParsedMediaReferen
 
         if is_probable_missing_media_marker(value):
             media_type = classify_media(None, message, field_name) or "unknown"
-            if media_type in {"image", "video", "unknown"}:
+            if media_type in {"image", "video", "audio", "voice", "unknown"}:
                 key = (value, "not_included_in_export")
                 if key not in seen:
                     references.append(
@@ -219,7 +229,7 @@ def extract_media_references(message: dict[str, Any]) -> list[ParsedMediaReferen
         except TelegramExportError:
             media_type = classify_media(value, message, field_name) or "unknown"
             key = (value, "unsafe_path")
-            if key not in seen and media_type in {"image", "video", "unknown"}:
+            if key not in seen and media_type in {"image", "video", "audio", "voice", "unknown"}:
                 references.append(
                     ParsedMediaReference(
                         media_type=media_type,
@@ -231,7 +241,7 @@ def extract_media_references(message: dict[str, Any]) -> list[ParsedMediaReferen
             continue
 
         media_type = classify_media(normalized, message, field_name)
-        if media_type not in {"image", "video"}:
+        if media_type not in {"image", "video", "audio", "voice"}:
             continue
 
         key = (normalized, None)

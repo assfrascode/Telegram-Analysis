@@ -130,10 +130,21 @@
                       <p class="warning">Fehlend/Problem: {{ media.missing_reason }}</p>
                       {% endif %}
 
+                      {% if media.transcript_text %}
+                      <div class="media-description">
+                        <span>{{ "VIDEO_TRANSCRIPT" if media.media_type == "video" else "AUDIO_TRANSCRIPT" }}</span>
+                        <p>{{ media.transcript_text }}</p>
+                      </div>
+                      {% elif media.transcript_error %}
+                      <p class="warning">Transkript nicht verfügbar: {{ media.transcript_error }}</p>
+                      {% endif %}
+
                       <dl class="media-meta">
                         {% if media.size_bytes %}<div><dt>Größe</dt><dd>{{ media.size_bytes }} Bytes</dd></div>{% endif %}
                         {% if media.analysis_model %}<div><dt>Modell</dt><dd>{{ media.analysis_model }}</dd></div>{% endif %}
                         {% if media.analysis_prompt_version %}<div><dt>Prompt</dt><dd>{{ media.analysis_prompt_version }}</dd></div>{% endif %}
+                        {% if media.transcript_model %}<div><dt>Transkript-Modell</dt><dd>{{ media.transcript_model }}</dd></div>{% endif %}
+                        {% if media.transcript_status %}<div><dt>Transkript-Status</dt><dd>{{ media.transcript_status }}</dd></div>{% endif %}
                         {% if media.sha256 %}<div><dt>SHA256</dt><dd><code>{{ media.sha256 }}</code></dd></div>{% endif %}
                       </dl>
                     </article>

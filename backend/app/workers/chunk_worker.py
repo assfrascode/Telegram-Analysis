@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.models import (
     Job,
     MediaAnalysis,
+    MediaTranscript,
     MessageChunk,
     MessageTranslation,
     TelegramMedia,
@@ -171,12 +172,19 @@ class ChunkWorker(Worker):
     ) -> dict[uuid.UUID, list[MediaAttachment]]:
         rows = (
             await session.execute(
-                select(TelegramMedia, MediaAnalysis)
+                select(TelegramMedia, MediaAnalysis, MediaTranscript)
                 .outerjoin(
                     MediaAnalysis,
                     (MediaAnalysis.media_id == TelegramMedia.id)
                     & (MediaAnalysis.model_name == settings.vision_model)
                     & (MediaAnalysis.prompt_version == settings.media_analysis_prompt_version),
+                )
+                .outerjoin(
+                    MediaTranscript,
+                    (MediaTranscript.media_id == TelegramMedia.id)
+                    & (MediaTranscript.provider == "openai")
+                    & (MediaTranscript.model_name == settings.openai_transcription_model)
+                    & (MediaTranscript.response_format == "text"),
                 )
                 .where(TelegramMedia.job_id == job_id, TelegramMedia.message_id.is_not(None))
                 .order_by(TelegramMedia.original_path)
@@ -184,10 +192,12 @@ class ChunkWorker(Worker):
         ).all()
 
         grouped: dict[uuid.UUID, list[MediaAttachment]] = defaultdict(list)
-        for media, analysis in rows:
+        for media, analysis, transcript in rows:
             if media.message_id is None:
                 continue
-            grouped[media.message_id].append(MediaAttachment(media=media, analysis=analysis))
+            grouped[media.message_id].append(
+                MediaAttachment(media=media, analysis=analysis, transcript=transcript)
+            )
         return grouped
 
     async def _load_translations(

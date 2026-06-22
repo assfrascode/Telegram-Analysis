@@ -4,13 +4,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from app.models import MediaAnalysis, MessageTranslation, StepStatus, TelegramMedia, TelegramMessage
+from app.models import (
+    MediaAnalysis,
+    MediaTranscript,
+    MessageTranslation,
+    StepStatus,
+    TelegramMedia,
+    TelegramMessage,
+)
 
 
 @dataclass(slots=True)
 class MediaAttachment:
     media: TelegramMedia
     analysis: MediaAnalysis | None = None
+    transcript: MediaTranscript | None = None
 
 
 @dataclass(slots=True)
@@ -58,13 +66,24 @@ def _clean_text(text: str | None) -> str:
     return text if text else "[NO_TEXT]"
 
 
-def _media_label(media_type: str | None) -> str:
+def _media_description_label(media_type: str | None) -> str | None:
     normalized = (media_type or "media").upper()
     if normalized == "IMAGE":
         return "IMAGE_DESCRIPTION"
     if normalized == "VIDEO":
         return "VIDEO_DESCRIPTION"
+    if normalized in {"AUDIO", "VOICE"}:
+        return None
     return "MEDIA_DESCRIPTION"
+
+
+def _media_transcript_label(media_type: str | None) -> str | None:
+    normalized = (media_type or "").strip().upper()
+    if normalized == "VIDEO":
+        return "VIDEO_TRANSCRIPT"
+    if normalized in {"AUDIO", "VOICE"}:
+        return "AUDIO_TRANSCRIPT"
+    return None
 
 
 def _translation_label(target_language: str | None) -> str:
@@ -124,26 +143,45 @@ def render_message_block(
         media_types.append(media.media_type)
         media_paths.append(media.original_path)
 
-        label = _media_label(media.media_type)
-        if attachment.analysis and attachment.analysis.description.strip():
+        description_label = _media_description_label(media.media_type)
+        if description_label and attachment.analysis and attachment.analysis.description.strip():
             lines.append("")
-            lines.append(f"{label}:")
+            lines.append(f"{description_label}:")
             lines.append(attachment.analysis.description.strip())
             lines.append(f"MEDIA_PATH: {media.original_path}")
-            continue
-
-        if media.status == StepStatus.failed_permanent:
+        elif description_label and media.status == StepStatus.failed_permanent:
             lines.append("")
-            lines.append(f"[{label}_MISSING]")
+            lines.append(f"[{description_label}_MISSING]")
             lines.append("Datei konnte nicht analysiert werden.")
             lines.append(f"Grund: {media.missing_reason or 'unknown'}")
             lines.append(f"MEDIA_PATH: {media.original_path}")
+        elif description_label:
+            lines.append("")
+            lines.append(f"[{description_label}_UNANALYZED]")
+            lines.append("Datei hat keine gespeicherte Medienbeschreibung.")
+            lines.append(f"MEDIA_PATH: {media.original_path}")
+
+        transcript_label = _media_transcript_label(media.media_type)
+        if not transcript_label:
             continue
 
-        lines.append("")
-        lines.append(f"[{label}_UNANALYZED]")
-        lines.append("Datei hat keine gespeicherte Medienbeschreibung.")
-        lines.append(f"MEDIA_PATH: {media.original_path}")
+        transcript = attachment.transcript
+        if transcript and transcript.status == StepStatus.completed and transcript.transcript_text.strip():
+            lines.append("")
+            lines.append(f"{transcript_label}:")
+            lines.append(transcript.transcript_text.strip())
+            lines.append(f"MEDIA_PATH: {media.original_path}")
+        elif transcript and transcript.status == StepStatus.failed_permanent:
+            lines.append("")
+            lines.append(f"[{transcript_label}_MISSING]")
+            lines.append("Datei konnte nicht transkribiert werden.")
+            lines.append(f"Grund: {transcript.error_message or 'unknown'}")
+            lines.append(f"MEDIA_PATH: {media.original_path}")
+        else:
+            lines.append("")
+            lines.append(f"[{transcript_label}_UNANALYZED]")
+            lines.append("Datei hat kein gespeichertes Transkript.")
+            lines.append(f"MEDIA_PATH: {media.original_path}")
 
     return MessageBlock(
         message=message,

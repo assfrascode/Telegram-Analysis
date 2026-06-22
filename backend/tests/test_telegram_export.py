@@ -110,3 +110,14 @@ def test_extract_media_references_marks_missing_video_file():
 
 def test_classify_video_from_mime_type_without_extension():
     assert classify_media("files/blob", {"mime_type": "video/mp4"}, "file") == "video"
+
+
+def test_classify_audio_and_voice_media() -> None:
+    assert classify_media("files/audio.mp3", {}, "file") == "audio"
+    assert classify_media(
+        "files/voice.ogg",
+        {"mime_type": "audio/ogg", "media_type": "voice_message"},
+        "file",
+    ) == "voice"
+    assert classify_media("files/blob.webm", {"mime_type": "audio/webm"}, "file") == "audio"
+    assert classify_media("files/audio.mpeg", {"media_type": "audio_file"}, "file") == "audio"

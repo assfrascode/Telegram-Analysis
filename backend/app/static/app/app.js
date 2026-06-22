@@ -52,6 +52,15 @@ const STAGES = [
     ],
   },
   {key: "media", label: "Medienanalyse", events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"]},
+  {
+    key: "transcription",
+    label: "Transkription",
+    events: [
+      "media.transcription.started",
+      "media.transcription.progress",
+      "media.transcription.completed",
+    ],
+  },
   {key: "chunk", label: "Chunking", events: ["chunking.started", "chunking.progress", "chunking.completed"]},
   {key: "embedding", label: "Embedding", events: ["embedding.started", "embedding.progress", "embedding.completed"]},
   {key: "retrieval", label: "Retrieval", events: ["retrieval.started", "retrieval.progress", "retrieval.completed"]},

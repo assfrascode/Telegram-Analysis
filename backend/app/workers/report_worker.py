@@ -16,6 +16,7 @@ from app.models import (
     Job,
     JobStatus,
     MediaAnalysis,
+    MediaTranscript,
     MessageChunk,
     MessageTranslation,
     Question,
@@ -377,19 +378,26 @@ class ReportWorker(Worker):
         session: AsyncSession,
         job_id: uuid.UUID,
         message_ids: list[uuid.UUID],
-    ) -> dict[uuid.UUID, list[tuple[TelegramMedia, MediaAnalysis | None]]]:
+    ) -> dict[uuid.UUID, list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]]]:
         if not message_ids:
             return {}
 
         rows = list(
             (
                 await session.execute(
-                    select(TelegramMedia, MediaAnalysis)
+                    select(TelegramMedia, MediaAnalysis, MediaTranscript)
                     .outerjoin(
                         MediaAnalysis,
                         (MediaAnalysis.media_id == TelegramMedia.id)
                         & (MediaAnalysis.model_name == settings.vision_model)
                         & (MediaAnalysis.prompt_version == settings.media_analysis_prompt_version),
+                    )
+                    .outerjoin(
+                        MediaTranscript,
+                        (MediaTranscript.media_id == TelegramMedia.id)
+                        & (MediaTranscript.provider == "openai")
+                        & (MediaTranscript.model_name == settings.openai_transcription_model)
+                        & (MediaTranscript.response_format == "text"),
                     )
                     .where(
                         TelegramMedia.job_id == job_id,
@@ -400,10 +408,13 @@ class ReportWorker(Worker):
             ).all()
         )
 
-        grouped: dict[uuid.UUID, list[tuple[TelegramMedia, MediaAnalysis | None]]] = defaultdict(list)
-        for media, analysis in rows:
+        grouped: dict[
+            uuid.UUID,
+            list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]],
+        ] = defaultdict(list)
+        for media, analysis, transcript in rows:
             if media.message_id is not None:
-                grouped[media.message_id].append((media, analysis))
+                grouped[media.message_id].append((media, analysis, transcript))
         return grouped
 
     async def _load_translations_for_messages(

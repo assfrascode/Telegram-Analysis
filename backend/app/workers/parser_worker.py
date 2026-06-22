@@ -123,7 +123,11 @@ async def _upsert_media(
 
     found = available_media.get(media_ref.original_path)
     if found:
-        existing.status = StepStatus.pending
+        existing.status = (
+            StepStatus.pending
+            if media_ref.media_type in {"image", "video"}
+            else StepStatus.completed
+        )
         existing.missing_reason = None
         existing.minio_object_key = found["object_key"]
         existing.size_bytes = found["size_bytes"]

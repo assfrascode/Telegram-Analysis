@@ -7,6 +7,7 @@ from app.services.job_recovery import recover_stale_queued_jobs
 from app.workers.ingest_worker import ValidateWorker, ExtractWorker
 from app.workers.parser_worker import ParserWorker
 from app.workers.media_worker import MediaWorker
+from app.workers.transcription_worker import TranscriptionWorker
 from app.workers.chunk_worker import ChunkWorker
 from app.workers.embedding_worker import EmbeddingWorker
 from app.workers.rag_worker import RetrieveWorker, RerankWorker, AnswerWorker
@@ -22,6 +23,7 @@ WORKERS = {
     "telegram-snapshot": TelegramSnapshotWorker,
     "translation": TranslateWorker,
     "media": MediaWorker,
+    "transcription": TranscriptionWorker,
     "chunk": ChunkWorker,
     "embedding": EmbeddingWorker,
     "retrieve": RetrieveWorker,

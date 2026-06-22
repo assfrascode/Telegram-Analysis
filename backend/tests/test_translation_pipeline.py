@@ -5,7 +5,11 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from app.models import Job
 from app.workers import subjects
-from app.workers.pipeline import next_subject_after_messages, next_subject_after_translation
+from app.workers.pipeline import (
+    next_subject_after_media_analysis,
+    next_subject_after_messages,
+    next_subject_after_translation,
+)
 
 
 def _job(options: dict) -> Job:
@@ -36,6 +40,17 @@ def test_translation_routes_to_media_or_chunk() -> None:
         "media",
     )
     assert next_subject_after_translation(_job({"analyze_media": False})) == (
+        subjects.CHUNK_CREATE,
+        "chunk",
+    )
+
+
+def test_media_analysis_routes_to_transcription_before_chunking() -> None:
+    assert next_subject_after_media_analysis(_job({"analyze_media": True})) == (
+        subjects.MEDIA_TRANSCRIBE,
+        "transcribe",
+    )
+    assert next_subject_after_media_analysis(_job({"analyze_media": False})) == (
         subjects.CHUNK_CREATE,
         "chunk",
     )

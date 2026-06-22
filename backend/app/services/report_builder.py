@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from app.models import (
     MediaAnalysis,
+    MediaTranscript,
     MessageChunk,
     MessageTranslation,
     RetrievalHit,
@@ -149,6 +150,11 @@ class ReportMedia:
     analysis_model: str | None
     analysis_prompt_version: str | None
     analyzed_at: str
+    transcript_text: str | None
+    transcript_status: str | None
+    transcript_error: str | None
+    transcript_model: str | None
+    transcript_provider: str | None
 
 
 @dataclass(slots=True)
@@ -243,7 +249,12 @@ def build_bluf_synthesis_prompt(questions: list[ReportQuestion]) -> str:
     return "\n".join(lines).strip()
 
 
-def build_report_media(media: TelegramMedia, analysis: MediaAnalysis | None) -> ReportMedia:
+def build_report_media(
+    media: TelegramMedia,
+    analysis: MediaAnalysis | None,
+    transcript: MediaTranscript | None = None,
+) -> ReportMedia:
+    transcript_text = transcript.transcript_text.strip() if transcript else ""
     return ReportMedia(
         id=str(media.id),
         media_type=media.media_type,
@@ -261,12 +272,17 @@ def build_report_media(media: TelegramMedia, analysis: MediaAnalysis | None) -> 
         analysis_model=(analysis.model_name if analysis else None),
         analysis_prompt_version=(analysis.prompt_version if analysis else None),
         analyzed_at=isoformat_or_empty(media.analyzed_at),
+        transcript_text=transcript_text or None,
+        transcript_status=(status_label(transcript.status) if transcript else None),
+        transcript_error=(transcript.error_message if transcript else None),
+        transcript_model=(transcript.model_name if transcript else None),
+        transcript_provider=(transcript.provider if transcript else None),
     )
 
 
 def build_report_message(
     message: TelegramMessage,
-    media_items: list[tuple[TelegramMedia, MediaAnalysis | None]] | None = None,
+    media_items: list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]] | None = None,
     translation: MessageTranslation | None = None,
 ) -> ReportMessage:
     translation_text = translation.translated_text.strip() if translation else ""
@@ -292,7 +308,10 @@ def build_report_message(
             translation.detected_source_confidence if translation else None
         ),
         translation_provider=(translation.provider if translation else None),
-        media=[build_report_media(media, analysis) for media, analysis in (media_items or [])],
+        media=[
+            build_report_media(media, analysis, transcript)
+            for media, analysis, transcript in (media_items or [])
+        ],
     )
 
 
