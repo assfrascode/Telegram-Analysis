@@ -164,7 +164,7 @@ class VLLMGateway:
         result = await self.describe_media_with_raw(media_url=media_url, media_type=media_type)
         return result.description
 
-    async def answer_prompt(self, prompt: str) -> str:
+    async def answer_prompt(self, prompt: str, *, max_tokens: int = 4096) -> str:
         """Generate an answer from a fully built prompt body."""
         if settings.llm_mock_enabled:
             prompt_preview = prompt.strip().replace("\n", " ")[:500]
@@ -190,7 +190,7 @@ class VLLMGateway:
             base_url=settings.vllm_text_base_url,
             model=settings.text_model,
             messages=messages,
-            max_tokens=4096,
+            max_tokens=max_tokens,
         )
         return extract_chat_completion_text(result)
 

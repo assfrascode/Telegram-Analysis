@@ -12,8 +12,13 @@ from app.llm.vllm_gateway import VLLMGateway
 from app.models import Job, MessageChunk, Question, QuestionRun, RetrievalHit, StepStatus
 from app.services.answer_generation import (
     EvidenceChunk,
+    EvidenceBatch,
     build_answer_prompt,
-    build_evidence_context,
+    build_evidence_batches,
+    build_evidence_map_prompt,
+    build_reduce_answer_prompt,
+    build_summary_batches,
+    build_summary_reduce_prompt,
     evidence_chunk_payload,
     make_short_answer,
     no_evidence_answer,
@@ -23,6 +28,9 @@ from app.workers import subjects
 from app.workers.base import Worker
 
 settings = get_settings()
+ANSWER_MAP_MAX_TOKENS = 1536
+ANSWER_REDUCE_MAX_TOKENS = 4096
+MAX_SUMMARY_REDUCE_ROUNDS = 6
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -540,6 +548,304 @@ class AnswerWorker(Worker):
     durable = "answer-worker"
     queue = "answer"
 
+    async def _call_answer_model(
+        self,
+        session: AsyncSession,
+        job: Job,
+        gateway: VLLMGateway,
+        prompt: str,
+        *,
+        max_tokens: int,
+        questions_done: int,
+        questions_total: int,
+        message: str,
+    ) -> str:
+        answer = await gateway.answer_prompt(prompt, max_tokens=max_tokens)
+        await self.checkpoint_cancelled(
+            session,
+            job,
+            event_type="answer.cancelled",
+            message=message,
+            payload={"questions_done": questions_done, "questions_total": questions_total},
+        )
+        return answer
+
+    async def _answer_question_with_evidence(
+        self,
+        session: AsyncSession,
+        job: Job,
+        gateway: VLLMGateway,
+        *,
+        question_run: QuestionRun,
+        question: Question,
+        evidence_chunks: list[EvidenceChunk],
+        questions_done: int,
+        questions_total: int,
+    ) -> tuple[str, dict[str, Any]]:
+        evidence_payload = [evidence_chunk_payload(chunk) for chunk in evidence_chunks]
+        evidence_batches = build_evidence_batches(
+            evidence_chunks,
+            max_chars=settings.answer_context_max_chars,
+        )
+
+        if not evidence_batches:
+            answer = no_evidence_answer(question.text)
+            return answer, {
+                "stage": "answer",
+                "strategy": "no_evidence",
+                "mock": settings.llm_mock_enabled,
+                "text_model": settings.text_model,
+                "evidence_chunks": [],
+                "evidence_batch_count": 0,
+                "truncated_evidence_batches": 0,
+                "context_chars": 0,
+                "summary_chars": 0,
+                "reduce_rounds": 0,
+                "prompt_chars": 0,
+                "skipped_llm_reason": "no_used_evidence_chunks",
+            }
+
+        truncated_batches = sum(1 for batch in evidence_batches if batch.truncated)
+        if len(evidence_batches) == 1 and truncated_batches == 0:
+            context = evidence_batches[0].context
+            prompt_body = build_answer_prompt(question.text, context)
+            answer = await self._call_answer_model(
+                session,
+                job,
+                gateway,
+                prompt_body,
+                max_tokens=ANSWER_REDUCE_MAX_TOKENS,
+                questions_done=questions_done,
+                questions_total=questions_total,
+                message="Fragenbeantwortung nach Modellaufruf wegen Job-Abbruch beendet",
+            )
+            return answer, {
+                "stage": "answer",
+                "strategy": "direct",
+                "mock": settings.llm_mock_enabled,
+                "text_model": settings.text_model,
+                "evidence_chunks": evidence_payload,
+                "evidence_batch_count": 1,
+                "truncated_evidence_batches": 0,
+                "context_chars": len(context),
+                "summary_chars": 0,
+                "reduce_rounds": 0,
+                "prompt_chars": len(prompt_body),
+                "answer_chars": len(answer),
+            }
+
+        return await self._answer_question_map_reduce(
+            session,
+            job,
+            gateway,
+            question_run=question_run,
+            question=question,
+            evidence_chunks=evidence_chunks,
+            evidence_payload=evidence_payload,
+            evidence_batches=evidence_batches,
+            truncated_batches=truncated_batches,
+            questions_done=questions_done,
+            questions_total=questions_total,
+        )
+
+    async def _answer_question_map_reduce(
+        self,
+        session: AsyncSession,
+        job: Job,
+        gateway: VLLMGateway,
+        *,
+        question_run: QuestionRun,
+        question: Question,
+        evidence_chunks: list[EvidenceChunk],
+        evidence_payload: list[dict[str, Any]],
+        evidence_batches: list[EvidenceBatch],
+        truncated_batches: int,
+        questions_done: int,
+        questions_total: int,
+    ) -> tuple[str, dict[str, Any]]:
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="answer.map_reduce.started",
+            message="Map-Reduce-Fragenbeantwortung gestartet",
+            payload={
+                "questions_done": questions_done,
+                "questions_total": questions_total,
+                "question_id": str(question.id),
+                "question_index": question.question_index,
+                "question_run_id": str(question_run.id),
+                "evidence_chunks": len(evidence_chunks),
+                "evidence_batches": len(evidence_batches),
+                "truncated_evidence_batches": truncated_batches,
+                "context_chars": sum(len(batch.context) for batch in evidence_batches),
+                "text_model": settings.text_model,
+                "mock_enabled": settings.llm_mock_enabled,
+            },
+        )
+        await session.commit()
+
+        map_summaries: list[str] = []
+        map_prompt_chars: list[int] = []
+        for batch in evidence_batches:
+            map_prompt = build_evidence_map_prompt(
+                question.text,
+                batch,
+                batch_count=len(evidence_batches),
+            )
+            summary = await self._call_answer_model(
+                session,
+                job,
+                gateway,
+                map_prompt,
+                max_tokens=ANSWER_MAP_MAX_TOKENS,
+                questions_done=questions_done,
+                questions_total=questions_total,
+                message="Map-Reduce-Zwischenzusammenfassung wegen Job-Abbruch beendet",
+            )
+            map_summaries.append(summary)
+            map_prompt_chars.append(len(map_prompt))
+
+            await self.emit_event(
+                session,
+                job=job,
+                event_type="answer.map_reduce.progress",
+                message=(
+                    f"Zwischenzusammenfassung {batch.batch_index}/{len(evidence_batches)} "
+                    "erstellt"
+                ),
+                payload={
+                    "phase": "map",
+                    "questions_done": questions_done,
+                    "questions_total": questions_total,
+                    "question_id": str(question.id),
+                    "question_index": question.question_index,
+                    "question_run_id": str(question_run.id),
+                    "batch_index": batch.batch_index,
+                    "batches_total": len(evidence_batches),
+                    "prompt_chars": len(map_prompt),
+                    "summary_chars": len(summary),
+                },
+            )
+            await session.commit()
+
+        summaries = map_summaries
+        reduce_rounds = 0
+        reduce_prompt_chars: list[int] = []
+        summary_context_truncated = False
+
+        while True:
+            summary_batches = build_summary_batches(
+                summaries,
+                max_chars=settings.answer_context_max_chars,
+            )
+            if len(summary_batches) <= 1 or reduce_rounds >= MAX_SUMMARY_REDUCE_ROUNDS:
+                if len(summary_batches) > 1:
+                    summary_context_truncated = True
+                break
+
+            reduce_rounds += 1
+            next_summaries: list[str] = []
+            for summary_batch in summary_batches:
+                reduce_prompt = build_summary_reduce_prompt(
+                    question.text,
+                    summary_batch,
+                    round_index=reduce_rounds,
+                    batch_count=len(summary_batches),
+                )
+                reduced_summary = await self._call_answer_model(
+                    session,
+                    job,
+                    gateway,
+                    reduce_prompt,
+                    max_tokens=ANSWER_MAP_MAX_TOKENS,
+                    questions_done=questions_done,
+                    questions_total=questions_total,
+                    message="Map-Reduce-Reduktionsrunde wegen Job-Abbruch beendet",
+                )
+                reduce_prompt_chars.append(len(reduce_prompt))
+                next_summaries.append(reduced_summary)
+
+                await self.emit_event(
+                    session,
+                    job=job,
+                    event_type="answer.map_reduce.progress",
+                    message=(
+                        f"Reduktionsrunde {reduce_rounds}, Batch "
+                        f"{summary_batch.batch_index}/{len(summary_batches)} erstellt"
+                    ),
+                    payload={
+                        "phase": "reduce",
+                        "questions_done": questions_done,
+                        "questions_total": questions_total,
+                        "question_id": str(question.id),
+                        "question_index": question.question_index,
+                        "question_run_id": str(question_run.id),
+                        "round_index": reduce_rounds,
+                        "batch_index": summary_batch.batch_index,
+                        "batches_total": len(summary_batches),
+                        "prompt_chars": len(reduce_prompt),
+                        "summary_chars": len(reduced_summary),
+                    },
+                )
+                await session.commit()
+            summaries = next_summaries
+
+        final_summary_batches = build_summary_batches(
+            summaries,
+            max_chars=settings.answer_context_max_chars,
+        )
+        final_summary_context = final_summary_batches[0].context if final_summary_batches else ""
+        final_prompt = build_reduce_answer_prompt(question.text, final_summary_context)
+        answer = await self._call_answer_model(
+            session,
+            job,
+            gateway,
+            final_prompt,
+            max_tokens=ANSWER_REDUCE_MAX_TOKENS,
+            questions_done=questions_done,
+            questions_total=questions_total,
+            message="Map-Reduce-Antwortsynthese wegen Job-Abbruch beendet",
+        )
+
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="answer.map_reduce.completed",
+            message="Map-Reduce-Fragenbeantwortung abgeschlossen",
+            payload={
+                "questions_done": questions_done,
+                "questions_total": questions_total,
+                "question_id": str(question.id),
+                "question_index": question.question_index,
+                "question_run_id": str(question_run.id),
+                "evidence_batches": len(evidence_batches),
+                "truncated_evidence_batches": truncated_batches,
+                "reduce_rounds": reduce_rounds,
+                "summary_context_chars": len(final_summary_context),
+                "answer_chars": len(answer),
+            },
+        )
+        await session.commit()
+
+        return answer, {
+            "stage": "answer",
+            "strategy": "map_reduce",
+            "mock": settings.llm_mock_enabled,
+            "text_model": settings.text_model,
+            "evidence_chunks": evidence_payload,
+            "evidence_batch_count": len(evidence_batches),
+            "truncated_evidence_batches": truncated_batches,
+            "context_chars": sum(len(batch.context) for batch in evidence_batches),
+            "summary_chars": sum(len(summary) for summary in map_summaries),
+            "final_summary_context_chars": len(final_summary_context),
+            "reduce_rounds": reduce_rounds,
+            "summary_context_truncated": summary_context_truncated,
+            "prompt_chars": len(final_prompt),
+            "map_prompt_chars": map_prompt_chars,
+            "reduce_prompt_chars": reduce_prompt_chars,
+            "answer_chars": len(answer),
+        }
+
     async def handle(self, session: AsyncSession, payload: dict) -> None:
         job_id = uuid.UUID(payload["job_id"])
         job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -621,41 +927,17 @@ class AnswerWorker(Worker):
                 for hit, chunk in hit_rows
             ]
 
-            context = build_evidence_context(
-                evidence_chunks,
-                max_chars=settings.answer_context_max_chars,
+            answer, raw_response = await self._answer_question_with_evidence(
+                session,
+                job,
+                gateway,
+                question_run=question_run,
+                question=question,
+                evidence_chunks=evidence_chunks,
+                questions_done=done,
+                questions_total=len(run_rows),
             )
-            prompt_body = build_answer_prompt(question.text, context) if context else ""
-
-            if not context:
-                answer = no_evidence_answer(question.text)
-                raw_response = {
-                    "stage": "answer",
-                    "mock": settings.llm_mock_enabled,
-                    "text_model": settings.text_model,
-                    "evidence_chunks": [],
-                    "context_chars": 0,
-                    "prompt_chars": 0,
-                    "skipped_llm_reason": "no_used_evidence_chunks",
-                }
-            else:
-                answer = await gateway.answer_prompt(prompt_body)
-                await self.checkpoint_cancelled(
-                    session,
-                    job,
-                    event_type="answer.cancelled",
-                    message="Fragenbeantwortung nach Modellaufruf wegen Job-Abbruch beendet",
-                    payload={"questions_done": done, "questions_total": len(run_rows)},
-                )
-                raw_response = {
-                    "stage": "answer",
-                    "mock": settings.llm_mock_enabled,
-                    "text_model": settings.text_model,
-                    "evidence_chunks": [evidence_chunk_payload(chunk) for chunk in evidence_chunks],
-                    "context_chars": len(context),
-                    "prompt_chars": len(prompt_body),
-                    "answer_chars": len(answer),
-                }
+            if raw_response.get("strategy") != "no_evidence":
                 answered += 1
 
             question_run.answer = answer
@@ -683,6 +965,8 @@ class AnswerWorker(Worker):
                     "question_index": question.question_index,
                     "question_run_id": str(question_run.id),
                     "evidence_chunks": len(evidence_chunks),
+                    "strategy": raw_response.get("strategy"),
+                    "evidence_batches": raw_response.get("evidence_batch_count", 0),
                     "answer_chars": len(answer),
                 },
             )

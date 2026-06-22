@@ -4,12 +4,26 @@ from datetime import datetime, timezone
 
 from app.services.answer_generation import (
     EvidenceChunk,
+    build_evidence_batches,
+    build_evidence_map_prompt,
     build_answer_prompt,
     build_evidence_context,
+    build_reduce_answer_prompt,
+    build_summary_batches,
+    build_summary_reduce_prompt,
     evidence_chunk_payload,
     make_short_answer,
     no_evidence_answer,
 )
+
+
+def _chunk(index: int, text: str) -> EvidenceChunk:
+    return EvidenceChunk(
+        chunk_id=uuid.UUID(f"00000000-0000-0000-0000-{index:012d}"),
+        chunk_index=index,
+        text=text,
+        message_ids=[str(index)],
+    )
 
 
 def test_build_evidence_context_preserves_chunk_metadata_and_text():
@@ -48,12 +62,76 @@ def test_build_evidence_context_respects_max_chars():
     assert "CONTEXT_TRUNCATED" in context
 
 
+def test_build_evidence_batches_single_batch_matches_context():
+    chunks = [
+        _chunk(1, "Erste Nachricht."),
+        _chunk(2, "Zweite Nachricht."),
+    ]
+
+    context = build_evidence_context(chunks, max_chars=10_000)
+    batches = build_evidence_batches(chunks, max_chars=10_000)
+
+    assert len(batches) == 1
+    assert batches[0].context == context
+    assert batches[0].chunks == chunks
+    assert not batches[0].truncated
+
+
+def test_build_evidence_batches_splits_context_under_cap_in_order():
+    chunks = [
+        _chunk(1, "RAW-1 " + "x" * 60),
+        _chunk(2, "RAW-2 " + "x" * 60),
+        _chunk(3, "RAW-3 " + "x" * 60),
+    ]
+
+    batches = build_evidence_batches(chunks, max_chars=260)
+
+    assert len(batches) > 1
+    assert all(len(batch.context) <= 260 for batch in batches)
+    assert [chunk.chunk_index for batch in batches for chunk in batch.chunks] == [1, 2, 3]
+    assert "RAW-1" in batches[0].context
+    assert "RAW-3" in batches[-1].context
+
+
+def test_build_evidence_batches_truncates_oversized_single_chunk():
+    batches = build_evidence_batches([_chunk(1, "x" * 1000)], max_chars=260)
+
+    assert len(batches) == 1
+    assert batches[0].truncated
+    assert len(batches[0].context) <= 260
+    assert "CONTEXT_TRUNCATED" in batches[0].context
+
+
 def test_build_answer_prompt_contains_question_and_context():
     prompt = build_answer_prompt("Welche Narrative?", "Evidence")
 
     assert "Welche Narrative?" in prompt
     assert "Evidence" in prompt
     assert "ausschließlich anhand der Evidenz" in prompt
+
+
+def test_map_and_reduce_prompts_contain_question_and_summary_context():
+    batch = build_evidence_batches([_chunk(1, "Belegtext.")], max_chars=10_000)[0]
+    map_prompt = build_evidence_map_prompt("Welche Narrative?", batch, batch_count=1)
+
+    assert "Welche Narrative?" in map_prompt
+    assert "Evidenz-Batch 1/1" in map_prompt
+    assert "chunk_id=00000000-0000-0000-0000-000000000001" in map_prompt
+    assert "Zwischenzusammenfassung" in map_prompt
+
+    summary_batch = build_summary_batches(["Zusammenfassung A", "Zusammenfassung B"], max_chars=10_000)[0]
+    reduce_summary_prompt = build_summary_reduce_prompt(
+        "Welche Narrative?",
+        summary_batch,
+        round_index=1,
+        batch_count=1,
+    )
+    final_prompt = build_reduce_answer_prompt("Welche Narrative?", summary_batch.context)
+
+    assert "Reduktionsrunde 1" in reduce_summary_prompt
+    assert "Zusammenfassung A" in reduce_summary_prompt
+    assert "Zwischenzusammenfassungen" in final_prompt
+    assert "Welche Narrative?" in final_prompt
 
 
 def test_make_short_answer_truncates_deterministically():

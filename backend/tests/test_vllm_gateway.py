@@ -64,6 +64,22 @@ def test_synthesize_bluf_returns_mock_response(monkeypatch) -> None:
     assert "Frage 1" in bluf
 
 
+def test_answer_prompt_forwards_max_tokens(monkeypatch) -> None:
+    captured = {}
+
+    async def fake_chat_completion(self, **kwargs):
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": "Antwort"}}]}
+
+    monkeypatch.setattr(settings, "llm_mock_enabled", False)
+    monkeypatch.setattr(VLLMGateway, "chat_completion", fake_chat_completion)
+
+    answer = asyncio.run(VLLMGateway().answer_prompt("Prompt", max_tokens=1234))
+
+    assert answer == "Antwort"
+    assert captured["max_tokens"] == 1234
+
+
 def test_synthesize_bluf_rejects_empty_model_response(monkeypatch) -> None:
     async def empty_chat_completion(self, **kwargs):
         return {"choices": [{"message": {"content": "   "}}]}
