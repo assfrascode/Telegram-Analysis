@@ -5,6 +5,11 @@ from typing import Any, Literal
 import httpx
 
 from app.config import get_settings
+from app.llm.prompt_limits import (
+    PromptLimitError,
+    count_chat_messages_tokens,
+    resolve_prompt_budget,
+)
 
 settings = get_settings()
 
@@ -16,6 +21,18 @@ DEFAULT_MEDIA_DESCRIPTION_PROMPT = (
     "Nenne sichtbare Texte nur, wenn sie klar lesbar sind. "
     "Erfinde keine Identitäten, keine Absichten und keine nicht sichtbaren Kontexte. "
     "Wenn der Inhalt nicht eindeutig erkennbar ist, sage das explizit."
+)
+
+ANSWER_SYSTEM_PROMPT = (
+    "Du beantwortest Fragen ausschließlich auf Basis der bereitgestellten Chat-Evidenz. "
+    "Wenn die Evidenz nicht reicht, sage das explizit. "
+    "Erfinde keine Belege und nutze keine externen Informationen."
+)
+
+BLUF_SYSTEM_PROMPT = (
+    "Du erstellst eine knappe deutsche BLUF für einen analytischen Report. "
+    "Nutze ausschließlich die bereitgestellten Fragen und Kurzantworten. "
+    "Erfinde keine neuen Fakten, Belege oder Schlussfolgerungen."
 )
 
 
@@ -97,6 +114,7 @@ class VLLMGateway:
         temperature: float = 0.0,
         max_tokens: int = 2048,
         timeout: float = 180.0,
+        enforce_prompt_limit: bool = True,
     ) -> dict[str, Any]:
         if settings.llm_mock_enabled:
             return _mock_chat_response(
@@ -104,6 +122,19 @@ class VLLMGateway:
                 "Dieser Text dient nur zum schnellen Testen der Pipeline.",
                 model=model,
             )
+
+        if enforce_prompt_limit:
+            budget = await resolve_prompt_budget(
+                base_url=base_url,
+                model=model,
+                output_reservation=max_tokens,
+            )
+            prompt_tokens = count_chat_messages_tokens(messages, model=model)
+            if prompt_tokens > budget.input_tokens:
+                raise PromptLimitError(
+                    f"Prompt for model {model!r} has {prompt_tokens} tokens, "
+                    f"exceeding effective input budget {budget.input_tokens}"
+                )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -157,8 +188,39 @@ class VLLMGateway:
             messages=[{"role": "user", "content": content}],
             max_tokens=max_tokens,
             timeout=timeout,
+            enforce_prompt_limit=False,
         )
         return MediaDescriptionResult(description=extract_chat_completion_text(raw), raw_response=raw)
+
+    async def answer_prompt_body_budget(self, *, max_tokens: int) -> int:
+        budget = await resolve_prompt_budget(
+            base_url=settings.vllm_text_base_url,
+            model=settings.text_model,
+            output_reservation=max_tokens,
+        )
+        wrapper_tokens = count_chat_messages_tokens(
+            [
+                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                {"role": "user", "content": ""},
+            ],
+            model=settings.text_model,
+        )
+        return max(1, budget.input_tokens - wrapper_tokens)
+
+    async def synthesize_bluf_prompt_body_budget(self, *, max_tokens: int = 1024) -> int:
+        budget = await resolve_prompt_budget(
+            base_url=settings.vllm_text_base_url,
+            model=settings.text_model,
+            output_reservation=max_tokens,
+        )
+        wrapper_tokens = count_chat_messages_tokens(
+            [
+                {"role": "system", "content": BLUF_SYSTEM_PROMPT},
+                {"role": "user", "content": ""},
+            ],
+            model=settings.text_model,
+        )
+        return max(1, budget.input_tokens - wrapper_tokens)
 
     async def describe_media(self, media_url: str, media_type: str) -> str:
         result = await self.describe_media_with_raw(media_url=media_url, media_type=media_type)
@@ -178,11 +240,7 @@ class VLLMGateway:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Du beantwortest Fragen ausschließlich auf Basis der bereitgestellten Chat-Evidenz. "
-                    "Wenn die Evidenz nicht reicht, sage das explizit. "
-                    "Erfinde keine Belege und nutze keine externen Informationen."
-                ),
+                "content": ANSWER_SYSTEM_PROMPT,
             },
             {"role": "user", "content": prompt},
         ]
@@ -211,11 +269,7 @@ class VLLMGateway:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Du erstellst eine knappe deutsche BLUF für einen analytischen Report. "
-                    "Nutze ausschließlich die bereitgestellten Fragen und Kurzantworten. "
-                    "Erfinde keine neuen Fakten, Belege oder Schlussfolgerungen."
-                ),
+                "content": BLUF_SYSTEM_PROMPT,
             },
             {"role": "user", "content": prompt},
         ]

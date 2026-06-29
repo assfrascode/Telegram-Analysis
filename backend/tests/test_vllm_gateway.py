@@ -7,6 +7,7 @@ import pytest
 
 from app.llm.vllm_gateway import (
     VLLMGateway,
+    PromptLimitError,
     build_multimodal_content,
     extract_chat_completion_text,
     multimodal_content_type,
@@ -78,6 +79,26 @@ def test_answer_prompt_forwards_max_tokens(monkeypatch) -> None:
 
     assert answer == "Antwort"
     assert captured["max_tokens"] == 1234
+
+
+def test_chat_completion_rejects_oversized_text_prompt(monkeypatch) -> None:
+    async def fake_budget(**kwargs):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(input_tokens=5)
+
+    monkeypatch.setattr(settings, "llm_mock_enabled", False)
+    monkeypatch.setattr("app.llm.vllm_gateway.resolve_prompt_budget", fake_budget)
+    monkeypatch.setattr("app.llm.vllm_gateway.count_chat_messages_tokens", lambda messages, model=None: 10)
+
+    with pytest.raises(PromptLimitError):
+        asyncio.run(
+            VLLMGateway().chat_completion(
+                base_url="http://text/v1",
+                model="model-a",
+                messages=[{"role": "user", "content": "too long"}],
+            )
+        )
 
 
 def test_synthesize_bluf_rejects_empty_model_response(monkeypatch) -> None:

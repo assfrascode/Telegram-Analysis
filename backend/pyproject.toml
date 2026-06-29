@@ -22,7 +22,8 @@ dependencies = [
   "orjson>=3.10.7",
   "aiofiles>=24.1.0",
   "ijson>=3.3.0",
-  "telethon>=1.40.0"
+  "telethon>=1.40.0",
+  "tiktoken>=0.7.0"
 ]
 
 [project.optional-dependencies]

@@ -11,6 +11,7 @@ from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.llm.prompt_limits import count_text_tokens, split_text_by_tokens
 from app.llm.vllm_gateway import VLLMGateway
 from app.models import (
     Job,
@@ -30,8 +31,11 @@ from app.models import (
 from app.services.minio_store import put_bytes
 from app.services.report_builder import (
     ReportQuestion,
+    bluf_question_blocks,
     bluf_source_questions,
+    build_bluf_reduce_prompt,
     build_bluf_synthesis_prompt,
+    build_bluf_synthesis_prompt_from_blocks,
     build_report_evidence_chunk,
     build_report_message,
     make_bluf,
@@ -41,6 +45,7 @@ from app.workers import subjects
 from app.workers.base import Worker
 
 settings = get_settings()
+BLUF_MAX_TOKENS = 1024
 
 
 def _report_zip_name(job_id: uuid.UUID) -> str:
@@ -51,6 +56,62 @@ def _score(value: float | None) -> str:
     if value is None:
         return "–"
     return f"{value:.4f}"
+
+
+def _batch_bluf_blocks(blocks: list[str], *, max_tokens: int) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+
+    def prompt_tokens(items: list[str]) -> int:
+        return count_text_tokens(
+            build_bluf_synthesis_prompt_from_blocks(items),
+            model=settings.text_model,
+        )
+
+    for block in blocks:
+        candidates = [block]
+        if prompt_tokens([block]) > max_tokens:
+            overhead = count_text_tokens(
+                build_bluf_synthesis_prompt_from_blocks([""]),
+                model=settings.text_model,
+            )
+            part_budget = max(1, max_tokens - overhead - 8)
+            candidates = split_text_by_tokens(block, part_budget, model=settings.text_model)
+
+        for candidate in candidates:
+            if current and prompt_tokens([*current, candidate]) > max_tokens:
+                batches.append(current)
+                current = []
+            current.append(candidate)
+
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _batch_bluf_summaries(summaries: list[str], *, max_tokens: int) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+
+    def prompt_tokens(items: list[str]) -> int:
+        return count_text_tokens(build_bluf_reduce_prompt(items), model=settings.text_model)
+
+    for summary in summaries:
+        candidates = [summary]
+        if prompt_tokens([summary]) > max_tokens:
+            overhead = count_text_tokens(build_bluf_reduce_prompt([""]), model=settings.text_model)
+            part_budget = max(1, max_tokens - overhead - 8)
+            candidates = split_text_by_tokens(summary, part_budget, model=settings.text_model)
+
+        for candidate in candidates:
+            if current and prompt_tokens([*current, candidate]) > max_tokens:
+                batches.append(current)
+                current = []
+            current.append(candidate)
+
+    if current:
+        batches.append(current)
+    return batches
 
 
 class ReportWorker(Worker):
@@ -199,7 +260,23 @@ class ReportWorker(Worker):
             await session.commit()
             return bluf
 
-        bluf = await VLLMGateway().synthesize_bluf(prompt)
+        gateway = VLLMGateway()
+        bluf_prompt_budget = await gateway.synthesize_bluf_prompt_body_budget(
+            max_tokens=BLUF_MAX_TOKENS
+        )
+        prompt_tokens = count_text_tokens(prompt, model=settings.text_model)
+        if prompt_tokens <= bluf_prompt_budget:
+            bluf = await gateway.synthesize_bluf(prompt)
+            bluf_strategy = "direct"
+            bluf_batches = 1
+            bluf_reduce_rounds = 0
+        else:
+            bluf, bluf_batches, bluf_reduce_rounds = await self._synthesize_bluf_map_reduce(
+                gateway,
+                source_questions,
+                prompt_budget=bluf_prompt_budget,
+            )
+            bluf_strategy = "map_reduce"
         await self.checkpoint_cancelled(
             session,
             job,
@@ -208,6 +285,9 @@ class ReportWorker(Worker):
             payload={
                 "questions_total": len(questions),
                 "source_questions": len(source_questions),
+                "strategy": bluf_strategy,
+                "batches": bluf_batches,
+                "reduce_rounds": bluf_reduce_rounds,
             },
         )
         bluf = bluf.strip()
@@ -223,13 +303,47 @@ class ReportWorker(Worker):
                 "questions_total": len(questions),
                 "source_questions": len(source_questions),
                 "prompt_chars": len(prompt),
+                "prompt_tokens": prompt_tokens,
                 "bluf_chars": len(bluf),
+                "strategy": bluf_strategy,
+                "batches": bluf_batches,
+                "reduce_rounds": bluf_reduce_rounds,
                 "text_model": settings.text_model,
                 "mock_enabled": settings.llm_mock_enabled,
             },
         )
         await session.commit()
         return bluf
+
+    async def _synthesize_bluf_map_reduce(
+        self,
+        gateway: VLLMGateway,
+        source_questions: list[ReportQuestion],
+        *,
+        prompt_budget: int,
+    ) -> tuple[str, int, int]:
+        blocks = bluf_question_blocks(source_questions)
+        batches = _batch_bluf_blocks(blocks, max_tokens=prompt_budget)
+        summaries = [
+            await gateway.synthesize_bluf(build_bluf_synthesis_prompt_from_blocks(batch))
+            for batch in batches
+        ]
+
+        reduce_rounds = 0
+        while True:
+            reduce_prompt = build_bluf_reduce_prompt(summaries)
+            if count_text_tokens(reduce_prompt, model=settings.text_model) <= prompt_budget:
+                return await gateway.synthesize_bluf(reduce_prompt), len(batches), reduce_rounds
+
+            if reduce_rounds >= 6:
+                raise RuntimeError("BLUF reduction did not converge into a token-bounded prompt")
+
+            reduce_rounds += 1
+            summary_batches = _batch_bluf_summaries(summaries, max_tokens=prompt_budget)
+            summaries = [
+                await gateway.synthesize_bluf(build_bluf_reduce_prompt(batch))
+                for batch in summary_batches
+            ]
 
     def _render_report_zip(
         self,

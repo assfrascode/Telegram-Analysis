@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.llm.embedding_client import EmbeddingClient
+from app.llm.prompt_limits import count_text_tokens
 from app.llm.reranker_client import RerankerClient
 from app.llm.vllm_gateway import VLLMGateway
 from app.models import Job, MessageChunk, Question, QuestionRun, RetrievalHit, StepStatus
 from app.services.answer_generation import (
     EvidenceChunk,
     EvidenceBatch,
+    SummaryBatch,
     build_answer_prompt,
     build_evidence_batches,
     build_evidence_map_prompt,
@@ -66,13 +68,73 @@ def rerank_k_for_job(job: Job) -> int:
 
 def _chunk_id_from_qdrant_hit(hit: dict[str, Any]) -> uuid.UUID | None:
     payload = hit.get("payload") if isinstance(hit.get("payload"), dict) else {}
-    raw_chunk_id = payload.get("chunk_id") or hit.get("id")
+    raw_chunk_id = payload.get("parent_chunk_id") or payload.get("chunk_id") or hit.get("id")
     if raw_chunk_id is None:
         return None
     try:
         return uuid.UUID(str(raw_chunk_id))
     except (TypeError, ValueError):
         return None
+
+
+def _merge_qdrant_hits_by_parent(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[uuid.UUID, dict[str, Any]] = {}
+    for position, hit in enumerate(hits):
+        chunk_id = _chunk_id_from_qdrant_hit(hit)
+        if chunk_id is None:
+            continue
+        try:
+            score = float(hit.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        current = merged.get(chunk_id)
+        if current is None or score > current["score"]:
+            payload = dict(hit.get("payload") or {})
+            payload["chunk_id"] = str(chunk_id)
+            payload["parent_chunk_id"] = str(chunk_id)
+            merged[chunk_id] = {
+                **hit,
+                "payload": payload,
+                "score": score,
+                "_merge_position": position,
+            }
+
+    return sorted(
+        merged.values(),
+        key=lambda item: (-float(item.get("score", 0.0)), int(item.get("_merge_position", 0))),
+    )
+
+
+async def _search_unique_parent_hits(
+    qdrant: QdrantIndex,
+    *,
+    vectors: list[list[float]],
+    job_id: uuid.UUID,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not vectors or limit <= 0:
+        return []
+
+    search_limit = max(limit * 4, limit + 20)
+    max_search_limit = max(search_limit, min(10_000, limit * 64))
+    while True:
+        all_hits: list[dict[str, Any]] = []
+        exhausted = True
+        for vector in vectors:
+            hits = await qdrant.search(
+                vector=vector,
+                job_id=job_id,
+                limit=search_limit,
+                with_payload=True,
+            )
+            all_hits.extend(hits)
+            if len(hits) >= search_limit:
+                exhausted = False
+
+        merged = _merge_qdrant_hits_by_parent(all_hits)
+        if len(merged) >= limit or exhausted or search_limit >= max_search_limit:
+            return merged[:limit]
+        search_limit = min(max_search_limit, search_limit * 2)
 
 
 def _sanitize_rerank_results(results: list[dict[str, Any]], document_count: int) -> list[dict[str, Any]]:
@@ -118,6 +180,47 @@ def _rerank_summary_payload(
         "used_in_answer": used_count,
         "reranker_model": settings.reranker_model,
     }
+
+
+def _answer_prompt_context_budget(question: str, prompt_body_budget: int) -> int:
+    overhead = count_text_tokens(build_answer_prompt(question, ""), model=settings.text_model)
+    return max(1, prompt_body_budget - overhead)
+
+
+def _evidence_map_context_budget(question: str, prompt_body_budget: int) -> int:
+    empty_batch = EvidenceBatch(batch_index=1, chunks=[], context="")
+    overhead = count_text_tokens(
+        build_evidence_map_prompt(question, empty_batch, batch_count=999),
+        model=settings.text_model,
+    )
+    return max(1, prompt_body_budget - overhead)
+
+
+def _summary_reduce_context_budget(question: str, prompt_body_budget: int) -> int:
+    empty_batch = SummaryBatch(batch_index=1, context="", summary_indexes=[])
+    overhead = count_text_tokens(
+        build_summary_reduce_prompt(question, empty_batch, round_index=999, batch_count=999),
+        model=settings.text_model,
+    )
+    return max(1, prompt_body_budget - overhead)
+
+
+def _final_answer_summary_context_budget(question: str, prompt_body_budget: int) -> int:
+    overhead = count_text_tokens(build_reduce_answer_prompt(question, ""), model=settings.text_model)
+    return max(1, prompt_body_budget - overhead)
+
+
+async def _gateway_answer_prompt_body_budget(gateway: Any, *, max_tokens: int) -> int:
+    method = getattr(gateway, "answer_prompt_body_budget", None)
+    if callable(method):
+        return int(await method(max_tokens=max_tokens))
+    # Unit-test fakes historically only implemented answer_prompt. Keep those
+    # tests meaningful by deriving a body budget from the legacy character cap.
+    return max(
+        1,
+        settings.answer_context_max_chars
+        + count_text_tokens(build_answer_prompt("", ""), model=settings.text_model),
+    )
 
 
 async def _delete_existing_question_runs(session: AsyncSession, job_id: uuid.UUID) -> None:
@@ -198,7 +301,7 @@ class RetrieveWorker(Worker):
 
         embedder = EmbeddingClient()
         qdrant = QdrantIndex()
-        question_vectors = await embedder.embed([question.text for question in questions])
+        question_part_vectors = await embedder.embed_parts([question.text for question in questions])
         await self.checkpoint_cancelled(
             session,
             job,
@@ -206,14 +309,15 @@ class RetrieveWorker(Worker):
             message="Retrieval nach Frage-Embedding wegen Job-Abbruch beendet",
             payload={"questions_total": len(questions)},
         )
-        if len(question_vectors) != len(questions):
-            raise RuntimeError(
-                f"Embedding endpoint returned {len(question_vectors)} vectors for {len(questions)} questions"
-            )
+        question_vectors: list[list[list[float]]] = [[] for _ in questions]
+        for item in question_part_vectors:
+            question_vectors[item.segment.parent_index].append(item.vector)
+        if any(not vectors for vectors in question_vectors):
+            raise RuntimeError("Embedding endpoint returned no vector for at least one question")
 
         done = 0
         total_hits = 0
-        for question, vector in zip(questions, question_vectors, strict=True):
+        for question, vectors in zip(questions, question_vectors, strict=True):
             if await self.should_skip_cancelled(session, job.id):
                 await self.emit_event(
                     session,
@@ -243,7 +347,12 @@ class RetrieveWorker(Worker):
             session.add(question_run)
             await session.flush()
 
-            hits = await qdrant.search(vector=vector, job_id=job.id, limit=retrieval_k, with_payload=True)
+            hits = await _search_unique_parent_hits(
+                qdrant,
+                vectors=vectors,
+                job_id=job.id,
+                limit=retrieval_k,
+            )
             await self.checkpoint_cancelled(
                 session,
                 job,
@@ -288,6 +397,7 @@ class RetrieveWorker(Worker):
                 **(question_run.raw_response or {}),
                 "retrieved_hits": inserted_hits,
                 "qdrant_returned_hits": len(hits),
+                "question_embedding_segments": len(vectors),
             }
             await self.emit_event(
                 session,
@@ -304,6 +414,7 @@ class RetrieveWorker(Worker):
                     "question_index": question.question_index,
                     "hits": inserted_hits,
                     "retrieval_k": retrieval_k,
+                    "question_embedding_segments": len(vectors),
                 },
             )
             await session.commit()
@@ -583,12 +694,29 @@ class AnswerWorker(Worker):
         questions_total: int,
     ) -> tuple[str, dict[str, Any]]:
         evidence_payload = [evidence_chunk_payload(chunk) for chunk in evidence_chunks]
-        evidence_batches = build_evidence_batches(
+        if callable(getattr(gateway, "answer_prompt_body_budget", None)):
+            direct_body_budget = await _gateway_answer_prompt_body_budget(
+                gateway,
+                max_tokens=ANSWER_REDUCE_MAX_TOKENS,
+            )
+            map_body_budget = await _gateway_answer_prompt_body_budget(
+                gateway,
+                max_tokens=ANSWER_MAP_MAX_TOKENS,
+            )
+            direct_context_budget = _answer_prompt_context_budget(question.text, direct_body_budget)
+            map_context_budget = _evidence_map_context_budget(question.text, map_body_budget)
+        else:
+            direct_body_budget = settings.answer_context_max_chars + 10_000
+            map_body_budget = settings.answer_context_max_chars + 10_000
+            direct_context_budget = settings.answer_context_max_chars
+            map_context_budget = settings.answer_context_max_chars
+
+        direct_batches = build_evidence_batches(
             evidence_chunks,
-            max_chars=settings.answer_context_max_chars,
+            max_tokens=direct_context_budget,
         )
 
-        if not evidence_batches:
+        if not direct_batches:
             answer = no_evidence_answer(question.text)
             return answer, {
                 "stage": "answer",
@@ -605,9 +733,8 @@ class AnswerWorker(Worker):
                 "skipped_llm_reason": "no_used_evidence_chunks",
             }
 
-        truncated_batches = sum(1 for batch in evidence_batches if batch.truncated)
-        if len(evidence_batches) == 1 and truncated_batches == 0:
-            context = evidence_batches[0].context
+        if len(direct_batches) == 1 and not direct_batches[0].truncated:
+            context = direct_batches[0].context
             prompt_body = build_answer_prompt(question.text, context)
             answer = await self._call_answer_model(
                 session,
@@ -628,12 +755,19 @@ class AnswerWorker(Worker):
                 "evidence_batch_count": 1,
                 "truncated_evidence_batches": 0,
                 "context_chars": len(context),
+                "context_tokens": count_text_tokens(context, model=settings.text_model),
                 "summary_chars": 0,
                 "reduce_rounds": 0,
                 "prompt_chars": len(prompt_body),
+                "prompt_tokens": count_text_tokens(prompt_body, model=settings.text_model),
                 "answer_chars": len(answer),
             }
 
+        evidence_batches = build_evidence_batches(
+            evidence_chunks,
+            max_tokens=map_context_budget,
+        )
+        truncated_batches = sum(1 for batch in evidence_batches if batch.truncated)
         return await self._answer_question_map_reduce(
             session,
             job,
@@ -644,6 +778,8 @@ class AnswerWorker(Worker):
             evidence_payload=evidence_payload,
             evidence_batches=evidence_batches,
             truncated_batches=truncated_batches,
+            map_body_budget=map_body_budget,
+            direct_body_budget=direct_body_budget,
             questions_done=questions_done,
             questions_total=questions_total,
         )
@@ -660,6 +796,8 @@ class AnswerWorker(Worker):
         evidence_payload: list[dict[str, Any]],
         evidence_batches: list[EvidenceBatch],
         truncated_batches: int,
+        map_body_budget: int,
+        direct_body_budget: int,
         questions_done: int,
         questions_total: int,
     ) -> tuple[str, dict[str, Any]]:
@@ -686,6 +824,7 @@ class AnswerWorker(Worker):
 
         map_summaries: list[str] = []
         map_prompt_chars: list[int] = []
+        map_prompt_tokens: list[int] = []
         for batch in evidence_batches:
             map_prompt = build_evidence_map_prompt(
                 question.text,
@@ -704,6 +843,7 @@ class AnswerWorker(Worker):
             )
             map_summaries.append(summary)
             map_prompt_chars.append(len(map_prompt))
+            map_prompt_tokens.append(count_text_tokens(map_prompt, model=settings.text_model))
 
             await self.emit_event(
                 session,
@@ -723,6 +863,7 @@ class AnswerWorker(Worker):
                     "batch_index": batch.batch_index,
                     "batches_total": len(evidence_batches),
                     "prompt_chars": len(map_prompt),
+                    "prompt_tokens": map_prompt_tokens[-1],
                     "summary_chars": len(summary),
                 },
             )
@@ -731,12 +872,17 @@ class AnswerWorker(Worker):
         summaries = map_summaries
         reduce_rounds = 0
         reduce_prompt_chars: list[int] = []
+        reduce_prompt_tokens: list[int] = []
         summary_context_truncated = False
 
         while True:
+            summary_context_budget = min(
+                _summary_reduce_context_budget(question.text, map_body_budget),
+                _final_answer_summary_context_budget(question.text, direct_body_budget),
+            )
             summary_batches = build_summary_batches(
                 summaries,
-                max_chars=settings.answer_context_max_chars,
+                max_tokens=summary_context_budget,
             )
             if len(summary_batches) <= 1 or reduce_rounds >= MAX_SUMMARY_REDUCE_ROUNDS:
                 if len(summary_batches) > 1:
@@ -763,6 +909,7 @@ class AnswerWorker(Worker):
                     message="Map-Reduce-Reduktionsrunde wegen Job-Abbruch beendet",
                 )
                 reduce_prompt_chars.append(len(reduce_prompt))
+                reduce_prompt_tokens.append(count_text_tokens(reduce_prompt, model=settings.text_model))
                 next_summaries.append(reduced_summary)
 
                 await self.emit_event(
@@ -784,6 +931,7 @@ class AnswerWorker(Worker):
                         "batch_index": summary_batch.batch_index,
                         "batches_total": len(summary_batches),
                         "prompt_chars": len(reduce_prompt),
+                        "prompt_tokens": reduce_prompt_tokens[-1],
                         "summary_chars": len(reduced_summary),
                     },
                 )
@@ -792,8 +940,12 @@ class AnswerWorker(Worker):
 
         final_summary_batches = build_summary_batches(
             summaries,
-            max_chars=settings.answer_context_max_chars,
+            max_tokens=_final_answer_summary_context_budget(question.text, direct_body_budget),
         )
+        if len(final_summary_batches) > 1:
+            raise RuntimeError(
+                "Summary reduction did not converge into a final token-bounded answer prompt"
+            )
         final_summary_context = final_summary_batches[0].context if final_summary_batches else ""
         final_prompt = build_reduce_answer_prompt(question.text, final_summary_context)
         answer = await self._call_answer_model(
@@ -841,8 +993,11 @@ class AnswerWorker(Worker):
             "reduce_rounds": reduce_rounds,
             "summary_context_truncated": summary_context_truncated,
             "prompt_chars": len(final_prompt),
+            "prompt_tokens": count_text_tokens(final_prompt, model=settings.text_model),
             "map_prompt_chars": map_prompt_chars,
+            "map_prompt_tokens": map_prompt_tokens,
             "reduce_prompt_chars": reduce_prompt_chars,
+            "reduce_prompt_tokens": reduce_prompt_tokens,
             "answer_chars": len(answer),
         }
 

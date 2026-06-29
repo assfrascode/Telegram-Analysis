@@ -1,14 +1,28 @@
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.config import get_settings
+from app.llm.prompt_limits import (
+    PromptLimitError,
+    count_text_tokens,
+    resolve_prompt_budget,
+    split_text_by_tokens,
+)
 
 settings = get_settings()
 
 _WORD_RE = re.compile(r"[\wÄÖÜäöüß]+", re.UNICODE)
+RERANK_SEGMENT_BATCH_SIZE = 64
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentSegment:
+    document_index: int
+    text: str
 
 
 def _terms(text: str) -> set[str]:
@@ -70,6 +84,70 @@ class RerankerClient:
                 scored.append({"index": index, "score": score, "document": document})
             return sorted(scored, key=lambda item: item["score"], reverse=True)
 
+        budget = await resolve_prompt_budget(
+            base_url=settings.vllm_reranker_base_url,
+            model=settings.reranker_model,
+            output_reservation=0,
+        )
+        pair_overhead = max(0, int(settings.prompt_limit_rerank_pair_overhead_tokens))
+        if budget.input_tokens <= pair_overhead + 1:
+            raise PromptLimitError(
+                f"Reranker prompt budget {budget.input_tokens} is too small for pair overhead {pair_overhead}"
+            )
+
+        query_cap = max(1, min(budget.input_tokens // 2, budget.input_tokens - pair_overhead - 1))
+        query_segments = split_text_by_tokens(
+            query,
+            query_cap,
+            model=settings.reranker_model,
+        )
+        scored: dict[int, float] = {}
+        first_position: dict[int, int] = {}
+        response_position = 0
+
+        for query_segment in query_segments:
+            query_tokens = count_text_tokens(query_segment, model=settings.reranker_model)
+            document_cap = budget.input_tokens - query_tokens - pair_overhead
+            if document_cap <= 0:
+                raise PromptLimitError("Reranker query segment leaves no budget for documents")
+
+            segments: list[_DocumentSegment] = []
+            for document_index, document in enumerate(documents):
+                for document_segment in split_text_by_tokens(
+                    document,
+                    document_cap,
+                    model=settings.reranker_model,
+                ):
+                    segments.append(_DocumentSegment(document_index=document_index, text=document_segment))
+
+            for start in range(0, len(segments), RERANK_SEGMENT_BATCH_SIZE):
+                batch = segments[start : start + RERANK_SEGMENT_BATCH_SIZE]
+                ranked = await self._rerank_once(query_segment, [segment.text for segment in batch])
+                for item in ranked:
+                    local_index = int(item["index"])
+                    if local_index < 0 or local_index >= len(batch):
+                        continue
+                    document_index = batch[local_index].document_index
+                    score = float(item.get("score", 0.0))
+                    previous = scored.get(document_index)
+                    if previous is None or score > previous:
+                        scored[document_index] = score
+                        first_position.setdefault(document_index, response_position)
+                    response_position += 1
+
+        return sorted(
+            [
+                {
+                    "index": document_index,
+                    "score": score,
+                    "document": documents[document_index],
+                }
+                for document_index, score in scored.items()
+            ],
+            key=lambda item: (-item["score"], first_position.get(int(item["index"]), 0)),
+        )
+
+    async def _rerank_once(self, query: str, documents: list[str]) -> list[dict[str, Any]]:
         base_url = settings.vllm_reranker_base_url.rstrip("/")
         headers = {"Authorization": f"Bearer {settings.vllm_api_key}"}
         errors: list[str] = []

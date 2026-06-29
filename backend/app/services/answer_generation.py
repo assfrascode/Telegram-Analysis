@@ -2,9 +2,10 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from app.config import get_settings
+from app.llm.prompt_limits import count_text_tokens, split_text_by_tokens
 
 settings = get_settings()
 
@@ -85,10 +86,80 @@ def format_evidence_chunk(chunk: EvidenceChunk, *, fallback_rank: int) -> str:
     return f"{header}\n{(chunk.text or '').strip()}\n[/EVIDENCE_CHUNK]"
 
 
+def _format_evidence_chunk_part(
+    chunk: EvidenceChunk,
+    *,
+    fallback_rank: int,
+    part_index: int,
+    part_count: int,
+    text: str,
+) -> str:
+    rank = chunk.rerank_rank or fallback_rank
+    header = (
+        f"[EVIDENCE_CHUNK rank={rank} chunk_index={chunk.chunk_index} "
+        f"chunk_id={chunk.chunk_id} "
+        f"time_range={_format_timestamp(chunk.start_timestamp)}..{_format_timestamp(chunk.end_timestamp)} "
+        f"message_ids={','.join(chunk.message_ids or [])} part={part_index}/{part_count}]"
+    )
+    return f"{header}\n{(text or '').strip()}\n[/EVIDENCE_CHUNK]"
+
+
+def _token_count(text: str, token_counter: Callable[[str], int] | None = None) -> int:
+    if token_counter is not None:
+        return token_counter(text)
+    return count_text_tokens(text, model=settings.text_model)
+
+
+def _evidence_blocks_for_token_budget(
+    chunk: EvidenceChunk,
+    *,
+    fallback_rank: int,
+    max_tokens: int,
+    token_counter: Callable[[str], int] | None = None,
+) -> list[tuple[str, bool]]:
+    block = format_evidence_chunk(chunk, fallback_rank=fallback_rank)
+    if _token_count(block, token_counter) <= max_tokens:
+        return [(block, False)]
+
+    marker_overhead = _token_count(
+        _format_evidence_chunk_part(
+            chunk,
+            fallback_rank=fallback_rank,
+            part_index=1,
+            part_count=999,
+            text="",
+        ),
+        token_counter,
+    )
+    text_budget = max_tokens - marker_overhead - 8
+    if text_budget <= 0:
+        raise ValueError("Evidence token budget is too small for chunk metadata")
+
+    while text_budget > 0:
+        parts = split_text_by_tokens(chunk.text or "", text_budget, model=settings.text_model)
+        part_count = len(parts)
+        blocks = [
+            _format_evidence_chunk_part(
+                chunk,
+                fallback_rank=fallback_rank,
+                part_index=index,
+                part_count=part_count,
+                text=part,
+            )
+            for index, part in enumerate(parts, start=1)
+        ]
+        if all(_token_count(item, token_counter) <= max_tokens for item in blocks):
+            return [(item, True) for item in blocks]
+        text_budget -= 8
+    raise ValueError("Evidence token budget is too small for split chunk text")
+
+
 def build_evidence_batches(
     chunks: list[EvidenceChunk],
     *,
     max_chars: int | None = None,
+    max_tokens: int | None = None,
+    token_counter: Callable[[str], int] | None = None,
 ) -> list[EvidenceBatch]:
     """Split evidence into ordered context batches below ``max_chars``.
 
@@ -98,6 +169,54 @@ def build_evidence_batches(
     """
     if not chunks:
         return []
+
+    token_cap = max_tokens if max_tokens and max_tokens > 0 else None
+    if token_cap is not None:
+        batches: list[EvidenceBatch] = []
+        current_blocks: list[str] = []
+        current_chunks: list[EvidenceChunk] = []
+        current_tokens = 0
+        separator = "\n\n"
+        separator_tokens = _token_count(separator, token_counter)
+
+        def flush_current() -> None:
+            nonlocal current_blocks, current_chunks, current_tokens
+            if not current_blocks:
+                return
+            batches.append(
+                EvidenceBatch(
+                    batch_index=len(batches) + 1,
+                    chunks=list(current_chunks),
+                    context=separator.join(current_blocks).strip(),
+                )
+            )
+            current_blocks = []
+            current_chunks = []
+            current_tokens = 0
+
+        for fallback_rank, chunk in enumerate(chunks, start=1):
+            for block, was_split in _evidence_blocks_for_token_budget(
+                chunk,
+                fallback_rank=fallback_rank,
+                max_tokens=token_cap,
+                token_counter=token_counter,
+            ):
+                block_tokens = _token_count(block, token_counter)
+                if block_tokens > token_cap:
+                    raise ValueError("Evidence block exceeds token budget after splitting")
+                extra = separator_tokens if current_blocks else 0
+                if current_blocks and current_tokens + extra + block_tokens > token_cap:
+                    flush_current()
+                    extra = 0
+                current_blocks.append(block)
+                current_chunks.append(chunk)
+                current_tokens += extra + block_tokens
+                if was_split:
+                    # Split blocks are complete continuations, not truncations.
+                    continue
+
+        flush_current()
+        return batches
 
     cap = max_chars if max_chars and max_chars > 0 else None
     if cap is None:
@@ -239,9 +358,69 @@ def build_summary_batches(
     summaries: list[str],
     *,
     max_chars: int | None = None,
+    max_tokens: int | None = None,
+    token_counter: Callable[[str], int] | None = None,
 ) -> list[SummaryBatch]:
     if not summaries:
         return []
+
+    token_cap = max_tokens if max_tokens and max_tokens > 0 else None
+    if token_cap is not None:
+        batches: list[SummaryBatch] = []
+        current_blocks: list[str] = []
+        current_indexes: list[int] = []
+        current_tokens = 0
+        separator = "\n\n"
+        separator_tokens = _token_count(separator, token_counter)
+
+        def flush_current() -> None:
+            nonlocal current_blocks, current_indexes, current_tokens
+            if not current_blocks:
+                return
+            batches.append(
+                SummaryBatch(
+                    batch_index=len(batches) + 1,
+                    context=separator.join(current_blocks).strip(),
+                    summary_indexes=list(current_indexes),
+                )
+            )
+            current_blocks = []
+            current_indexes = []
+            current_tokens = 0
+
+        for index, summary in enumerate(summaries, start=1):
+            block = _format_summary_block(summary, summary_index=index)
+            block_tokens = _token_count(block, token_counter)
+            if block_tokens > token_cap:
+                overhead = _token_count(_format_summary_block("", summary_index=index), token_counter)
+                text_budget = token_cap - overhead - 8
+                if text_budget <= 0:
+                    raise ValueError("Summary token budget is too small for summary metadata")
+                while text_budget > 0:
+                    parts = split_text_by_tokens(summary, text_budget, model=settings.text_model)
+                    blocks = [_format_summary_block(part, summary_index=index) for part in parts]
+                    if all(_token_count(item, token_counter) <= token_cap for item in blocks):
+                        break
+                    text_budget -= 8
+                else:
+                    raise ValueError("Summary token budget is too small for split summary text")
+            else:
+                blocks = [block]
+
+            for item in blocks:
+                item_tokens = _token_count(item, token_counter)
+                if item_tokens > token_cap:
+                    raise ValueError("Summary block exceeds token budget after splitting")
+                extra = separator_tokens if current_blocks else 0
+                if current_blocks and current_tokens + extra + item_tokens > token_cap:
+                    flush_current()
+                    extra = 0
+                current_blocks.append(item)
+                current_indexes.append(index)
+                current_tokens += extra + item_tokens
+
+        flush_current()
+        return batches
 
     cap = max_chars if max_chars and max_chars > 0 else None
     if cap is None:

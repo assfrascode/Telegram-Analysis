@@ -41,11 +41,22 @@ def test_chunk_payload_contains_retrieval_metadata() -> None:
         has_media=True,
         payload={"telegram_message_ids": [10, 11], "media_types": ["image"]},
     )
-    payload = chunk_payload(chunk, embedding_model="test-model")
+    payload = chunk_payload(
+        chunk,
+        embedding_model="test-model",
+        subchunk_index=2,
+        subchunk_count=3,
+        subchunk_text="subchunk text",
+        subchunk_tokens=42,
+    )
     assert payload["job_id"] == str(job_id)
     assert payload["chunk_id"] == str(chunk_id)
+    assert payload["parent_chunk_id"] == str(chunk_id)
     assert payload["chunk_index"] == 3
+    assert payload["subchunk_index"] == 2
+    assert payload["subchunk_count"] == 3
+    assert payload["subchunk_tokens"] == 42
     assert payload["telegram_message_ids"] == [10, 11]
     assert payload["media_types"] == ["image"]
     assert payload["embedding_model"] == "test-model"
-    assert payload["text_preview"].startswith("hello world")
+    assert payload["text_preview"] == "subchunk text"

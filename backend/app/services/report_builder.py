@@ -226,7 +226,27 @@ def build_bluf_synthesis_prompt(questions: list[ReportQuestion]) -> str:
     source_questions = bluf_source_questions(questions)
     if not source_questions:
         return ""
+    return build_bluf_synthesis_prompt_from_blocks(bluf_question_blocks(source_questions))
 
+
+def bluf_question_blocks(questions: list[ReportQuestion]) -> list[str]:
+    blocks: list[str] = []
+    for question in questions:
+        blocks.append(
+            "\n".join(
+                [
+                    f"Frage {question.index}:",
+                    f"Ausgangsfrage: {question.question.strip()}",
+                    f"Kurzantwort: {question.short_answer.strip()}",
+                ]
+            )
+        )
+    return blocks
+
+
+def build_bluf_synthesis_prompt_from_blocks(blocks: list[str]) -> str:
+    if not blocks:
+        return ""
     lines = [
         "Erstelle eine knappe deutsche BLUF für den Hauptreport.",
         "Nutze ausschließlich die folgenden Fragen und Kurzantworten.",
@@ -237,12 +257,26 @@ def build_bluf_synthesis_prompt(questions: list[ReportQuestion]) -> str:
         "",
         "Fragen und Kurzantworten:",
     ]
-    for question in source_questions:
+    for block in blocks:
+        lines.extend([block.strip(), ""])
+    return "\n".join(lines).strip()
+
+
+def build_bluf_reduce_prompt(summaries: list[str]) -> str:
+    lines = [
+        "Erstelle eine finale knappe deutsche BLUF aus den folgenden Teil-BLUFs.",
+        "Nutze ausschließlich die Teil-BLUFs. Erfinde keine neuen Fakten.",
+        "Fasse die wichtigsten übergreifenden Befunde zusammen und bewahre Unsicherheiten.",
+        "Schreibe 3 bis 6 kurze Sätze oder kompakte Absätze.",
+        "",
+        "Teil-BLUFs:",
+    ]
+    for index, summary in enumerate(summaries, start=1):
         lines.extend(
             [
-                f"Frage {question.index}:",
-                f"Ausgangsfrage: {question.question.strip()}",
-                f"Kurzantwort: {question.short_answer.strip()}",
+                f"[TEIL_BLUF index={index}]",
+                summary.strip(),
+                "[/TEIL_BLUF]",
                 "",
             ]
         )

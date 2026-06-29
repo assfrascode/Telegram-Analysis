@@ -31,21 +31,34 @@ def _iso_or_none(value: datetime | None) -> str | None:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def chunk_payload(chunk: MessageChunk, *, embedding_model: str) -> dict[str, Any]:
+def chunk_payload(
+    chunk: MessageChunk,
+    *,
+    embedding_model: str,
+    subchunk_index: int = 1,
+    subchunk_count: int = 1,
+    subchunk_text: str | None = None,
+    subchunk_tokens: int | None = None,
+) -> dict[str, Any]:
+    preview_text = subchunk_text if subchunk_text is not None else chunk.text
     payload = dict(chunk.payload or {})
     payload.update(
         {
             "job_id": str(chunk.job_id),
             "chunk_id": str(chunk.id),
+            "parent_chunk_id": str(chunk.id),
             "chunk_index": chunk.chunk_index,
             "chunk_hash": chunk.chunk_hash,
+            "subchunk_index": subchunk_index,
+            "subchunk_count": subchunk_count,
+            "subchunk_tokens": subchunk_tokens,
             "message_ids": list(chunk.message_ids or []),
             "start_timestamp": _iso_or_none(chunk.start_timestamp),
             "end_timestamp": _iso_or_none(chunk.end_timestamp),
             "has_media": bool(chunk.has_media),
             "embedding_model": embedding_model,
             # Useful for Qdrant-only inspection; Postgres remains source of truth.
-            "text_preview": chunk.text[:800],
+            "text_preview": preview_text[:800],
         }
     )
     return payload
@@ -109,6 +122,7 @@ class QdrantIndex:
         indexes = {
             "job_id": "keyword",
             "chunk_id": "keyword",
+            "parent_chunk_id": "keyword",
             "embedding_model": "keyword",
             "has_media": "bool",
         }

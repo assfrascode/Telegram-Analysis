@@ -102,6 +102,20 @@ def test_build_evidence_batches_truncates_oversized_single_chunk():
     assert "CONTEXT_TRUNCATED" in batches[0].context
 
 
+def test_build_evidence_batches_token_budget_splits_without_truncating():
+    batches = build_evidence_batches(
+        [_chunk(1, "RAW-LONG " + "x" * 500)],
+        max_tokens=240,
+        token_counter=len,
+    )
+
+    assert len(batches) > 1
+    assert all(len(batch.context) <= 240 for batch in batches)
+    assert all(not batch.truncated for batch in batches)
+    assert "CONTEXT_TRUNCATED" not in "\n".join(batch.context for batch in batches)
+    assert "part=1/" in batches[0].context
+
+
 def test_build_answer_prompt_contains_question_and_context():
     prompt = build_answer_prompt("Welche Narrative?", "Evidence")
 

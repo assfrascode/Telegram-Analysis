@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     vision_model: str = "google/gemma-4-E2B-it"
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
+    prompt_limit_safety_tokens: int = 256
+    prompt_limit_tiktoken_ratio: float = 0.75
+    prompt_limit_tiktoken_encoding: str = "cl100k_base"
+    prompt_limit_cache_ttl_seconds: int = 300
+    prompt_limit_models_timeout_seconds: float = 10.0
+    prompt_limit_mock_max_model_len: int = 128_000
+    prompt_limit_chat_message_overhead_tokens: int = 16
+    prompt_limit_rerank_pair_overhead_tokens: int = 16
+    # Optional JSON map used only when /v1/models does not expose max_model_len.
+    # Keys may be the model name or "{base_url}|{model_name}".
+    prompt_limit_max_model_len_overrides: dict[str, int] = Field(default_factory=dict)
 
     max_active_jobs: int = 2
     max_pending_media_tasks: int = 20000
