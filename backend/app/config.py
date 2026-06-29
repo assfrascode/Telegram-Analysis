@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     telegram_sync_timeout_seconds: int = 20 * 60
     telegram_media_download_timeout_seconds: int = 10 * 60
     telegram_sync_retry_minutes: int = 5
+    telegram_external_coverage_wait_seconds: int = 300
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
 

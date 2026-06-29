@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Self
+from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -224,6 +224,7 @@ class TelegramChatUpdateRequest(BaseModel):
 class TelegramChatResponse(BaseModel):
     id: uuid.UUID
     telegram_chat_id: int
+    ingest_mode: str = "backend_pull"
     title: str
     username: str | None = None
     chat_type: str
@@ -303,3 +304,73 @@ class TelegramReportScheduleResponse(BaseModel):
     last_error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TelegramIngestTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class TelegramIngestTokenResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    created_at: datetime
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+class TelegramIngestTokenCreateResponse(TelegramIngestTokenResponse):
+    token: str
+
+
+class TelegramIngestChatUpsertRequest(BaseModel):
+    telegram_chat_id: int
+    access_hash: str | None = None
+    title: str = Field(min_length=1, max_length=512)
+    username: str | None = Field(default=None, max_length=255)
+    chat_type: str = Field(pattern="^(group|megagroup|channel)$")
+    initial_sync_from: datetime
+    sync_interval_minutes: int = Field(default=60)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> Self:
+        if self.sync_interval_minutes not in {15, 60, 360, 1440}:
+            raise ValueError("sync_interval_minutes must be one of 15, 60, 360, 1440")
+        return self
+
+
+class TelegramIngestChatUpsertResponse(BaseModel):
+    chat: TelegramChatResponse
+
+
+class TelegramIngestClaimResponse(BaseModel):
+    run_id: uuid.UUID
+    chat: TelegramChatResponse
+    requested_start: datetime
+    requested_end: datetime
+
+
+class TelegramIngestMessageInput(BaseModel):
+    telegram_message_id: int
+    timestamp: datetime
+    edited_timestamp: datetime | None = None
+    sender_id: str | None = Field(default=None, max_length=255)
+    sender_name: str | None = Field(default=None, max_length=512)
+    message_type: str | None = Field(default=None, max_length=128)
+    reply_to_message_id: int | None = None
+    forwarded_from: str | None = Field(default=None, max_length=512)
+    reactions: list[dict] = Field(default_factory=list)
+    text: str = ""
+    raw: dict = Field(default_factory=dict)
+
+
+class TelegramIngestMessagesRequest(BaseModel):
+    messages: list[TelegramIngestMessageInput] = Field(min_length=1, max_length=1000)
+
+
+class TelegramIngestRunCompleteRequest(BaseModel):
+    status: Literal["completed", "failed"]
+    messages_seen: int = Field(default=0, ge=0)
+    attachments_seen: int = Field(default=0, ge=0)
+    attachments_failed: int = Field(default=0, ge=0)
+    error_message: str | None = Field(default=None, max_length=4000)
+    retry_after_seconds: int | None = Field(default=None, ge=1)

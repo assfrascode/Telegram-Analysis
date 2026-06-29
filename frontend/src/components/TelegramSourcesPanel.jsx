@@ -222,7 +222,11 @@ function CollectedChatsTable({ chats, busy, onSync, onUpdate }) {
                 <tr key={chat.id} className={chat.status === "archived" ? "is-archived" : ""}>
                   <td>
                     <strong>{chat.title}</strong>
-                    <span>{chat.username ? `@${chat.username}` : chat.chat_type}</span>
+                    <span>
+                      {chat.ingest_mode === "external_push"
+                        ? "External collector"
+                        : chat.username ? `@${chat.username}` : chat.chat_type}
+                    </span>
                     {chat.last_error && <span className="table-error">{chat.last_error}</span>}
                   </td>
                   <td>
@@ -643,17 +647,6 @@ export function TelegramSourcesPanel({
             onLoadDialogs={loadDialogs}
             onAddChat={addChat}
           />
-          <CollectedChatsTable chats={chats} busy={busy} onSync={syncChat} onUpdate={updateChat} />
-          <ScheduledReportsSection
-            chats={chats}
-            questionSets={questionSets}
-            schedules={schedules}
-            busy={busy}
-            onSave={saveSchedule}
-            onDelete={deleteSchedule}
-            onToggle={toggleSchedule}
-            onOpenJob={onSelectJob}
-          />
         </>
       ) : (
         <ConnectionSetup
@@ -675,6 +668,17 @@ export function TelegramSourcesPanel({
           onVerifyPassword={verifyPassword}
         />
       )}
+      <CollectedChatsTable chats={chats} busy={busy} onSync={syncChat} onUpdate={updateChat} />
+      <ScheduledReportsSection
+        chats={chats}
+        questionSets={questionSets}
+        schedules={schedules}
+        busy={busy}
+        onSave={saveSchedule}
+        onDelete={deleteSchedule}
+        onToggle={toggleSchedule}
+        onOpenJob={onSelectJob}
+      />
     </section>
   );
 }

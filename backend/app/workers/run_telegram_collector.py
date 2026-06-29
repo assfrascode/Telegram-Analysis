@@ -12,6 +12,7 @@ from app.db import SessionLocal, init_db
 from app.models import (
     TelegramChat,
     TelegramChatStatus,
+    TelegramIngestMode,
     TelegramSyncRun,
     TelegramSyncStatus,
 )
@@ -32,6 +33,7 @@ async def claim_due_chat() -> uuid.UUID | None:
             await session.execute(
                 select(TelegramChat)
                 .where(
+                    TelegramChat.ingest_mode == TelegramIngestMode.backend_pull,
                     TelegramChat.status.in_(
                         [
                             TelegramChatStatus.active,

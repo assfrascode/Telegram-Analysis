@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -17,8 +17,11 @@ from app.models import (
     MediaTranscript,
     StepStatus,
     TelegramChat,
+    TelegramIngestMode,
     TelegramMedia,
     TelegramMessage,
+    TelegramSyncRun,
+    TelegramSyncStatus,
 )
 from app.services.telegram_sync import TelegramSyncError, synchronize_chat
 from app.workers import subjects
@@ -40,11 +43,6 @@ class TelegramSnapshotWorker(Worker):
         chat = await session.get(TelegramChat, job.telegram_chat_id)
         if chat is None or job.report_start_at is None or job.report_end_at is None:
             raise TelegramSyncError("Telegram report interval is incomplete")
-        await self._wait_for_chat_lease(session, job, chat)
-        now = datetime.now(timezone.utc)
-        chat.lease_owner = f"report:{job.id}"
-        chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
-        await session.commit()
         print(
             f"Telegram report sync started job_id={job.id} chat_id={chat.id} "
             f"range={job.report_start_at.isoformat()}..{job.report_end_at.isoformat()}",
@@ -67,13 +65,21 @@ class TelegramSnapshotWorker(Worker):
         await session.commit()
 
         try:
-            run = await synchronize_chat(
-                session,
-                chat=chat,
-                requested_start=job.report_start_at,
-                requested_end=job.report_end_at,
-                job_id=job.id,
-            )
+            if chat.ingest_mode == TelegramIngestMode.external_push:
+                run = await self._wait_for_external_coverage(session, job, chat)
+            else:
+                await self._wait_for_chat_lease(session, job, chat)
+                now = datetime.now(timezone.utc)
+                chat.lease_owner = f"report:{job.id}"
+                chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
+                await session.commit()
+                run = await synchronize_chat(
+                    session,
+                    chat=chat,
+                    requested_start=job.report_start_at,
+                    requested_end=job.report_end_at,
+                    job_id=job.id,
+                )
         except TelegramSyncError as exc:
             print(
                 f"Telegram report sync failed job_id={job.id} chat_id={chat.id}: {exc}",
@@ -92,10 +98,13 @@ class TelegramSnapshotWorker(Worker):
             )
             return
 
+        messages_seen = run.messages_seen if run is not None else 0
+        attachments_seen = run.attachments_seen if run is not None else 0
+        attachments_failed = run.attachments_failed if run is not None else 0
         print(
             f"Telegram report sync completed job_id={job.id} chat_id={chat.id} "
-            f"messages={run.messages_seen} attachments={run.attachments_seen} "
-            f"attachment_failures={run.attachments_failed}",
+            f"messages={messages_seen} attachments={attachments_seen} "
+            f"attachment_failures={attachments_failed}",
             flush=True,
         )
         await self.emit_event(
@@ -104,9 +113,10 @@ class TelegramSnapshotWorker(Worker):
             event_type="telegram.sync.completed",
             message="Telegram-Synchronisierung abgeschlossen",
             payload={
-                "messages_seen": run.messages_seen,
-                "attachments_seen": run.attachments_seen,
-                "attachments_failed": run.attachments_failed,
+                "messages_seen": messages_seen,
+                "attachments_seen": attachments_seen,
+                "attachments_failed": attachments_failed,
+                "ingest_mode": chat.ingest_mode.value,
             },
         )
         await session.commit()
@@ -272,6 +282,90 @@ class TelegramSnapshotWorker(Worker):
                 "task_key": f"{next_key}:{job.id}",
             },
         )
+
+    def _chat_covers_report(self, chat: TelegramChat, job: Job) -> bool:
+        return bool(
+            chat.coverage_start
+            and chat.coverage_end
+            and job.report_start_at
+            and job.report_end_at
+            and chat.coverage_start <= job.report_start_at
+            and chat.coverage_end >= job.report_end_at
+        )
+
+    async def _latest_completed_external_run(
+        self,
+        session: AsyncSession,
+        job: Job,
+        chat: TelegramChat,
+    ) -> TelegramSyncRun | None:
+        return (
+            await session.execute(
+                select(TelegramSyncRun)
+                .where(
+                    TelegramSyncRun.chat_id == chat.id,
+                    TelegramSyncRun.status == TelegramSyncStatus.completed,
+                    TelegramSyncRun.requested_start <= job.report_start_at,
+                    TelegramSyncRun.requested_end >= job.report_end_at,
+                )
+                .order_by(desc(TelegramSyncRun.completed_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def _wait_for_external_coverage(
+        self,
+        session: AsyncSession,
+        job: Job,
+        chat: TelegramChat,
+    ) -> TelegramSyncRun | None:
+        now = datetime.now(timezone.utc)
+        chat.next_sync_at = now
+        chat.updated_at = now
+        await session.commit()
+
+        deadline = now + timedelta(seconds=settings.telegram_external_coverage_wait_seconds)
+        waiting_event_emitted = False
+        while True:
+            await session.refresh(chat)
+            if self._chat_covers_report(chat, job):
+                return await self._latest_completed_external_run(session, job, chat)
+
+            if datetime.now(timezone.utc) >= deadline:
+                detail = "External Telegram collector did not provide the requested coverage before timeout"
+                if chat.last_error:
+                    detail = f"{detail}: {chat.last_error}"
+                raise TelegramSyncError(detail)
+
+            if not waiting_event_emitted:
+                await self.emit_event(
+                    session,
+                    job=job,
+                    event_type="telegram.sync.waiting",
+                    message="Bericht wartet auf externe Telegram-Synchronisierung",
+                    level="warning",
+                    payload={
+                        "chat_id": str(chat.id),
+                        "ingest_mode": chat.ingest_mode.value,
+                        "coverage_start": chat.coverage_start.isoformat()
+                        if chat.coverage_start
+                        else None,
+                        "coverage_end": chat.coverage_end.isoformat()
+                        if chat.coverage_end
+                        else None,
+                        "timeout_seconds": settings.telegram_external_coverage_wait_seconds,
+                    },
+                )
+                await session.commit()
+                waiting_event_emitted = True
+
+            await asyncio.sleep(2)
+            await self.checkpoint_cancelled(
+                session,
+                job,
+                event_type="telegram.sync.cancelled",
+                message="Warten auf externe Telegram-Synchronisierung wurde abgebrochen",
+            )
 
     async def _wait_for_chat_lease(
         self,

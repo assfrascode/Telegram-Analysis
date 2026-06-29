@@ -46,7 +46,7 @@ export function CreateJobPanel({
   const questionsReady = questions.length > 0 && questions.every((question) => question.text.trim());
   const sourceReady = sourceMode === "upload"
     ? Boolean(file?.name.toLowerCase().endsWith(".zip"))
-    : Boolean(telegramConnection?.connected && telegramChatId && reportStart && reportEnd);
+    : Boolean(telegramChatId && reportStart && reportEnd);
 
   const sourceSummary = useMemo(() => {
     if (sourceMode === "upload") return file?.name || "No export selected";
@@ -142,11 +142,11 @@ export function CreateJobPanel({
                   <small className={file && !file.name.toLowerCase().endsWith(".zip") ? "error-text" : ""}>{fileText}</small>
                 </span>
               </label>
-            ) : !telegramConnection?.connected || !activeChats.length ? (
+            ) : !activeChats.length ? (
               <div className="source-empty-state">
                 <div>
-                  <strong>{telegramConnection?.connected ? "No collected chats available" : "Telegram is not connected"}</strong>
-                  <p>Connect an account and add a group or channel before creating a chat-based analysis.</p>
+                  <strong>No collected chats available</strong>
+                  <p>Add a backend-connected chat or register one through an external collector before creating a chat-based analysis.</p>
                 </div>
                 <button className="button button-secondary" type="button" onClick={onOpenTelegram}>
                   Open Telegram Setup

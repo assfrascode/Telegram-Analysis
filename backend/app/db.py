@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, text
 
 from app.config import get_settings
 
@@ -35,3 +35,25 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    CREATE TYPE telegramingestmode AS ENUM ('backend_pull', 'external_push');
+                EXCEPTION
+                    WHEN duplicate_object THEN NULL;
+                END $$;
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE telegram_chats
+                ADD COLUMN IF NOT EXISTS ingest_mode telegramingestmode
+                DEFAULT 'backend_pull' NOT NULL
+                """
+            )
+        )
+        await conn.execute(text("ALTER TABLE telegram_chats ALTER COLUMN connection_id DROP NOT NULL"))

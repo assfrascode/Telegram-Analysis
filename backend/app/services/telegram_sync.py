@@ -31,6 +31,7 @@ from app.models import (
     TelegramChatStatus,
     TelegramConnection,
     TelegramConnectionStatus,
+    TelegramIngestMode,
     TelegramSyncRun,
     TelegramSyncStatus,
 )
@@ -313,6 +314,8 @@ async def synchronize_chat(
     requested_end = ensure_utc(requested_end)
     if requested_start >= requested_end:
         raise TelegramSyncError("Synchronization start must be before end")
+    if chat.ingest_mode != TelegramIngestMode.backend_pull:
+        raise TelegramSyncError("Telegram chat is configured for external ingestion")
 
     connection = await session.get(TelegramConnection, chat.connection_id)
     if connection is None or connection.status != TelegramConnectionStatus.connected:

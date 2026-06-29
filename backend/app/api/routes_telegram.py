@@ -11,6 +11,7 @@ from app.models import (
     TelegramChat,
     TelegramChatStatus,
     TelegramConnectionStatus,
+    TelegramIngestMode,
     User,
 )
 from app.schemas import (
@@ -69,6 +70,7 @@ def chat_response(chat: TelegramChat) -> TelegramChatResponse:
     return TelegramChatResponse(
         id=chat.id,
         telegram_chat_id=chat.telegram_chat_id,
+        ingest_mode=chat.ingest_mode.value,
         title=chat.title,
         username=chat.username,
         chat_type=chat.chat_type,
@@ -265,6 +267,7 @@ async def create_chat(
         existing.username = dialog["username"]
         existing.chat_type = dialog["chat_type"]
         existing.access_hash = dialog["access_hash"]
+        existing.ingest_mode = TelegramIngestMode.backend_pull
         existing.initial_sync_from = payload.initial_sync_from
         existing.sync_interval_minutes = payload.sync_interval_minutes
         existing.status = TelegramChatStatus.active
@@ -280,6 +283,7 @@ async def create_chat(
             title=dialog["title"],
             username=dialog["username"],
             chat_type=dialog["chat_type"],
+            ingest_mode=TelegramIngestMode.backend_pull,
             initial_sync_from=payload.initial_sync_from,
             sync_interval_minutes=payload.sync_interval_minutes,
             next_sync_at=utc_now(),

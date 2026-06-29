@@ -54,6 +54,11 @@ class JobSourceType(str, enum.Enum):
     telegram_chat = "telegram_chat"
 
 
+class TelegramIngestMode(str, enum.Enum):
+    backend_pull = "backend_pull"
+    external_push = "external_push"
+
+
 class TelegramConnectionStatus(str, enum.Enum):
     pending = "pending"
     connected = "connected"
@@ -127,8 +132,11 @@ class TelegramChat(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
-    connection_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("telegram_connections.id"), index=True
+    connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("telegram_connections.id"), nullable=True, index=True
+    )
+    ingest_mode: Mapped[TelegramIngestMode] = mapped_column(
+        Enum(TelegramIngestMode), default=TelegramIngestMode.backend_pull, index=True
     )
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
     access_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -149,6 +157,18 @@ class TelegramChat(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class TelegramIngestToken(Base):
+    __tablename__ = "telegram_ingest_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TelegramSyncRun(Base):
