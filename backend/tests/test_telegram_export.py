@@ -12,6 +12,11 @@ from app.services.telegram_export import (
     parse_message,
     parse_text,
 )
+from app.services.telegram_html_export import (
+    TelegramHtmlPage,
+    convert_html_export_pages,
+    find_html_export_pages,
+)
 
 
 def test_parse_text_joins_telegram_entity_list():
@@ -121,3 +126,85 @@ def test_classify_audio_and_voice_media() -> None:
     ) == "voice"
     assert classify_media("files/blob.webm", {"mime_type": "audio/webm"}, "file") == "audio"
     assert classify_media("files/audio.mpeg", {"media_type": "audio_file"}, "file") == "audio"
+
+
+def test_convert_telegram_html_message_preserves_core_fields_and_media() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="page_header"><div class="text">Example Chat</div></div>
+        <div class="message default clearfix" id="message42">
+          <div class="body">
+            <div class="pull_right date details" title="01.01.2025 12:00:00 UTC+00:00">12:00</div>
+            <div class="from_name">Alice</div>
+            <div class="reply_to details">
+              In reply to <a href="#go_to_message41" onclick="return GoToMessage(41)">message</a>
+            </div>
+            <div class="forwarded body"><div class="from_name">Forwarded from Channel X</div></div>
+            <a class="photo_wrap clearfix pull_left" href="photos/photo_1.jpg">photo</a>
+            <a class="media_wrap clearfix pull_left video_file" href="video_files/video_1.mp4">video</a>
+            <div class="text">Siehe <a href="https://example.org">https://example.org</a><br>zweite Zeile</div>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    converted = convert_html_export_pages([TelegramHtmlPage(relative_path="messages.html", html=html)])
+
+    assert converted.messages_total == 1
+    assert converted.data["name"] == "Example Chat"
+    message = converted.data["messages"][0]
+    assert message["id"] == 42
+    assert message["from"] == "Alice"
+    assert message["reply_to_message_id"] == 41
+    assert message["forwarded_from"] == "Channel X"
+    assert message["text"] == "Siehe https://example.org\nzweite Zeile"
+    assert message["photo"] == "photos/photo_1.jpg"
+    assert message["file"] == "video_files/video_1.mp4"
+
+    parsed = parse_message(message)
+
+    assert parsed is not None
+    assert parsed.telegram_message_id == 42
+    assert parsed.sender_name == "Alice"
+    assert parsed.text == "Siehe https://example.org\nzweite Zeile"
+    assert [media.media_type for media in parsed.media] == ["image", "video"]
+
+
+def test_convert_telegram_html_split_pages_are_ordered_by_export_page_number() -> None:
+    paths = [
+        "ChatExport/messages2.html",
+        "ChatExport/files/ignored.html",
+        "ChatExport/messages.html",
+        "ChatExport/Nested/messages.html",
+    ]
+    html_by_page = {
+        "messages2.html": '<div class="message default clearfix" id="message2"><div class="text">two</div></div>',
+        "messages.html": '<div class="message default clearfix" id="message1"><div class="text">one</div></div>',
+    }
+
+    pages = [
+        TelegramHtmlPage(relative_path=path.split("/")[-1], html=html_by_page[path.split("/")[-1]])
+        for path in find_html_export_pages(paths)
+    ]
+    converted = convert_html_export_pages(pages)
+
+    assert [page.relative_path for page in pages] == ["messages.html", "messages2.html"]
+    assert [message["id"] for message in converted.data["messages"]] == [1, 2]
+
+
+def test_convert_telegram_html_unsafe_media_path_does_not_break_import() -> None:
+    html = """
+    <div class="message default clearfix" id="message7">
+      <a class="photo_wrap clearfix pull_left" href="../photos/escape.jpg">photo</a>
+      <div class="text">unsafe media</div>
+    </div>
+    """
+
+    converted = convert_html_export_pages([TelegramHtmlPage(relative_path="messages.html", html=html)])
+    parsed = parse_message(converted.data["messages"][0])
+
+    assert parsed is not None
+    assert parsed.media[0].original_path == "../photos/escape.jpg"
+    assert parsed.media[0].missing_reason == "unsafe_path"

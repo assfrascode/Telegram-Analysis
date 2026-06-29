@@ -55,7 +55,7 @@ export function CreateJobPanel({
 
   const fileText = file
     ? `${file.name} - ${formatBytes(file.size)}${file.name.toLowerCase().endsWith(".zip") ? "" : " - ZIP files only"}`
-    : "Choose a Telegram Desktop ZIP export";
+    : "Choose a Telegram Desktop ZIP export with JSON or HTML";
 
   const setOption = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
 

@@ -149,7 +149,14 @@ class ParserWorker(Worker):
         job_id = uuid.UUID(payload["job_id"])
         job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
 
-        await self.emit_event(session, job=job, event_type="telegram.parse.started", message="Telegram result.json Parsing gestartet")
+        source_format = str(payload.get("source_format") or "json")
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="telegram.parse.started",
+            message="Telegram-Export Parsing gestartet",
+            payload={"source_format": source_format},
+        )
 
         prefix = payload.get("extracted_prefix") or extracted_prefix(job.owner_user_id, job.id)
         result_object_key = payload.get("result_json_object_key")
@@ -158,13 +165,13 @@ class ParserWorker(Worker):
 
         if not result_object_key:
             job.status = JobStatus.failed
-            job.error_message = "result.json not found in extracted Telegram export"
+            job.error_message = "parseable Telegram export data not found"
             job.completed_at = datetime.now(timezone.utc)
             await self.emit_event(
                 session,
                 job=job,
                 event_type="telegram.parse.failed",
-                message="Keine result.json im extrahierten Telegram-Export gefunden",
+                message="Keine parsebare Telegram-Exportdatei gefunden",
                 level="error",
             )
             return
@@ -182,8 +189,12 @@ class ParserWorker(Worker):
                 session,
                 job=job,
                 event_type="telegram.parse.progress",
-                message="result.json geladen; Message-Parsing läuft",
-                payload={"messages_total": messages_total, "export_root_prefix": export_root_prefix},
+                message="Telegram-Export geladen; Message-Parsing läuft",
+                payload={
+                    "messages_total": messages_total,
+                    "export_root_prefix": export_root_prefix,
+                    "source_format": source_format,
+                },
             )
 
             messages_done = 0
@@ -221,6 +232,7 @@ class ParserWorker(Worker):
                                 "media_total": media_total,
                                 "media_available": media_available,
                                 "media_missing": media_missing,
+                                "source_format": source_format,
                             },
                         )
 
@@ -236,7 +248,7 @@ class ParserWorker(Worker):
                 session,
                 job=job,
                 event_type="telegram.parse.completed",
-                message="Telegram result.json Parsing abgeschlossen",
+                message="Telegram-Export Parsing abgeschlossen",
                 payload={
                     "messages_total": messages_done,
                     "media_total": media_total,
@@ -244,6 +256,7 @@ class ParserWorker(Worker):
                     "media_missing": media_missing,
                     "result_json_object_key": result_object_key,
                     "export_root_prefix": export_root_prefix,
+                    "source_format": source_format,
                 },
             )
         finally:

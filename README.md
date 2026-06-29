@@ -10,7 +10,7 @@ The project is still an MVP, but it includes a functional backend, worker pipeli
 - Two analysis sources:
   - Telegram Desktop ZIP exports uploaded through MinIO presigned PUTs or backend streaming.
   - Collected Telegram groups/channels synchronized by the backend or by an external collector.
-- Secure ZIP validation, extraction, Telegram `result.json` parsing, and media inventory creation.
+- Secure ZIP validation, extraction, Telegram JSON/HTML export parsing, and media inventory creation.
 - Telegram account connection with API ID/hash login, code verification, optional two-step password verification, encrypted sessions, and disconnect support.
 - External Telegram collector mode for keeping Telegram credentials outside the backend.
 - Saved question sets with default analysis options for reusable templates.
@@ -98,7 +98,7 @@ BOOTSTRAP_ADMIN_PASSWORD=change-me
 
 ### ZIP Exports
 
-Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export. The browser uses a direct MinIO upload when possible and falls back to backend streaming for larger files.
+Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export in JSON or HTML format. The browser uses a direct MinIO upload when possible and falls back to backend streaming for larger files.
 
 ### Backend Telegram Collection
 

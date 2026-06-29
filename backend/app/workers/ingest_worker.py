@@ -101,17 +101,34 @@ class ExtractWorker(Worker):
 
         if not extraction.result_json_object_key:
             job.status = JobStatus.failed
-            job.error_message = "Telegram export result.json not found"
+            job.error_message = "Telegram export result.json or parseable messages.html not found"
             job.completed_at = datetime.now(timezone.utc)
             await self.emit_event(
                 session,
                 job=job,
                 event_type="telegram.parse.failed",
-                message="Keine result.json im Telegram-Export gefunden",
+                message="Keine result.json oder parsebare messages.html im Telegram-Export gefunden",
                 level="error",
-                payload={"extracted_prefix": extraction.extracted_prefix},
+                payload={
+                    "extracted_prefix": extraction.extracted_prefix,
+                    "html_pages_total": extraction.html_pages_total,
+                    "html_messages_total": extraction.html_messages_total,
+                },
             )
             return
+
+        if extraction.source_format == "html":
+            await self.emit_event(
+                session,
+                job=job,
+                event_type="telegram.html.converted",
+                message="Telegram HTML-Export in internes JSON-Format konvertiert",
+                payload={
+                    "html_pages_total": extraction.html_pages_total,
+                    "html_messages_total": extraction.html_messages_total,
+                    "result_json_object_key": extraction.result_json_object_key,
+                },
+            )
 
         await self.emit_event(
             session,
@@ -123,6 +140,9 @@ class ExtractWorker(Worker):
                 "bytes_total": extraction.bytes_total,
                 "extracted_prefix": extraction.extracted_prefix,
                 "result_json_object_key": extraction.result_json_object_key,
+                "source_format": extraction.source_format,
+                "html_pages_total": extraction.html_pages_total,
+                "html_messages_total": extraction.html_messages_total,
             },
         )
 
@@ -142,6 +162,7 @@ class ExtractWorker(Worker):
                 "upload_id": str(job.upload_id),
                 "extracted_prefix": extraction.extracted_prefix,
                 "result_json_object_key": extraction.result_json_object_key,
+                "source_format": extraction.source_format,
                 "task_key": f"parse:{job.id}",
             },
         )
