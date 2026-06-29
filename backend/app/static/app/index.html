@@ -20,8 +20,12 @@
         <span class="app-mark">CA</span>
         <span class="eyebrow">Chat Analyse</span>
       </div>
-      <h1>Analysekonsole</h1>
-      <p class="login-copy">Authentifizierung für Uploads, Jobs, WebSocket-Monitoring und Report-Download.</p>
+      <div class="auth-mode-toggle" role="tablist" aria-label="Authentifizierungsmodus">
+        <button id="authModeLogin" class="auth-mode-button is-active" type="button">Login</button>
+        <button id="authModeRegister" class="auth-mode-button" type="button">Account erstellen</button>
+      </div>
+      <h1 id="authTitle">Analysekonsole</h1>
+      <p id="authCopy" class="login-copy">Authentifizierung für Uploads, Jobs, WebSocket-Monitoring und Report-Download.</p>
 
       <label class="field">
         <span>E-Mail</span>
@@ -31,6 +35,11 @@
         <span>Passwort</span>
         <input id="password" type="password" autocomplete="current-password" value="change-me">
       </label>
+      <label id="confirmPasswordField" class="field" hidden>
+        <span>Passwort bestätigen</span>
+        <input id="confirmPassword" type="password" autocomplete="new-password">
+      </label>
+      <p id="authMessage" class="auth-message auth-message-error" hidden></p>
       <button id="login" class="button button-primary button-full" type="button">Login</button>
     </section>
   </main>

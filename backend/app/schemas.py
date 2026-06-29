@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from typing import Literal, Self
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ALLOWED_REPORT_WINDOW_DAYS = {1, 7, 14, 30}
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class TokenResponse(BaseModel):
@@ -17,6 +19,19 @@ class TokenResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=512)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not EMAIL_PATTERN.fullmatch(normalized):
+            raise ValueError("email must be a valid email address")
+        return normalized
 
 
 class UploadCreateRequest(BaseModel):

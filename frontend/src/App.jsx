@@ -313,6 +313,23 @@ export default function App() {
     }
   };
 
+  const register = async ({ email, password }) => {
+    setBusy(true);
+    try {
+      const data = await apiJson("/auth/register", { method: "POST", body: { email, password } });
+      setToken(data.access_token);
+      sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
+      addLocalLog("Account created");
+      showToast("Account created");
+      setActiveView(currentJobId ? "monitor" : "analysis");
+    } catch (error) {
+      showToast("Registration failed", "error");
+      addLocalLog(`Registration failed: ${error.message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const logout = () => {
     setToken(null);
     setCurrentJobId(null);
@@ -537,7 +554,7 @@ export default function App() {
   if (!isLoggedIn) {
     return (
       <>
-        <LoginView onLogin={login} busy={busy} />
+        <LoginView onLogin={login} onRegister={register} busy={busy} />
         <Toast toast={toast} />
       </>
     );

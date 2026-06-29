@@ -34,6 +34,7 @@ const state = {
   deadLetters: [],
   uploadInProgress: false,
   mainMode: sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "create",
+  authMode: "login",
 };
 
 const STAGES = [
@@ -110,7 +111,7 @@ function shortId(id) {
 }
 
 function setBusy(isBusy) {
-  ["start", "login", "refreshCapacity", "refreshJobs", "refreshJob"].forEach((id) => {
+  ["start", "login", "authModeLogin", "authModeRegister", "refreshCapacity", "refreshJobs", "refreshJob"].forEach((id) => {
     const el = $(id);
     if (el) el.disabled = isBusy;
   });
@@ -272,6 +273,35 @@ function setSessionUi() {
   renderShell();
 }
 
+function showAuthMessage(message = "") {
+  const el = $("authMessage");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = !message;
+}
+
+function setAuthMode(mode) {
+  state.authMode = mode;
+  const isRegistering = mode === "register";
+
+  $("authModeLogin")?.classList.toggle("is-active", !isRegistering);
+  $("authModeRegister")?.classList.toggle("is-active", isRegistering);
+  if ($("authTitle")) $("authTitle").textContent = isRegistering ? "Account erstellen" : "Analysekonsole";
+  if ($("authCopy")) {
+    $("authCopy").textContent = isRegistering
+      ? "Account für Uploads, Jobs, WebSocket-Monitoring und Report-Download erstellen."
+      : "Authentifizierung für Uploads, Jobs, WebSocket-Monitoring und Report-Download.";
+  }
+  if ($("password")) {
+    $("password").autocomplete = isRegistering ? "new-password" : "current-password";
+    $("password").value = isRegistering ? "" : $("password").value;
+  }
+  if ($("confirmPassword")) $("confirmPassword").value = "";
+  if ($("confirmPasswordField")) $("confirmPasswordField").hidden = !isRegistering;
+  if ($("login")) $("login").textContent = isRegistering ? "Account erstellen" : "Login";
+  showAuthMessage("");
+}
+
 async function apiJson(url, options = {}) {
   const res = await fetch(url, {
     ...options,
@@ -285,7 +315,13 @@ async function apiJson(url, options = {}) {
 }
 
 async function login() {
+  if (state.authMode === "register") {
+    await registerAccount();
+    return;
+  }
+
   setBusy(true);
+  showAuthMessage("");
   try {
     const data = await apiJson("/auth/login", {
       method: "POST",
@@ -302,6 +338,37 @@ async function login() {
   } catch (err) {
     showToast("Login fehlgeschlagen", "error");
     addLocalLog(`Login fehlgeschlagen: ${err.message}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function registerAccount() {
+  const password = $("password").value;
+  if (password !== $("confirmPassword").value) {
+    showAuthMessage("Passwörter stimmen nicht überein.");
+    return;
+  }
+
+  setBusy(true);
+  showAuthMessage("");
+  try {
+    const data = await apiJson("/auth/register", {
+      method: "POST",
+      headers: {},
+      body: JSON.stringify({email: $("email").value.trim(), password}),
+    });
+    state.token = data.access_token;
+    sessionStorage.setItem(STORAGE_TOKEN, state.token);
+    setSessionUi();
+    addLocalLog("Account erstellt");
+    showToast("Account erstellt");
+    await Promise.allSettled([refreshCapacity(), refreshJobs(), refreshQuestionSets()]);
+    if (state.currentJobId) await selectJob(state.currentJobId, {connect: true});
+    else setMainMode("create");
+  } catch (err) {
+    showToast("Registrierung fehlgeschlagen", "error");
+    addLocalLog(`Registrierung fehlgeschlagen: ${err.message}`, "error");
   } finally {
     setBusy(false);
   }
@@ -1274,6 +1341,8 @@ function bindUploadDropZone() {
 
 function bindEvents() {
   $("login").addEventListener("click", login);
+  $("authModeLogin").addEventListener("click", () => setAuthMode("login"));
+  $("authModeRegister").addEventListener("click", () => setAuthMode("register"));
   $("logout").addEventListener("click", logout);
   $("newJob").addEventListener("click", startNewJobView);
   $("openCapacity").addEventListener("click", openCapacityModal);
