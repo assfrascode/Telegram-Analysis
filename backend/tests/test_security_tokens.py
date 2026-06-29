@@ -1,4 +1,7 @@
+import os
 from uuid import uuid4
+
+os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from app.security import create_access_token
 

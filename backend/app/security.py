@@ -15,6 +15,10 @@ ALGORITHM = "HS256"
 TOKEN_TYPE_ACCESS = "access"
 
 
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -36,7 +40,7 @@ def create_access_token(user_id: UUID) -> str:
 
 
 async def authenticate_user(session: AsyncSession, email: str, password: str) -> User | None:
-    normalized_email = email.strip().lower()
+    normalized_email = normalize_email(email)
     result = await session.execute(select(User).where(User.email == normalized_email, User.is_active.is_(True)))
     user = result.scalar_one_or_none()
     if user and verify_password(password, user.password_hash):

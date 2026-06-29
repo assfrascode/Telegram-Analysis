@@ -60,6 +60,37 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   gap: 0.75rem;
 }
 
+.auth-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-bottom: 1.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 16, 15, 0.72);
+}
+
+.auth-mode-button {
+  min-height: 2.3rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--soft);
+  background: transparent;
+  font-weight: 750;
+}
+
+.auth-mode-button:hover {
+  border-color: var(--line);
+  background: rgba(16, 45, 40, 0.68);
+}
+
+.auth-mode-button.is-active {
+  border-color: var(--line-strong);
+  color: #03100d;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+}
+
 .app-mark {
   display: inline-grid;
   place-items: center;
@@ -85,6 +116,8 @@ h1 { margin-bottom: 0.5rem; font-size: clamp(2rem, 5vw, 3.1rem); line-height: 0.
 h2 { margin-bottom: 0.25rem; font-size: 1.05rem; }
 p, .hint, small { color: var(--muted); }
 .login-copy { margin-bottom: 1.5rem; }
+.auth-message { margin: -0.2rem 0 1rem; font-size: 0.86rem; }
+.auth-message-error { color: var(--red); }
 
 .app-view { min-height: 100vh; padding: 1rem; }
 

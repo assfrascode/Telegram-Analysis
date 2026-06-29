@@ -1616,12 +1616,52 @@ select:focus {
   margin-bottom: 1.4rem;
 }
 
+.auth-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-bottom: 1.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.auth-mode-button {
+  min-height: 2.3rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-soft);
+  background: transparent;
+  font-weight: 700;
+}
+
+.auth-mode-button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.auth-mode-button.is-active {
+  border-color: rgba(91, 140, 255, 0.35);
+  color: #dbe6ff;
+  background: var(--accent-soft);
+}
+
 .login-card h1 {
   font-size: 1.8rem;
 }
 
 .login-copy {
   margin-bottom: 1.4rem;
+}
+
+.auth-message {
+  margin: -0.2rem 0 1rem;
+  font-size: 0.86rem;
+}
+
+.auth-message-error {
+  color: var(--red);
 }
 
 .toast {
