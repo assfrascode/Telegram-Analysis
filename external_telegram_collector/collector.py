@@ -35,6 +35,7 @@ SESSION_PATH = env("TELEGRAM_SESSION_PATH", "telegram-external.session")
 POLL_SECONDS = int(env("POLL_SECONDS", "15"))
 BATCH_SIZE = int(env("MESSAGE_BATCH_SIZE", "100"))
 IDLE_LOG_EVERY = int(env("IDLE_LOG_EVERY", "20"))
+MESSAGE_PROGRESS_EVERY = int(env("MESSAGE_PROGRESS_EVERY", "250"))
 REGISTER_CHAT_IDS = {
     int(value.strip())
     for value in env("TELEGRAM_CHAT_IDS").split(",")
@@ -338,9 +339,11 @@ def dialog_summary(dialog) -> str:
 async def register_dialogs(backend: Backend, client: TelegramClient) -> None:
     if not REGISTER_CHAT_IDS:
         log(
-            "TELEGRAM_CHAT_IDS is empty; no chats will be registered. "
-            "Set it to one of the IDs shown below."
+            "TELEGRAM_CHAT_IDS is empty; registering every visible Telegram group/channel "
+            "for this account."
         )
+    else:
+        log(f"TELEGRAM_CHAT_IDS allowlist active: {sorted(REGISTER_CHAT_IDS)}")
 
     scanned = 0
     supported = 0
@@ -358,10 +361,9 @@ async def register_dialogs(backend: Backend, client: TelegramClient) -> None:
         ids = dialog_ids(entity)
         if len(available) < 30:
             available.append(dialog_summary(dialog))
-        if not REGISTER_CHAT_IDS:
-            continue
-        matched_ids = REGISTER_CHAT_IDS.intersection(ids)
-        if not matched_ids:
+        matched_ids = REGISTER_CHAT_IDS.intersection(ids) if REGISTER_CHAT_IDS else ids
+        if REGISTER_CHAT_IDS and not matched_ids:
+            log(f"Skipping Telegram dialog outside allowlist: {dialog_summary(dialog)}")
             continue
         matched += 1
         matched_requested_ids.update(matched_ids)
@@ -373,10 +375,10 @@ async def register_dialogs(backend: Backend, client: TelegramClient) -> None:
         f"scanned={scanned} supported_groups_or_channels={supported} "
         f"matched={matched} registered={registered}"
     )
-    unmatched = REGISTER_CHAT_IDS - matched_requested_ids
+    unmatched = REGISTER_CHAT_IDS - matched_requested_ids if REGISTER_CHAT_IDS else set()
     if unmatched:
-        log(f"No Telegram dialog matched TELEGRAM_CHAT_IDS={sorted(unmatched)}")
-    if available and (unmatched or not REGISTER_CHAT_IDS or registered == 0):
+        log(f"No Telegram dialog matched TELEGRAM_CHAT_IDS allowlist entries: {sorted(unmatched)}")
+    if available and (unmatched or registered == 0):
         log("Available group/channel IDs visible to this Telegram session:")
         for item in available:
             log(f"  - {item}")
@@ -389,6 +391,7 @@ async def heartbeat_loop(backend: Backend, run_id: str, stopped: asyncio.Event) 
             return
         except TimeoutError:
             await backend.heartbeat(run_id)
+            log(f"Heartbeat sent for external sync run={run_id}")
 
 
 async def process_claim(backend: Backend, client: TelegramClient, claim: dict[str, Any]) -> None:
@@ -402,6 +405,11 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
         f"range={requested_start.isoformat()}..{requested_end.isoformat()}"
     )
     entity = await resolve_entity(client, chat["telegram_chat_id"])
+    log(
+        f"Resolved Telegram entity for run={run_id} "
+        f"title={get_display_name(entity) or getattr(entity, 'title', chat['title'])!r} "
+        f"ids=[{dialog_id_label(entity)}]"
+    )
 
     stopped = asyncio.Event()
     heartbeat_task = asyncio.create_task(heartbeat_loop(backend, run_id, stopped))
@@ -413,13 +421,28 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
     async def flush_messages() -> None:
         nonlocal messages
         if messages:
+            first_id = messages[0]["telegram_message_id"]
+            last_id = messages[-1]["telegram_message_id"]
+            log(
+                f"Posting message batch run={run_id} count={len(messages)} "
+                f"message_ids={first_id}..{last_id}"
+            )
             await backend.post_messages(run_id, messages)
+            log(
+                f"Posted message batch run={run_id} count={len(messages)} "
+                f"total_messages_seen={messages_seen}"
+            )
             messages = []
 
     try:
+        log(f"Starting Telegram message scan run={run_id}")
         async for message in client.iter_messages(entity, offset_date=requested_end, reverse=False):
             message_date = ensure_utc(message.date)
             if message_date < requested_start:
+                log(
+                    f"Stopping scan run={run_id}: message_id={message.id} "
+                    f"date={message_date.isoformat()} is before requested_start"
+                )
                 break
             if message_date >= requested_end:
                 continue
@@ -427,6 +450,12 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
             sender = await message.get_sender()
             messages.append(normalize_message(message, sender))
             messages_seen += 1
+            if MESSAGE_PROGRESS_EVERY and messages_seen % MESSAGE_PROGRESS_EVERY == 0:
+                log(
+                    f"Scan progress run={run_id} messages_seen={messages_seen} "
+                    f"latest_message_id={message.id} latest_date={message_date.isoformat()} "
+                    f"attachments_seen={attachments_seen} attachments_failed={attachments_failed}"
+                )
             metadata = media_metadata(message)
             if len(messages) >= BATCH_SIZE or metadata is not None:
                 await flush_messages()
@@ -437,14 +466,31 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
                 temp_path = temp.name
                 temp.close()
                 downloaded_path = temp_path
+                media_type, filename, _mime_type, media_key = metadata
+                log(
+                    f"Downloading media run={run_id} message_id={message.id} "
+                    f"media_key={media_key} type={media_type} filename={filename!r}"
+                )
                 try:
                     downloaded = await message.download_media(file=temp_path)
                     if not downloaded:
                         raise RuntimeError("Telegram returned no downloadable attachment")
                     downloaded_path = downloaded
+                    log(
+                        f"Uploading media run={run_id} message_id={message.id} "
+                        f"path={downloaded_path} size_bytes={os.path.getsize(downloaded_path)}"
+                    )
                     await backend.post_media_file(run_id, message.id, metadata, downloaded_path)
+                    log(
+                        f"Uploaded media run={run_id} message_id={message.id} "
+                        f"media_key={media_key}"
+                    )
                 except Exception as exc:
                     attachments_failed += 1
+                    log(
+                        f"Media failed run={run_id} message_id={message.id} "
+                        f"media_key={media_key}: {exc}"
+                    )
                     await backend.post_media_error(run_id, message.id, metadata, str(exc))
                 finally:
                     for path in {temp_path, downloaded_path}:
@@ -454,6 +500,11 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
                             pass
 
         await flush_messages()
+        log(
+            f"Completing external sync run={run_id} status=completed "
+            f"messages_seen={messages_seen} attachments_seen={attachments_seen} "
+            f"attachments_failed={attachments_failed}"
+        )
         await backend.complete(
             run_id,
             status="completed",
@@ -466,6 +517,7 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
             f"messages={messages_seen} attachments={attachments_seen} failures={attachments_failed}"
         )
     except FloodWaitError as exc:
+        log(f"External sync flood wait run={run_id} retry_after_seconds={exc.seconds}")
         await backend.complete(
             run_id,
             status="failed",
@@ -476,6 +528,7 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
             retry_after_seconds=exc.seconds,
         )
     except Exception as exc:
+        log(f"External sync failed run={run_id}: {exc or exc.__class__.__name__}")
         await backend.complete(
             run_id,
             status="failed",
@@ -497,7 +550,9 @@ async def main() -> None:
     log(
         "External Telegram collector starting "
         f"backend={BACKEND_URL} session_path={SESSION_PATH} "
-        f"poll_seconds={POLL_SECONDS} register_chat_ids={sorted(REGISTER_CHAT_IDS)}"
+        f"poll_seconds={POLL_SECONDS} batch_size={BATCH_SIZE} "
+        f"message_progress_every={MESSAGE_PROGRESS_EVERY} "
+        f"register_chat_ids={sorted(REGISTER_CHAT_IDS) if REGISTER_CHAT_IDS else 'ALL'}"
     )
     backend = Backend()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

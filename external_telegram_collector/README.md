@@ -31,11 +31,12 @@ TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=...
 TELEGRAM_PHONE=+49123456789
 TELEGRAM_SESSION_PATH=/data/telegram-external.session
-TELEGRAM_CHAT_IDS=12345,67890
+TELEGRAM_CHAT_IDS=
 INITIAL_SYNC_FROM=2026-01-01T00:00:00+00:00
 SYNC_INTERVAL_MINUTES=60
 POLL_SECONDS=15
 MESSAGE_BATCH_SIZE=100
+MESSAGE_PROGRESS_EVERY=250
 ```
 
 For a collector running on a separate laptop, set `BACKEND_URL` to the backend
@@ -43,15 +44,15 @@ API host, for example `http://192.168.0.151:8000` without an extra dot. Open the
 browser frontend at `http://192.168.0.151:3000`; port `8000` is the backend API
 and legacy static UI, not the React frontend.
 
-`TELEGRAM_CHAT_IDS` controls which dialogs are registered as external backend
-chats on startup. The collector then polls `/telegram/ingest/claims/next` and
-processes due sync runs.
+By default, an empty `TELEGRAM_CHAT_IDS` registers every visible group/channel
+for the Telegram account. Set `TELEGRAM_CHAT_IDS` only when you want an
+allowlist. The collector then polls `/telegram/ingest/claims/next` and processes
+due sync runs.
 
 On startup the collector prints the visible group/channel IDs for its Telegram
 session. Use either the raw Telethon ID or the marked Telegram peer ID such as
-`-100...` in `TELEGRAM_CHAT_IDS`; both forms are accepted. If `TELEGRAM_CHAT_IDS`
-is empty, the collector will not register chats and will print the available IDs
-instead.
+`-100...` in `TELEGRAM_CHAT_IDS`; both forms are accepted. During sync,
+`MESSAGE_PROGRESS_EVERY` controls periodic scan progress logs.
 
 ## Local Run
 
