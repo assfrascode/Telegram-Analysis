@@ -23,6 +23,10 @@ function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+function requestErrorMessage(reason) {
+  return reason?.message || String(reason);
+}
+
 function getStageState(events, currentJob) {
   const applicableStages = STAGES.filter((stage) => {
     if (currentJob?.source_type === "telegram_chat") {
@@ -210,22 +214,34 @@ export default function App() {
 
   const refreshTelegram = useCallback(async () => {
     if (!token) return;
-    try {
-      const [connection, chats, schedules] = await Promise.all([
-        request("/telegram/connection"),
-        request("/telegram/chats"),
-        request("/telegram/report-schedules"),
-      ]);
-      setTelegramConnection(connection);
+    const [connectionResult, chatsResult, schedulesResult] = await Promise.allSettled([
+      request("/telegram/connection"),
+      request("/telegram/chats"),
+      request("/telegram/report-schedules"),
+    ]);
+
+    if (connectionResult.status === "fulfilled") {
+      setTelegramConnection(connectionResult.value);
+    } else {
+      addLocalLog(`Could not load Telegram connection: ${requestErrorMessage(connectionResult.reason)}`, "warning");
+    }
+
+    if (chatsResult.status === "fulfilled") {
+      const chats = chatsResult.value;
       setTelegramChats(chats);
-      setTelegramReportSchedules(schedules);
       setTelegramChatId((current) => (
         chats.some((chat) => chat.id === current && chat.status !== "archived")
           ? current
           : chats.find((chat) => chat.status !== "archived")?.id || ""
       ));
-    } catch (error) {
-      addLocalLog(`Could not load Telegram status: ${error.message}`, "warning");
+    } else {
+      addLocalLog(`Could not load Telegram chats: ${requestErrorMessage(chatsResult.reason)}`, "warning");
+    }
+
+    if (schedulesResult.status === "fulfilled") {
+      setTelegramReportSchedules(schedulesResult.value);
+    } else {
+      addLocalLog(`Could not load Telegram report schedules: ${requestErrorMessage(schedulesResult.reason)}`, "warning");
     }
   }, [addLocalLog, request, token]);
 

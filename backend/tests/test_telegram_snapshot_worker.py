@@ -66,6 +66,12 @@ def test_collector_startup_releases_only_non_report_leases(monkeypatch) -> None:
         status=run_telegram_collector.TelegramChatStatus.syncing,
         next_sync_at=now - timedelta(minutes=1),
     )
+    external_chat = SimpleNamespace(
+        lease_owner=f"external:{uuid.uuid4()}",
+        lease_expires_at=now + timedelta(minutes=20),
+        status=run_telegram_collector.TelegramChatStatus.syncing,
+        next_sync_at=now - timedelta(minutes=1),
+    )
 
     class Scalars:
         def __init__(self, values):
@@ -110,6 +116,7 @@ def test_collector_startup_releases_only_non_report_leases(monkeypatch) -> None:
     assert "restarted" in collector_chat.last_error
     assert collector_chat.next_sync_at > now
     assert report_chat.lease_owner is not None
+    assert external_chat.lease_owner is not None
 
 
 def test_collector_failure_is_persisted_only_for_owned_lease(monkeypatch) -> None:

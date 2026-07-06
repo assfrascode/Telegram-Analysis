@@ -1149,10 +1149,12 @@ select:focus {
   margin-bottom: 0.35rem;
 }
 
-.account-card {
+.account-card,
+.external-collector-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1rem;
 }
 
 .account-summary,
@@ -1183,6 +1185,36 @@ select:focus {
   background: var(--accent-soft);
   font-size: 1.1rem;
   font-weight: 850;
+}
+
+.external-collector-actions {
+  display: flex;
+  max-width: min(440px, 42%);
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.6rem;
+}
+
+.external-chat-list {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.external-chat-list span {
+  max-width: 180px;
+  overflow: hidden;
+  padding: 0.32rem 0.48rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-soft);
+  background: var(--surface-soft);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connection-state,
@@ -1392,6 +1424,7 @@ select:focus {
 
 .table-actions {
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .subtle-empty-state {

@@ -12,6 +12,8 @@ from app.db import SessionLocal, init_db
 from app.models import (
     TelegramChat,
     TelegramChatStatus,
+    TelegramConnection,
+    TelegramConnectionStatus,
     TelegramIngestMode,
     TelegramSyncRun,
     TelegramSyncStatus,
@@ -32,8 +34,10 @@ async def claim_due_chat() -> uuid.UUID | None:
         chat = (
             await session.execute(
                 select(TelegramChat)
+                .join(TelegramConnection, TelegramChat.connection_id == TelegramConnection.id)
                 .where(
                     TelegramChat.ingest_mode == TelegramIngestMode.backend_pull,
+                    TelegramConnection.status == TelegramConnectionStatus.connected,
                     TelegramChat.status.in_(
                         [
                             TelegramChatStatus.active,
@@ -76,6 +80,7 @@ async def release_orphaned_collector_leases() -> int:
                     select(TelegramChat).where(
                         TelegramChat.lease_owner.is_not(None),
                         ~TelegramChat.lease_owner.startswith("report:"),
+                        ~TelegramChat.lease_owner.startswith("external:"),
                     )
                 )
             )

@@ -44,6 +44,7 @@ from app.services.telegram_accounts import (
     verify_login_code,
     verify_login_password,
 )
+from app.services.telegram_chat_access import ensure_chat_sync_source_available
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
@@ -323,6 +324,7 @@ async def request_chat_sync(
     chat = await owned_chat(session, user.id, chat_id)
     if chat.status == TelegramChatStatus.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Chat is archived")
+    await ensure_chat_sync_source_available(session, chat)
     chat.next_sync_at = utc_now()
     await session.commit()
     return {"ok": True, "next_sync_at": chat.next_sync_at}

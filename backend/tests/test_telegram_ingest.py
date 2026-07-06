@@ -12,7 +12,7 @@ from app.schemas import (
     TelegramIngestChatUpsertRequest,
     TelegramIngestRunCompleteRequest,
 )
-from app.services.telegram_ingest import hash_ingest_token, new_ingest_token
+from app.services.telegram_ingest import IngestPrincipal, hash_ingest_token, new_ingest_token, upsert_external_chat
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
 
 
@@ -61,6 +61,64 @@ def test_external_chat_response_exposes_ingest_mode_without_connection() -> None
 
     assert response.ingest_mode == "external_push"
     assert response.telegram_chat_id == 42
+
+
+def test_external_chat_upsert_converts_backend_pull_row_and_clears_stale_connection_error() -> None:
+    now = datetime.now(timezone.utc)
+    owner_id = uuid.uuid4()
+    chat = SimpleNamespace(
+        owner_user_id=owner_id,
+        connection_id=uuid.uuid4(),
+        telegram_chat_id=42,
+        ingest_mode=TelegramIngestMode.backend_pull,
+        access_hash=None,
+        title="Backend row",
+        username=None,
+        chat_type="channel",
+        initial_sync_from=now - timedelta(days=30),
+        sync_interval_minutes=60,
+        status=TelegramChatStatus.error,
+        last_error="Telegram connection is not available",
+        next_sync_at=now + timedelta(days=1),
+        lease_owner="collector:old",
+        lease_expires_at=now + timedelta(minutes=5),
+        updated_at=now - timedelta(days=1),
+    )
+    payload = TelegramIngestChatUpsertRequest(
+        telegram_chat_id=42,
+        title="External channel",
+        chat_type="channel",
+        initial_sync_from=now - timedelta(days=1),
+        sync_interval_minutes=15,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return chat
+
+    class Session:
+        async def execute(self, query):
+            return Result()
+
+        async def flush(self):
+            return None
+
+    result = asyncio.run(
+        upsert_external_chat(
+            Session(),
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+            payload=payload,
+        )
+    )
+
+    assert result is chat
+    assert chat.connection_id is None
+    assert chat.ingest_mode == TelegramIngestMode.external_push
+    assert chat.status == TelegramChatStatus.active
+    assert chat.last_error is None
+    assert chat.lease_owner is None
+    assert chat.lease_expires_at is None
+    assert chat.next_sync_at < now + timedelta(minutes=1)
 
 
 def test_snapshot_external_coverage_helper_accepts_existing_coverage() -> None:

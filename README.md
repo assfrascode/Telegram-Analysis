@@ -120,6 +120,8 @@ When omitted in local development, a stable key is derived from `SECRET_KEY`.
 
 Use `external_telegram_collector/` when Telegram credentials should remain outside the backend. Create an ingest token from the backend, run the collector with its own Telethon session, and register chat IDs through `TELEGRAM_CHAT_IDS`.
 
+For a collector on another machine, point it at the backend API, for example `BACKEND_URL=http://192.168.0.151:8000`. Open the React frontend in the browser at `http://192.168.0.151:3000`; `http://192.168.0.151:8000` is the backend API and legacy static UI. The ingest token must be created by the same backend user account that signs in to the React frontend, otherwise registered collector chats belong to a different user and will not appear there.
+
 See [external_telegram_collector/README.md](external_telegram_collector/README.md) for the collector environment and local run commands.
 
 ## Model Services

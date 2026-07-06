@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from telethon.tl.types import Channel
 
@@ -12,6 +13,8 @@ from app.models import (
     JobSourceType,
     StepStatus,
     TelegramChat,
+    TelegramConnectionStatus,
+    TelegramIngestMode,
     TelegramMedia,
 )
 from app.schemas import (
@@ -22,6 +25,7 @@ from app.schemas import (
 from app.services.jobs import initial_task_payload
 from app.services.report_builder import build_report_media
 from app.services.telegram_crypto import decrypt_telegram_secret, encrypt_telegram_secret
+from app.services.telegram_chat_access import ensure_chat_sync_source_available
 from app.services.telegram_sync import _resolve_entity, periodic_sync_start
 
 
@@ -126,6 +130,40 @@ def test_initial_task_uses_telegram_snapshot_subject_payload() -> None:
     assert payload["telegram_chat_id"] == str(job.telegram_chat_id)
     assert payload["task_key"] == f"telegram-snapshot:{job.id}"
     assert "upload_id" not in payload
+
+
+def test_external_chat_does_not_require_backend_connection_for_sync_source() -> None:
+    chat = SimpleNamespace(ingest_mode=TelegramIngestMode.external_push, connection_id=None)
+
+    class Session:
+        async def get(self, *args):
+            raise AssertionError("external chats must not load backend connection")
+
+    asyncio.run(ensure_chat_sync_source_available(Session(), chat))
+
+
+def test_backend_pull_chat_requires_connected_backend_account_for_sync_source() -> None:
+    chat = SimpleNamespace(ingest_mode=TelegramIngestMode.backend_pull, connection_id=None)
+
+    class Session:
+        async def get(self, *args):
+            return None
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(ensure_chat_sync_source_available(Session(), chat))
+
+    assert "external collector chat" in exc.value.detail
+
+
+def test_backend_pull_chat_accepts_connected_backend_account_for_sync_source() -> None:
+    chat = SimpleNamespace(ingest_mode=TelegramIngestMode.backend_pull, connection_id=uuid.uuid4())
+    connection = SimpleNamespace(status=TelegramConnectionStatus.connected)
+
+    class Session:
+        async def get(self, *args):
+            return connection
+
+    asyncio.run(ensure_chat_sync_source_available(Session(), chat))
 
 
 def test_periodic_sync_rewinds_overlap_but_not_before_initial_start() -> None:

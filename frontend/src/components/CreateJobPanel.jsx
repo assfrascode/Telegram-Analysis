@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS } from "../lib/constants";
 import { formatBytes } from "../lib/format";
 import { QuestionBuilder } from "./QuestionBuilder";
@@ -6,6 +6,10 @@ import { QuestionSetsPanel } from "./QuestionSetsPanel";
 
 function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function chatSourceLabel(chat) {
+  return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
 }
 
 export function CreateJobPanel({
@@ -40,17 +44,35 @@ export function CreateJobPanel({
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState(null);
   const inputRef = useRef(null);
-  const activeChats = telegramChats.filter((chat) => chat.status !== "archived");
-  const selectedChat = telegramChats.find((chat) => chat.id === telegramChatId);
+  const backendTelegramConnected = Boolean(telegramConnection?.connected);
+  const activeChats = useMemo(
+    () => telegramChats.filter((chat) => chat.status !== "archived"),
+    [telegramChats],
+  );
+  const usableChats = useMemo(
+    () => activeChats.filter((chat) => chat.ingest_mode === "external_push" || backendTelegramConnected),
+    [activeChats, backendTelegramConnected],
+  );
+  const unavailableBackendChats = useMemo(
+    () => activeChats.filter((chat) => chat.ingest_mode !== "external_push" && !backendTelegramConnected),
+    [activeChats, backendTelegramConnected],
+  );
+  const selectedChat = usableChats.find((chat) => chat.id === telegramChatId);
   const questionCount = questions.filter((question) => question.text.trim()).length;
   const questionsReady = questions.length > 0 && questions.every((question) => question.text.trim());
   const sourceReady = sourceMode === "upload"
     ? Boolean(file?.name.toLowerCase().endsWith(".zip"))
-    : Boolean(telegramChatId && reportStart && reportEnd);
+    : Boolean(selectedChat && reportStart && reportEnd);
+
+  useEffect(() => {
+    if (sourceMode !== "telegram_chat") return;
+    if (usableChats.some((chat) => chat.id === telegramChatId)) return;
+    setTelegramChatId(usableChats[0]?.id || "");
+  }, [sourceMode, setTelegramChatId, telegramChatId, usableChats]);
 
   const sourceSummary = useMemo(() => {
     if (sourceMode === "upload") return file?.name || "No export selected";
-    return selectedChat?.title || "No Telegram chat selected";
+    return selectedChat ? `${selectedChat.title} - ${chatSourceLabel(selectedChat)}` : "No Telegram chat selected";
   }, [file, selectedChat, sourceMode]);
 
   const fileText = file
@@ -142,11 +164,15 @@ export function CreateJobPanel({
                   <small className={file && !file.name.toLowerCase().endsWith(".zip") ? "error-text" : ""}>{fileText}</small>
                 </span>
               </label>
-            ) : !activeChats.length ? (
+            ) : !usableChats.length ? (
               <div className="source-empty-state">
                 <div>
                   <strong>No collected chats available</strong>
-                  <p>Add a backend-connected chat or register one through an external collector before creating a chat-based analysis.</p>
+                  <p>
+                    {unavailableBackendChats.length
+                      ? "Only backend-account chats are configured, but no backend Telegram account is connected. Register the chat through the external collector or connect the backend account."
+                      : "Register a chat through an external collector before creating a chat-based analysis."}
+                  </p>
                 </div>
                 <button className="button button-secondary" type="button" onClick={onOpenTelegram}>
                   Open Telegram Setup
@@ -158,7 +184,11 @@ export function CreateJobPanel({
                   <span>Group or channel</span>
                   <select value={telegramChatId} onChange={(event) => setTelegramChatId(event.target.value)}>
                     <option value="">Select a chat</option>
-                    {activeChats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}
+                    {usableChats.map((chat) => (
+                      <option key={chat.id} value={chat.id}>
+                        {chat.title} ({chatSourceLabel(chat)})
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="field">

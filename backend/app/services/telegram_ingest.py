@@ -150,6 +150,7 @@ async def upsert_external_chat(
             )
         )
     ).scalar_one_or_none()
+    was_external = chat is not None and chat.ingest_mode == TelegramIngestMode.external_push
     values = {
         "connection_id": None,
         "ingest_mode": TelegramIngestMode.external_push,
@@ -161,6 +162,8 @@ async def upsert_external_chat(
         "sync_interval_minutes": payload.sync_interval_minutes,
         "status": TelegramChatStatus.active,
         "last_error": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
         "updated_at": now,
     }
     if chat is None:
@@ -174,7 +177,7 @@ async def upsert_external_chat(
     else:
         for key, value in values.items():
             setattr(chat, key, value)
-        if chat.next_sync_at is None:
+        if chat.next_sync_at is None or not was_external:
             chat.next_sync_at = now
     await session.flush()
     return chat

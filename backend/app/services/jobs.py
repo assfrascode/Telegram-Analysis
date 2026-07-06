@@ -23,6 +23,7 @@ from app.nats_client import publish_json
 from app.schemas import JobCreateRequest, QuestionInput, TelegramReportCreateRequest
 from app.services.events import record_event, record_event_db_only
 from app.services.question_sets import question_inputs_from_set, question_set_snapshot
+from app.services.telegram_chat_access import ensure_chat_sync_source_available
 from app.workers import subjects
 
 settings = get_settings()
@@ -197,6 +198,7 @@ async def create_telegram_job_record(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telegram chat not found")
     if chat.status == TelegramChatStatus.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Telegram chat is archived")
+    await ensure_chat_sync_source_available(session, chat)
 
     questions, question_set_data = await _resolve_question_source(
         session,

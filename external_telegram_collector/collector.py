@@ -19,7 +19,7 @@ from telethon.tl.types import (
     DocumentAttributeFilename,
     DocumentAttributeSticker,
 )
-from telethon.utils import get_display_name
+from telethon.utils import get_display_name, get_peer_id
 
 
 def env(name: str, default: str = "") -> str:
@@ -34,6 +34,7 @@ PHONE = env("TELEGRAM_PHONE")
 SESSION_PATH = env("TELEGRAM_SESSION_PATH", "telegram-external.session")
 POLL_SECONDS = int(env("POLL_SECONDS", "15"))
 BATCH_SIZE = int(env("MESSAGE_BATCH_SIZE", "100"))
+IDLE_LOG_EVERY = int(env("IDLE_LOG_EVERY", "20"))
 REGISTER_CHAT_IDS = {
     int(value.strip())
     for value in env("TELEGRAM_CHAT_IDS").split(",")
@@ -41,6 +42,10 @@ REGISTER_CHAT_IDS = {
 }
 INITIAL_SYNC_FROM = env("INITIAL_SYNC_FROM", "2026-01-01T00:00:00+00:00")
 SYNC_INTERVAL_MINUTES = int(env("SYNC_INTERVAL_MINUTES", "60"))
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
 
 
 def ensure_utc(value: datetime) -> datetime:
@@ -155,6 +160,19 @@ def chat_type(entity) -> str | None:
     return None
 
 
+def dialog_ids(entity) -> set[int]:
+    ids = {int(entity.id)}
+    try:
+        ids.add(int(get_peer_id(entity)))
+    except Exception:
+        pass
+    return ids
+
+
+def dialog_id_label(entity) -> str:
+    return ", ".join(str(value) for value in sorted(dialog_ids(entity)))
+
+
 def sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as source:
@@ -176,13 +194,11 @@ class Backend:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def upsert_chat(self, dialog) -> None:
+    async def upsert_chat(self, dialog) -> bool:
         entity = dialog.entity
         kind = chat_type(entity)
         if kind is None:
-            return
-        if REGISTER_CHAT_IDS and int(entity.id) not in REGISTER_CHAT_IDS:
-            return
+            return False
         payload = {
             "telegram_chat_id": int(entity.id),
             "access_hash": str(getattr(entity, "access_hash", ""))
@@ -196,7 +212,14 @@ class Backend:
         }
         response = await self.client.post("/telegram/ingest/chats", json=payload)
         response.raise_for_status()
-        print(f"Registered external Telegram chat {payload['title']} ({payload['telegram_chat_id']})")
+        data = response.json()
+        backend_chat_id = data.get("chat", {}).get("id", "unknown")
+        log(
+            "Registered external Telegram chat "
+            f"{payload['title']!r} raw_id={payload['telegram_chat_id']} "
+            f"ids=[{dialog_id_label(entity)}] backend_chat_id={backend_chat_id}"
+        )
+        return True
 
     async def claim_next(self) -> dict[str, Any] | None:
         response = await self.client.post("/telegram/ingest/claims/next")
@@ -304,6 +327,61 @@ async def resolve_entity(client: TelegramClient, telegram_chat_id: int):
     raise RuntimeError(f"Telegram chat {telegram_chat_id} is not available in this session")
 
 
+def dialog_summary(dialog) -> str:
+    entity = dialog.entity
+    return (
+        f"{dialog.name or get_display_name(entity) or entity.id!r} "
+        f"type={chat_type(entity)} ids=[{dialog_id_label(entity)}]"
+    )
+
+
+async def register_dialogs(backend: Backend, client: TelegramClient) -> None:
+    if not REGISTER_CHAT_IDS:
+        log(
+            "TELEGRAM_CHAT_IDS is empty; no chats will be registered. "
+            "Set it to one of the IDs shown below."
+        )
+
+    scanned = 0
+    supported = 0
+    matched = 0
+    registered = 0
+    matched_requested_ids: set[int] = set()
+    available: list[str] = []
+
+    async for dialog in client.iter_dialogs():
+        scanned += 1
+        entity = dialog.entity
+        if chat_type(entity) is None:
+            continue
+        supported += 1
+        ids = dialog_ids(entity)
+        if len(available) < 30:
+            available.append(dialog_summary(dialog))
+        if not REGISTER_CHAT_IDS:
+            continue
+        matched_ids = REGISTER_CHAT_IDS.intersection(ids)
+        if not matched_ids:
+            continue
+        matched += 1
+        matched_requested_ids.update(matched_ids)
+        if await backend.upsert_chat(dialog):
+            registered += 1
+
+    log(
+        "External collector registration summary: "
+        f"scanned={scanned} supported_groups_or_channels={supported} "
+        f"matched={matched} registered={registered}"
+    )
+    unmatched = REGISTER_CHAT_IDS - matched_requested_ids
+    if unmatched:
+        log(f"No Telegram dialog matched TELEGRAM_CHAT_IDS={sorted(unmatched)}")
+    if available and (unmatched or not REGISTER_CHAT_IDS or registered == 0):
+        log("Available group/channel IDs visible to this Telegram session:")
+        for item in available:
+            log(f"  - {item}")
+
+
 async def heartbeat_loop(backend: Backend, run_id: str, stopped: asyncio.Event) -> None:
     while True:
         try:
@@ -318,6 +396,11 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
     chat = claim["chat"]
     requested_start = datetime.fromisoformat(claim["requested_start"])
     requested_end = datetime.fromisoformat(claim["requested_end"])
+    log(
+        f"Received external sync claim run={run_id} chat={chat['title']!r} "
+        f"telegram_chat_id={chat['telegram_chat_id']} "
+        f"range={requested_start.isoformat()}..{requested_end.isoformat()}"
+    )
     entity = await resolve_entity(client, chat["telegram_chat_id"])
 
     stopped = asyncio.Event()
@@ -378,10 +461,9 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
             attachments_seen=attachments_seen,
             attachments_failed=attachments_failed,
         )
-        print(
+        log(
             f"Completed external sync run={run_id} chat={chat['title']!r} "
-            f"messages={messages_seen} attachments={attachments_seen} failures={attachments_failed}",
-            flush=True,
+            f"messages={messages_seen} attachments={attachments_seen} failures={attachments_failed}"
         )
     except FloodWaitError as exc:
         await backend.complete(
@@ -412,19 +494,29 @@ async def main() -> None:
     if not API_ID or not API_HASH:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
 
+    log(
+        "External Telegram collector starting "
+        f"backend={BACKEND_URL} session_path={SESSION_PATH} "
+        f"poll_seconds={POLL_SECONDS} register_chat_ids={sorted(REGISTER_CHAT_IDS)}"
+    )
     backend = Backend()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start(phone=PHONE or None)
     try:
-        if REGISTER_CHAT_IDS:
-            async for dialog in client.iter_dialogs():
-                await backend.upsert_chat(dialog)
+        me = await client.get_me()
+        log(f"Telegram session authorized as {get_display_name(me) or getattr(me, 'id', 'unknown')}")
+        await register_dialogs(backend, client)
 
+        idle_polls = 0
         while True:
             claim = await backend.claim_next()
             if claim is None:
+                idle_polls += 1
+                if idle_polls == 1 or (IDLE_LOG_EVERY and idle_polls % IDLE_LOG_EVERY == 0):
+                    log("No external sync claim available; collector is waiting")
                 await asyncio.sleep(POLL_SECONDS)
                 continue
+            idle_polls = 0
             await process_claim(backend, client, claim)
     finally:
         await backend.close()

@@ -20,6 +20,28 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert 'request("/jobs/telegram"' in app
 
 
+def test_react_frontend_exposes_external_collector_without_backend_credentials() -> None:
+    root = Path("frontend/src")
+    panel = (root / "components/TelegramSourcesPanel.jsx").read_text()
+    create = (root / "components/CreateJobPanel.jsx").read_text()
+    app = (root / "App.jsx").read_text()
+
+    assert "External collector" in panel
+    assert "No backend account required" in panel
+    assert "Backend Telegram account" in panel
+    assert "Show backend account setup" in panel
+    assert "Request collector sync" in panel
+    assert "Collector synchronization requested" in panel
+    assert 'chat.ingest_mode === "external_push"' in panel
+    assert "showBackendSetup" in panel
+    assert "External collector" in create
+    assert "Backend account" in create
+    assert "unavailableBackendChats" in create
+    assert "backendTelegramConnected" in create
+    assert "Promise.allSettled" in app
+    assert 'request("/telegram/chats")' in app
+
+
 def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> None:
     root = Path("frontend/src")
     sidebar = (root / "components/AppSidebar.jsx").read_text()

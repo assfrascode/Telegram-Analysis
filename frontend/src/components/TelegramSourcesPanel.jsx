@@ -20,6 +20,10 @@ function rollingWindowLabel(days) {
   return Number(days) === 1 ? "1 day" : `${days} days`;
 }
 
+function chatSourceLabel(chat) {
+  return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
+}
+
 function ConnectionSetup({
   apiId,
   setApiId,
@@ -44,8 +48,8 @@ function ConnectionSetup({
         <div>
           <span className="section-index">01</span>
           <div>
-            <h2>Connect Telegram</h2>
-            <p>Use the API credentials for your application from my.telegram.org.</p>
+            <h2>Backend Telegram account</h2>
+            <p>Only needed when this backend should collect chats directly with API ID and API hash.</p>
           </div>
         </div>
       </div>
@@ -99,6 +103,42 @@ function ConnectionSetup({
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+function ExternalCollectorState({ chats, onShowBackendSetup, showBackendSetup }) {
+  const visibleChats = chats.slice(0, 3);
+  const hiddenCount = chats.length - visibleChats.length;
+  const hasChats = chats.length > 0;
+
+  return (
+    <section className="surface telegram-card external-collector-card">
+      <div className="account-summary">
+        <span className="account-avatar">EC</span>
+        <div>
+          <span className="page-kicker">External collector</span>
+          <h2>{hasChats ? `${chats.length} collector chat${chats.length === 1 ? "" : "s"}` : "No backend account required"}</h2>
+          <p>
+            {hasChats
+              ? "These chats can be used for reports without a backend Telegram connection."
+              : "Collector chats appear here for the user that created the ingest token."}
+          </p>
+        </div>
+      </div>
+      <div className="external-collector-actions">
+        {hasChats && (
+          <div className="external-chat-list">
+            {visibleChats.map((chat) => <span key={chat.id}>{chat.title}</span>)}
+            {hiddenCount > 0 && <span>+{hiddenCount} more</span>}
+          </div>
+        )}
+        {!showBackendSetup && (
+          <button className="button button-secondary button-small" type="button" onClick={onShowBackendSetup}>
+            Show backend account setup
+          </button>
+        )}
+      </div>
     </section>
   );
 }
@@ -190,7 +230,7 @@ function AddChatSection({
   );
 }
 
-function CollectedChatsTable({ chats, busy, onSync, onUpdate }) {
+function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }) {
   return (
     <section className="surface telegram-card collected-chats-card">
       <div className="section-heading">
@@ -218,61 +258,66 @@ function CollectedChatsTable({ chats, busy, onSync, onUpdate }) {
               </tr>
             </thead>
             <tbody>
-              {chats.map((chat) => (
-                <tr key={chat.id} className={chat.status === "archived" ? "is-archived" : ""}>
-                  <td>
-                    <strong>{chat.title}</strong>
-                    <span>
-                      {chat.ingest_mode === "external_push"
-                        ? "External collector"
-                        : chat.username ? `@${chat.username}` : chat.chat_type}
-                    </span>
-                    {chat.last_error && <span className="table-error">{chat.last_error}</span>}
-                  </td>
-                  <td>
-                    <span className={`table-status table-status-${chat.status}`}>
-                      <span className={`status-dot status-dot-${chat.status}`} />
-                      {chatStatusText(chat.status)}
-                    </span>
-                  </td>
-                  <td>{formatDate(chat.last_sync_at)}</td>
-                  <td>{chat.status === "syncing" || chat.status === "archived" ? "-" : formatDate(chat.next_sync_at)}</td>
-                  <td>
-                    <select
-                      className="table-select"
-                      value={chat.sync_interval_minutes}
-                      onChange={(event) => onUpdate(chat.id, { sync_interval_minutes: Number(event.target.value) })}
-                      disabled={busy || chat.status === "archived"}
-                      aria-label={`Sync interval for ${chat.title}`}
-                    >
-                      <option value={15}>15 min</option>
-                      <option value={60}>Hourly</option>
-                      <option value={360}>6 hours</option>
-                      <option value={1440}>Daily</option>
-                    </select>
-                  </td>
-                  <td>
-                    <div className="table-actions">
-                      <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => onSync(chat.id)}
+              {chats.map((chat) => {
+                const needsBackendConnection = chat.ingest_mode !== "external_push" && !backendConnected;
+                return (
+                  <tr key={chat.id} className={chat.status === "archived" ? "is-archived" : ""}>
+                    <td>
+                      <strong>{chat.title}</strong>
+                      <span>
+                        {chat.ingest_mode === "external_push"
+                          ? chatSourceLabel(chat)
+                          : chat.username ? `@${chat.username}` : chat.chat_type}
+                      </span>
+                      {needsBackendConnection && <span className="table-error">Requires backend Telegram connection</span>}
+                      {chat.last_error && <span className="table-error">{chat.last_error}</span>}
+                    </td>
+                    <td>
+                      <span className={`table-status table-status-${chat.status}`}>
+                        <span className={`status-dot status-dot-${chat.status}`} />
+                        {chatStatusText(chat.status)}
+                      </span>
+                    </td>
+                    <td>{formatDate(chat.last_sync_at)}</td>
+                    <td>{chat.status === "syncing" || chat.status === "archived" ? "-" : formatDate(chat.next_sync_at)}</td>
+                    <td>
+                      <select
+                        className="table-select"
+                        value={chat.sync_interval_minutes}
+                        onChange={(event) => onUpdate(chat.id, { sync_interval_minutes: Number(event.target.value) })}
                         disabled={busy || chat.status === "archived"}
+                        aria-label={`Sync interval for ${chat.title}`}
                       >
-                        Sync now
-                      </button>
-                      <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => onUpdate(chat.id, { archived: chat.status !== "archived" })}
-                        disabled={busy}
-                      >
-                        {chat.status === "archived" ? "Reactivate" : "Archive"}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        <option value={15}>15 min</option>
+                        <option value={60}>Hourly</option>
+                        <option value={360}>6 hours</option>
+                        <option value={1440}>Daily</option>
+                      </select>
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={() => onSync(chat)}
+                          disabled={busy || chat.status === "archived" || needsBackendConnection}
+                          title={needsBackendConnection ? "Register this chat through the external collector or connect the backend Telegram account." : undefined}
+                        >
+                          {chat.ingest_mode === "external_push" ? "Request collector sync" : "Sync now"}
+                        </button>
+                        <button
+                          className="text-button"
+                          type="button"
+                          onClick={() => onUpdate(chat.id, { archived: chat.status !== "archived" })}
+                          disabled={busy}
+                        >
+                          {chat.status === "archived" ? "Reactivate" : "Archive"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -287,13 +332,16 @@ function ScheduledReportsSection({
   chats,
   questionSets,
   schedules,
+  backendConnected,
   busy,
   onSave,
   onDelete,
   onToggle,
   onOpenJob,
 }) {
-  const activeChats = chats.filter((chat) => chat.status !== "archived");
+  const activeChats = chats.filter((chat) => (
+    chat.status !== "archived" && (chat.ingest_mode === "external_push" || backendConnected)
+  ));
   const [editingId, setEditingId] = useState(null);
   const [chatId, setChatId] = useState("");
   const [questionSetId, setQuestionSetId] = useState("");
@@ -369,7 +417,11 @@ function ScheduledReportsSection({
           <span>Group or channel</span>
           <select value={chatId} onChange={(event) => setChatId(event.target.value)} disabled={!activeChats.length}>
             {activeChats.length ? (
-              activeChats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)
+              activeChats.map((chat) => (
+                <option key={chat.id} value={chat.id}>
+                  {chat.title} ({chatSourceLabel(chat)})
+                </option>
+              ))
             ) : (
               <option value="">No active chats</option>
             )}
@@ -504,6 +556,13 @@ export function TelegramSourcesPanel({
   });
   const [interval, setInterval] = useState(60);
   const [busy, setBusy] = useState(false);
+  const [showBackendSetup, setShowBackendSetup] = useState(false);
+  const activeExternalChats = chats.filter((chat) => (
+    chat.ingest_mode === "external_push" && chat.status !== "archived"
+  ));
+  const isBackendConnected = Boolean(connection?.connected);
+  const showDisconnectedCollectorState = !isBackendConnected;
+  const shouldShowBackendSetup = isBackendConnected || showBackendSetup || challengeId;
 
   const run = async (action) => {
     setBusy(true);
@@ -585,10 +644,10 @@ export function TelegramSourcesPanel({
     showToast("Telegram account disconnected");
   });
 
-  const syncChat = (chatId) => run(async () => {
-    await request(`/telegram/chats/${chatId}/sync`, { method: "POST" });
+  const syncChat = (chat) => run(async () => {
+    await request(`/telegram/chats/${chat.id}/sync`, { method: "POST" });
     await onRefresh();
-    showToast("Synchronization scheduled");
+    showToast(chat.ingest_mode === "external_push" ? "Collector synchronization requested" : "Synchronization scheduled");
   });
 
   const updateChat = (chatId, body) => run(async () => {
@@ -632,7 +691,7 @@ export function TelegramSourcesPanel({
         </div>
       </header>
 
-      {connection?.connected ? (
+      {isBackendConnected ? (
         <>
           <ConnectedAccount connection={connection} busy={busy} onDisconnect={disconnect} />
           <AddChatSection
@@ -649,30 +708,48 @@ export function TelegramSourcesPanel({
           />
         </>
       ) : (
-        <ConnectionSetup
-          apiId={apiId}
-          setApiId={setApiId}
-          apiHash={apiHash}
-          setApiHash={setApiHash}
-          phone={phone}
-          setPhone={setPhone}
-          challengeId={challengeId}
-          requiresPassword={requiresPassword}
-          code={code}
-          setCode={setCode}
-          password={password}
-          setPassword={setPassword}
-          busy={busy}
-          onStart={startLogin}
-          onVerifyCode={verifyCode}
-          onVerifyPassword={verifyPassword}
-        />
+        <>
+          {showDisconnectedCollectorState && (
+            <ExternalCollectorState
+              chats={activeExternalChats}
+              onShowBackendSetup={() => setShowBackendSetup(true)}
+              showBackendSetup={shouldShowBackendSetup}
+            />
+          )}
+          {shouldShowBackendSetup && (
+            <ConnectionSetup
+              apiId={apiId}
+              setApiId={setApiId}
+              apiHash={apiHash}
+              setApiHash={setApiHash}
+              phone={phone}
+              setPhone={setPhone}
+              challengeId={challengeId}
+              requiresPassword={requiresPassword}
+              code={code}
+              setCode={setCode}
+              password={password}
+              setPassword={setPassword}
+              busy={busy}
+              onStart={startLogin}
+              onVerifyCode={verifyCode}
+              onVerifyPassword={verifyPassword}
+            />
+          )}
+        </>
       )}
-      <CollectedChatsTable chats={chats} busy={busy} onSync={syncChat} onUpdate={updateChat} />
+      <CollectedChatsTable
+        chats={chats}
+        busy={busy}
+        backendConnected={isBackendConnected}
+        onSync={syncChat}
+        onUpdate={updateChat}
+      />
       <ScheduledReportsSection
         chats={chats}
         questionSets={questionSets}
         schedules={schedules}
+        backendConnected={isBackendConnected}
         busy={busy}
         onSave={saveSchedule}
         onDelete={deleteSchedule}
