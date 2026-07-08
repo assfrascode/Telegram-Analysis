@@ -32,6 +32,8 @@ TELEGRAM_API_HASH=...
 TELEGRAM_PHONE=+49123456789
 TELEGRAM_SESSION_PATH=/data/telegram-external.session
 TELEGRAM_CHAT_IDS=
+TELEGRAM_USE_TAKEOUT=false
+TELEGRAM_TAKEOUT_WAIT_TIME=0
 # Optional. Defaults to the current UTC time minus 30 days.
 INITIAL_SYNC_FROM=
 SYNC_INTERVAL_MINUTES=60
@@ -49,6 +51,13 @@ By default, an empty `TELEGRAM_CHAT_IDS` registers every visible group/channel
 for the Telegram account. Set `TELEGRAM_CHAT_IDS` only when you want an
 allowlist. The collector then polls `/telegram/ingest/claims/next` and processes
 due sync runs.
+
+Set `TELEGRAM_USE_TAKEOUT=true` for large historical exports or media-heavy
+syncs. In takeout mode, startup registration and claim polling still use the
+normal Telegram session, but each claimed message scan and media download runs
+through a Telegram takeout session. If Telegram requires a takeout warm-up delay,
+the collector reports the retry delay back to the backend. Tune
+`TELEGRAM_TAKEOUT_WAIT_TIME` if you still hit flood waits during takeout scans.
 
 On startup the collector prints the visible group/channel IDs for its Telegram
 session. Use either the raw Telethon ID or the marked Telegram peer ID such as

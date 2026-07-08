@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, TakeoutInitDelayError
 from telethon.tl.types import (
     Channel,
     Chat,
@@ -26,12 +26,21 @@ def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = env(name)
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 BACKEND_URL = env("BACKEND_URL", "http://localhost:8000").rstrip("/")
 INGEST_TOKEN = env("TELEGRAM_INGEST_TOKEN")
 API_ID = int(env("TELEGRAM_API_ID", "0"))
 API_HASH = env("TELEGRAM_API_HASH")
 PHONE = env("TELEGRAM_PHONE")
 SESSION_PATH = env("TELEGRAM_SESSION_PATH", "telegram-external.session")
+USE_TAKEOUT = env_bool("TELEGRAM_USE_TAKEOUT")
+TAKEOUT_WAIT_TIME = float(env("TELEGRAM_TAKEOUT_WAIT_TIME", "0"))
 POLL_SECONDS = int(env("POLL_SECONDS", "15"))
 BATCH_SIZE = int(env("MESSAGE_BATCH_SIZE", "100"))
 IDLE_LOG_EVERY = int(env("IDLE_LOG_EVERY", "20"))
@@ -440,9 +449,17 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
             )
             messages = []
 
-    try:
-        log(f"Starting Telegram message scan run={run_id}")
-        async for message in client.iter_messages(entity, offset_date=requested_end, reverse=False):
+    async def scan_messages(scan_client: TelegramClient) -> None:
+        nonlocal messages_seen, attachments_seen, attachments_failed
+        mode = "takeout" if scan_client is not client else "regular"
+        iter_kwargs: dict[str, Any] = {
+            "offset_date": requested_end,
+            "reverse": False,
+        }
+        if USE_TAKEOUT:
+            iter_kwargs["wait_time"] = TAKEOUT_WAIT_TIME
+        log(f"Starting Telegram message scan run={run_id} mode={mode}")
+        async for message in scan_client.iter_messages(entity, **iter_kwargs):
             message_date = ensure_utc(message.date)
             if message_date < requested_start:
                 log(
@@ -505,6 +522,20 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
                         except FileNotFoundError:
                             pass
 
+    try:
+        if USE_TAKEOUT:
+            log(f"Opening Telegram takeout session run={run_id}")
+            async with client.takeout(
+                users=True,
+                chats=True,
+                megagroups=True,
+                channels=True,
+                files=True,
+            ) as takeout:
+                await scan_messages(takeout)
+        else:
+            await scan_messages(client)
+
         await flush_messages()
         log(
             f"Completing external sync run={run_id} status=completed "
@@ -521,6 +552,17 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
         log(
             f"Completed external sync run={run_id} chat={chat['title']!r} "
             f"messages={messages_seen} attachments={attachments_seen} failures={attachments_failed}"
+        )
+    except TakeoutInitDelayError as exc:
+        log(f"External sync takeout init delay run={run_id} retry_after_seconds={exc.seconds}")
+        await backend.complete(
+            run_id,
+            status="failed",
+            messages_seen=messages_seen,
+            attachments_seen=attachments_seen,
+            attachments_failed=attachments_failed,
+            error_message=f"Telegram takeout init delay: retry after {exc.seconds} seconds",
+            retry_after_seconds=exc.seconds,
         )
     except FloodWaitError as exc:
         log(f"External sync flood wait run={run_id} retry_after_seconds={exc.seconds}")
@@ -558,6 +600,7 @@ async def main() -> None:
         f"backend={BACKEND_URL} session_path={SESSION_PATH} "
         f"poll_seconds={POLL_SECONDS} batch_size={BATCH_SIZE} "
         f"message_progress_every={MESSAGE_PROGRESS_EVERY} "
+        f"use_takeout={USE_TAKEOUT} takeout_wait_time={TAKEOUT_WAIT_TIME} "
         f"register_chat_ids={sorted(REGISTER_CHAT_IDS) if REGISTER_CHAT_IDS else 'ALL'}"
     )
     backend = Backend()
