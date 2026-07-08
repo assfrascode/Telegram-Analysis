@@ -1,9 +1,11 @@
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,10 +16,13 @@ from app.models import (
     JobStatus,
     Question,
     QuestionSet,
+    StepStatus,
     TelegramChat,
     TelegramChatStatus,
     Upload,
     UploadStatus,
+    WorkerDeadLetter,
+    WorkerTask,
 )
 from app.nats_client import publish_json
 from app.schemas import JobCreateRequest, QuestionInput, TelegramReportCreateRequest
@@ -28,6 +33,15 @@ from app.workers import subjects
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class JobRetryTarget:
+    subject: str
+    task_key: str
+    payload: dict[str, Any]
+    dead_letter_id: uuid.UUID | None = None
+    dead_letter_reason: str | None = None
 
 
 def utc_now():
@@ -134,6 +148,154 @@ def initial_task_payload(job: Job) -> dict[str, str]:
         payload["upload_id"] = str(job.upload_id)
         payload["task_key"] = f"validate:{job.id}"
     return payload
+
+
+def initial_task_subject(job: Job) -> str:
+    return subjects.TELEGRAM_SNAPSHOT if job.source_type == JobSourceType.telegram_chat else subjects.VALIDATE
+
+
+def retry_target_from_dead_letter(job: Job, dead_letter: WorkerDeadLetter) -> JobRetryTarget:
+    payload = dict(dead_letter.payload or {})
+    payload["job_id"] = str(job.id)
+    payload["owner_user_id"] = str(job.owner_user_id)
+    payload["task_key"] = dead_letter.task_key
+    payload.pop("retry_delay_seconds", None)
+    return JobRetryTarget(
+        subject=dead_letter.subject,
+        task_key=dead_letter.task_key,
+        payload=payload,
+        dead_letter_id=dead_letter.id,
+        dead_letter_reason=dead_letter.reason,
+    )
+
+
+def retry_target_from_initial_task(job: Job) -> JobRetryTarget:
+    payload = initial_task_payload(job)
+    return JobRetryTarget(
+        subject=initial_task_subject(job),
+        task_key=payload["task_key"],
+        payload=payload,
+    )
+
+
+def retry_target_for_job(job: Job, dead_letter: WorkerDeadLetter | None) -> JobRetryTarget:
+    if dead_letter is not None:
+        return retry_target_from_dead_letter(job, dead_letter)
+    if job.started_at is None:
+        return retry_target_from_initial_task(job)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Failed job has no retryable worker task",
+    )
+
+
+def reset_job_for_retry(job: Job) -> None:
+    if job.status != JobStatus.failed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only failed jobs can be retried")
+    job.status = JobStatus.running if job.started_at else JobStatus.queued
+    job.error_message = None
+    job.completed_at = None
+
+
+def reset_worker_task_for_retry(task: WorkerTask | None) -> None:
+    if task is None:
+        return
+    task.status = StepStatus.pending
+    task.attempts = 0
+    task.last_error = None
+    task.updated_at = utc_now()
+
+
+async def _latest_dead_letter_for_job(session: AsyncSession, job_id: uuid.UUID) -> WorkerDeadLetter | None:
+    return (
+        await session.execute(
+            select(WorkerDeadLetter)
+            .where(WorkerDeadLetter.job_id == job_id)
+            .order_by(desc(WorkerDeadLetter.created_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def prepare_job_retry(session: AsyncSession, job: Job) -> JobRetryTarget:
+    dead_letter = await _latest_dead_letter_for_job(session, job.id)
+    target = retry_target_for_job(job, dead_letter)
+    reset_job_for_retry(job)
+
+    task = (
+        await session.execute(select(WorkerTask).where(WorkerTask.task_key == target.task_key))
+    ).scalar_one_or_none()
+    reset_worker_task_for_retry(task)
+
+    await record_event_db_only(
+        session,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.retry.started",
+        level="warning",
+        message="Analyse wird ab dem fehlgeschlagenen Task erneut eingeplant.",
+        payload={
+            "subject": target.subject,
+            "task_key": target.task_key,
+            "dead_letter_id": str(target.dead_letter_id) if target.dead_letter_id else None,
+            "dead_letter_reason": target.dead_letter_reason,
+        },
+    )
+    await session.flush()
+    return target
+
+
+async def publish_retry_job_task(session: AsyncSession, js, job: Job, target: JobRetryTarget) -> None:
+    logger.info("Publishing retry task for job %s to %s", job.id, target.subject)
+    ack = await publish_json(js, target.subject, target.payload)
+    logger.info("Published retry task for job %s to %s: %s", job.id, target.subject, ack)
+    await record_event(
+        session,
+        js=js,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.requeued",
+        level="warning",
+        message="Analyse wurde erneut eingeplant.",
+        payload={"subject": target.subject, "task_key": target.task_key, "ack": str(ack)},
+        raise_publish_errors=False,
+    )
+
+
+async def mark_job_retry_enqueue_failed_db_only(
+    session: AsyncSession,
+    job_id: uuid.UUID,
+    target: JobRetryTarget,
+    error: Exception,
+) -> Job | None:
+    job = await session.get(Job, job_id)
+    if job is None:
+        return None
+    job.status = JobStatus.failed
+    job.error_message = f"Analysis retry could not be enqueued: {error}"
+    job.completed_at = utc_now()
+    task = (
+        await session.execute(select(WorkerTask).where(WorkerTask.task_key == target.task_key))
+    ).scalar_one_or_none()
+    if task is not None:
+        task.status = StepStatus.failed_permanent
+        task.last_error = job.error_message
+        task.updated_at = utc_now()
+    await record_event_db_only(
+        session,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.retry.enqueue_failed",
+        level="error",
+        message="Analyse konnte nicht erneut eingeplant werden.",
+        payload={
+            "subject": target.subject,
+            "task_key": target.task_key,
+            "error": str(error)[:8000],
+        },
+    )
+    await session.flush()
+    return job
 
 
 async def create_job_record(session: AsyncSession, owner_user_id: uuid.UUID, payload: JobCreateRequest) -> Job:

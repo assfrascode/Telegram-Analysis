@@ -30,6 +30,7 @@ function requestErrorMessage(reason) {
 }
 
 function getStageState(events, currentJob) {
+  const latestRetryIndex = events.findLastIndex((event) => event.event_type === "job.retry.started");
   const applicableStages = STAGES.filter((stage) => {
     if (currentJob?.source_type === "telegram_chat") {
       return !["upload", "validate", "extract", "parse"].includes(stage.key);
@@ -37,18 +38,24 @@ function getStageState(events, currentJob) {
     return stage.key !== "telegram_sync";
   });
   const rawStates = applicableStages.map((stage) => {
-    const matching = events.filter((event) => stage.events.includes(event.event_type));
-    const latest = matching.at(-1);
-    const completed = matching.some((event) => /completed$/.test(event.event_type) || event.event_type === "job.completed");
-    const started = Boolean(matching.length);
-    const failed = matching.some((event) => event.level === "error" || event.event_type.includes("failed"));
+    const matching = events
+      .map((event, index) => ({ event, index }))
+      .filter((item) => stage.events.includes(item.event.event_type));
+    const matchingAfterRetry = latestRetryIndex >= 0
+      ? matching.filter((item) => item.index > latestRetryIndex)
+      : matching;
+    const effectiveFailures = latestRetryIndex >= 0 ? matchingAfterRetry : matching;
+    const latest = matchingAfterRetry.at(-1) || matching.at(-1);
+    const completed = matching.some((item) => /completed$/.test(item.event.event_type) || item.event.event_type === "job.completed");
+    const started = Boolean(matchingAfterRetry.length || completed || matching.length);
+    const failed = effectiveFailures.some((item) => item.event.level === "error" || item.event.event_type.includes("failed"));
 
     let status = "pending";
     if (failed) status = "failed";
     else if (completed) status = "completed";
     else if (started) status = "running";
 
-    return { stage, latest, started, completed, failed, status, derived: false };
+    return { stage, latest: latest?.event, started, completed, failed, status, derived: false };
   });
 
   const hasCompletedJobEvent = events.some((event) => event.event_type === "job.completed");
@@ -549,6 +556,22 @@ export default function App() {
     }
   };
 
+  const retryJob = async () => {
+    if (!token || !currentJobId) return;
+    if (!window.confirm("Retry this failed analysis from the last failed step?")) return;
+    try {
+      const job = await request(`/jobs/${currentJobId}/retry`, { method: "POST" });
+      setCurrentJob(job);
+      addLocalLog(`Retry requested: ${job.status}`, "warning");
+      showToast("Retry started");
+      await Promise.allSettled([pollLatest(), refreshJobs(), refreshCapacity()]);
+    } catch (error) {
+      showToast(`Retry failed: ${error.message}`, "error");
+      addLocalLog(`Retry failed: ${error.message}`, "error");
+      await refreshJobStatus();
+    }
+  };
+
   const downloadReport = async () => {
     if (!token || !currentJobId) return;
     try {
@@ -607,6 +630,7 @@ export default function App() {
               stageStates={stageStates}
               onRefresh={pollLatest}
               onCancel={cancelJob}
+              onRetry={retryJob}
               onDownload={downloadReport}
             />
         ) : activeView === "telegram" ? (

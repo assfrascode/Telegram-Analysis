@@ -111,7 +111,7 @@ function shortId(id) {
 }
 
 function setBusy(isBusy) {
-  ["start", "login", "authModeLogin", "authModeRegister", "refreshCapacity", "refreshJobs", "refreshJob"].forEach((id) => {
+  ["start", "login", "authModeLogin", "authModeRegister", "refreshCapacity", "refreshJobs", "refreshJob", "retry"].forEach((id) => {
     const el = $(id);
     if (el) el.disabled = isBusy;
   });
@@ -1037,6 +1037,7 @@ function renderActiveJob() {
     empty.hidden = false;
     panel.hidden = true;
     $("cancel").hidden = true;
+    $("retry").hidden = true;
     renderJobDashboard([]);
     return;
   }
@@ -1048,6 +1049,7 @@ function renderActiveJob() {
   $("activeJobStatus").textContent = job.status;
   $("activeJobCreated").textContent = formatDate(job.created_at);
   $("cancel").hidden = TERMINAL_STATUSES.has(job.status);
+  $("retry").hidden = job.status !== "failed";
   $("download").hidden = job.status !== "completed";
 
   const error = $("jobError");
@@ -1076,12 +1078,19 @@ function renderActiveJob() {
 }
 
 function getStageState() {
+  const latestRetryIndex = state.events.findLastIndex((event) => event.event_type === "job.retry.started");
   return STAGES.map((stage) => {
-    const matching = state.events.filter((event) => stage.events.includes(event.event_type));
-    const latest = matching.at(-1);
-    const completed = matching.some((event) => /completed$/.test(event.event_type) || event.event_type === "job.completed");
-    const started = Boolean(matching.length);
-    const failed = matching.some((event) => event.level === "error" || event.event_type.includes("failed"));
+    const matching = state.events
+      .map((event, index) => ({event, index}))
+      .filter((item) => stage.events.includes(item.event.event_type));
+    const matchingAfterRetry = latestRetryIndex >= 0
+      ? matching.filter((item) => item.index > latestRetryIndex)
+      : matching;
+    const effectiveFailures = latestRetryIndex >= 0 ? matchingAfterRetry : matching;
+    const latest = (matchingAfterRetry.at(-1) || matching.at(-1))?.event;
+    const completed = matching.some((item) => /completed$/.test(item.event.event_type) || item.event.event_type === "job.completed");
+    const started = Boolean(matchingAfterRetry.length || completed || matching.length);
+    const failed = effectiveFailures.some((item) => item.event.level === "error" || item.event.event_type.includes("failed"));
     let status = "pending";
     if (failed) status = "failed";
     else if (completed) status = "completed";
@@ -1222,7 +1231,7 @@ function scheduleCapacityRefresh(delay = 2000) {
 }
 
 function handleJobEvent(event) {
-  if (["job.completed", "job.failed", "job.cancelled"].includes(event.event_type)) {
+  if (["job.completed", "job.failed", "job.cancelled", "job.retry.started"].includes(event.event_type)) {
     scheduleJobStatusRefresh(100);
     scheduleJobsRefresh(250);
     scheduleCapacityRefresh(500);
@@ -1266,6 +1275,23 @@ async function cancelJob() {
   } catch (err) {
     showToast(`Abbruch fehlgeschlagen: ${err.message}`, "error");
     addLocalLog(`Abbruch fehlgeschlagen: ${err.message}`, "error");
+  }
+}
+
+async function retryJob() {
+  if (!state.token || !state.currentJobId) return;
+  if (!window.confirm("Diese fehlgeschlagene Analyse ab dem letzten fehlgeschlagenen Schritt erneut versuchen?")) return;
+  try {
+    const job = await apiJson(`/jobs/${state.currentJobId}/retry`, {method: "POST"});
+    state.currentJob = job;
+    addLocalLog(`Retry angefordert: ${job.status}`, "warning");
+    showToast("Retry gestartet");
+    await Promise.allSettled([refreshJobStatus(), loadEventBacklog(), refreshJobs(), refreshCapacity()]);
+    connectWs();
+  } catch (err) {
+    showToast(`Retry fehlgeschlagen: ${err.message}`, "error");
+    addLocalLog(`Retry fehlgeschlagen: ${err.message}`, "error");
+    await refreshJobStatus();
   }
 }
 
@@ -1353,6 +1379,7 @@ function bindEvents() {
   $("refreshCapacity").addEventListener("click", refreshCapacity);
   $("start").addEventListener("click", startJob);
   $("cancel").addEventListener("click", cancelJob);
+  $("retry").addEventListener("click", retryJob);
   $("download").addEventListener("click", downloadReport);
   $("refreshJobs").addEventListener("click", refreshJobs);
   $("refreshJob").addEventListener("click", () => Promise.allSettled([refreshJobStatus(), loadEventBacklog()]));

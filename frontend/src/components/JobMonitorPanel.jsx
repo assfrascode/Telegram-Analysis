@@ -40,6 +40,7 @@ export function JobMonitorPanel({
   stageStates,
   onRefresh,
   onCancel,
+  onRetry,
   onDownload,
 }) {
   const completed = stageStates.filter((item) => item.status === "completed").length;
@@ -61,6 +62,11 @@ export function JobMonitorPanel({
           <button className="button button-secondary button-small" type="button" onClick={onRefresh}>
             Refresh
           </button>
+          {currentJob?.status === "failed" && (
+            <button className="button button-primary button-small" type="button" onClick={onRetry}>
+              Retry analysis
+            </button>
+          )}
           {currentJob && !TERMINAL_STATUSES.has(currentJob.status) && (
             <button className="button button-danger button-small" type="button" onClick={onCancel}>
               Cancel analysis

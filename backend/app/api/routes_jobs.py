@@ -24,8 +24,11 @@ from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
 from app.services.jobs import (
     create_job_record,
     create_telegram_job_record,
+    mark_job_retry_enqueue_failed_db_only,
     mark_job_start_failed_db_only,
+    prepare_job_retry,
     publish_initial_job_task,
+    publish_retry_job_task,
     request_cancel,
 )
 from app.services.events import record_event
@@ -172,6 +175,33 @@ async def cancel_job(
         await mark_job_cancelled(session, job, js=js)
     await session.commit()
     return {"ok": True, "status": job.status.value}
+
+
+@router.post("/{job_id}/retry", response_model=JobResponse)
+async def retry_job(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> JobResponse:
+    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    retry_target = await prepare_job_retry(session, job)
+    await session.commit()
+
+    try:
+        async with nats_context() as (_, js):
+            await publish_retry_job_task(session, js, job, retry_target)
+            await session.commit()
+    except Exception as exc:
+        logger.exception("Failed to publish retry task for job %s", job.id)
+        await session.rollback()
+        await mark_job_retry_enqueue_failed_db_only(session, job.id, retry_target, exc)
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis retry could not be enqueued. Please retry again.",
+        ) from exc
+
+    return _job_response(job)
 
 
 @router.get("/{job_id}/events", response_model=list[EventResponse])

@@ -59,8 +59,24 @@ def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> No
     assert "window.prompt" not in question_sets
     assert "inline-template-form" in question_sets
     assert "Progress" in progress
+    assert "Retry analysis" in progress
     assert "progress-summary-card" in progress
     assert "min-width: 1180px" in styles
+
+
+def test_frontends_expose_failed_job_retry_action() -> None:
+    root = Path("frontend/src")
+    app = (root / "App.jsx").read_text()
+    progress = (root / "components/JobMonitorPanel.jsx").read_text()
+    static_app = Path("backend/app/static/app/app.js").read_text()
+    static_html = Path("backend/app/static/app/index.html").read_text()
+
+    assert "`/jobs/${currentJobId}/retry`" in app
+    assert "job.retry.started" in app
+    assert "Retry analysis" in progress
+    assert "`/jobs/${state.currentJobId}/retry`" in static_app
+    assert "job.retry.started" in static_app
+    assert 'id="retry"' in static_html
 
 
 def test_frontend_proxies_telegram_api_routes() -> None:
