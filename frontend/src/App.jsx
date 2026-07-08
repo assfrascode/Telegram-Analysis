@@ -23,6 +23,8 @@ function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+const MAX_TELEGRAM_REPORT_DAYS = 30;
+
 function requestErrorMessage(reason) {
   return reason?.message || String(reason);
 }
@@ -121,7 +123,7 @@ export default function App() {
   const [reportEnd, setReportEnd] = useState(() => localDateTimeValue(new Date()));
   const [reportStart, setReportStart] = useState(() => {
     const date = new Date();
-    date.setDate(date.getDate() - 14);
+    date.setTime(date.getTime() - MAX_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000);
     return localDateTimeValue(date);
   });
 
@@ -507,6 +509,9 @@ export default function App() {
         const startAt = new Date(selectedStart);
         const endAt = new Date(selectedEnd);
         if (!(startAt < endAt)) throw new Error("The start time must be before the end time");
+        if (endAt.getTime() - startAt.getTime() > MAX_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000) {
+          throw new Error(`Telegram reports can cover at most ${MAX_TELEGRAM_REPORT_DAYS} days`);
+        }
         const payload = {
           telegram_chat_id: selectedChatId,
           start_at: startAt.toISOString(),

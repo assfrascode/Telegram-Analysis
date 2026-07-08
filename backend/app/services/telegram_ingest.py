@@ -16,6 +16,9 @@ from app.config import get_settings
 from app.models import (
     CollectedTelegramMedia,
     CollectedTelegramMessage,
+    Job,
+    JobSourceType,
+    JobStatus,
     StepStatus,
     TelegramChat,
     TelegramChatStatus,
@@ -62,6 +65,15 @@ def new_ingest_token() -> str:
 
 def lease_owner_for_run(run_id: uuid.UUID) -> str:
     return f"external:{run_id}"
+
+
+def chat_covers_interval(chat: TelegramChat, start_at: datetime, end_at: datetime) -> bool:
+    return bool(
+        chat.coverage_start
+        and chat.coverage_end
+        and ensure_utc(chat.coverage_start) <= ensure_utc(start_at)
+        and ensure_utc(chat.coverage_end) >= ensure_utc(end_at)
+    )
 
 
 def safe_filename(value: str) -> str:
@@ -216,11 +228,20 @@ async def claim_next_external_chat(
     if chat is None:
         return None
 
-    requested_start = periodic_sync_start(chat)
-    requested_end = now
+    report_job = await external_report_job_needing_coverage(session, chat)
+    if report_job is not None:
+        requested_start = ensure_utc(report_job.report_start_at)
+        requested_end = ensure_utc(report_job.report_end_at)
+        job_id = report_job.id
+    else:
+        requested_start = periodic_sync_start(chat)
+        requested_end = now
+        job_id = None
+
     run = TelegramSyncRun(
         chat_id=chat.id,
         owner_user_id=chat.owner_user_id,
+        job_id=job_id,
         requested_start=requested_start,
         requested_end=requested_end,
     )
@@ -234,6 +255,34 @@ async def claim_next_external_chat(
     chat.updated_at = now
     await session.flush()
     return run, chat
+
+
+async def external_report_job_needing_coverage(
+    session: AsyncSession,
+    chat: TelegramChat,
+) -> Job | None:
+    jobs = list(
+        (
+            await session.execute(
+                select(Job)
+                .where(
+                    Job.owner_user_id == chat.owner_user_id,
+                    Job.telegram_chat_id == chat.id,
+                    Job.source_type == JobSourceType.telegram_chat,
+                    Job.status.in_([JobStatus.queued, JobStatus.running]),
+                    Job.report_start_at.is_not(None),
+                    Job.report_end_at.is_not(None),
+                )
+                .order_by(Job.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for job in jobs:
+        if not chat_covers_interval(chat, job.report_start_at, job.report_end_at):
+            return job
+    return None
 
 
 async def load_running_external_run(

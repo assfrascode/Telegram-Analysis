@@ -12,7 +12,14 @@ from app.schemas import (
     TelegramIngestChatUpsertRequest,
     TelegramIngestRunCompleteRequest,
 )
-from app.services.telegram_ingest import IngestPrincipal, hash_ingest_token, new_ingest_token, upsert_external_chat
+from app.services import telegram_ingest
+from app.services.telegram_ingest import (
+    IngestPrincipal,
+    claim_next_external_chat,
+    hash_ingest_token,
+    new_ingest_token,
+    upsert_external_chat,
+)
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
 
 
@@ -157,3 +164,84 @@ def test_snapshot_external_coverage_helper_accepts_existing_coverage() -> None:
 
     assert result is None
     assert chat.next_sync_at <= datetime.now(timezone.utc)
+
+
+def test_external_claim_prefers_waiting_report_interval(monkeypatch) -> None:
+    now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        initial_sync_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sync_interval_minutes=60,
+        status=TelegramChatStatus.active,
+        last_error="previous error",
+        next_sync_at=now,
+        coverage_start=None,
+        coverage_end=None,
+        lease_owner=None,
+        lease_expires_at=None,
+        updated_at=None,
+    )
+    report_start = now - timedelta(days=30)
+    report_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        report_start_at=report_start,
+        report_end_at=now,
+    )
+
+    class Scalars:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class Result:
+        def __init__(self, *, scalar=None, values=None):
+            self.scalar = scalar
+            self.values = values or []
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def scalars(self):
+            return Scalars(self.values)
+
+    class Session:
+        def __init__(self):
+            self.execute_count = 0
+            self.added = None
+            self.flushes = 0
+
+        async def execute(self, query):
+            self.execute_count += 1
+            if self.execute_count == 1:
+                return Result(scalar=chat)
+            return Result(values=[report_job])
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            self.flushes += 1
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+    session = Session()
+
+    run, claimed_chat = asyncio.run(
+        claim_next_external_chat(
+            session,
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+        )
+    )
+
+    assert claimed_chat is chat
+    assert run is session.added
+    assert run.job_id == report_job.id
+    assert run.requested_start == report_start
+    assert run.requested_end == now
+    assert run.requested_start != chat.initial_sync_from
+    assert chat.status == TelegramChatStatus.syncing
+    assert chat.last_error is None
+    assert chat.lease_owner == f"external:{run.id}"

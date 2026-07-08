@@ -8,6 +8,8 @@ function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+const DEFAULT_TELEGRAM_REPORT_DAYS = 30;
+
 function chatSourceLabel(chat) {
   return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
 }
@@ -205,12 +207,12 @@ export function CreateJobPanel({
                   onClick={() => {
                     const end = new Date();
                     const start = new Date(end);
-                    start.setDate(start.getDate() - 14);
+                    start.setTime(start.getTime() - DEFAULT_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000);
                     setReportStart(localDateTimeValue(start));
                     setReportEnd(localDateTimeValue(end));
                   }}
                 >
-                  Use the last 14 days
+                  Use the last 30 days
                 </button>
               </div>
             )}

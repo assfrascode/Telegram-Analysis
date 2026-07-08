@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ALLOWED_REPORT_WINDOW_DAYS = {1, 7, 14, 30}
+MAX_TELEGRAM_REPORT_WINDOW = timedelta(days=30)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -93,6 +94,8 @@ class TelegramReportCreateRequest(BaseModel):
             raise ValueError("start_at must be before end_at")
         if self.start_at.tzinfo is None or self.end_at.tzinfo is None:
             raise ValueError("start_at and end_at must include a timezone")
+        if self.end_at - self.start_at > MAX_TELEGRAM_REPORT_WINDOW:
+            raise ValueError("Telegram reports can cover at most 30 days")
         return self
 
 

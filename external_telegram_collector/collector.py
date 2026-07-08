@@ -4,7 +4,7 @@ import json
 import mimetypes
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,13 @@ REGISTER_CHAT_IDS = {
     for value in env("TELEGRAM_CHAT_IDS").split(",")
     if value.strip()
 }
-INITIAL_SYNC_FROM = env("INITIAL_SYNC_FROM", "2026-01-01T00:00:00+00:00")
+
+
+def default_initial_sync_from() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=30)).replace(microsecond=0).isoformat()
+
+
+INITIAL_SYNC_FROM = env("INITIAL_SYNC_FROM") or default_initial_sync_from()
 SYNC_INTERVAL_MINUTES = int(env("SYNC_INTERVAL_MINUTES", "60"))
 
 

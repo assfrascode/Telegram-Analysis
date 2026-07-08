@@ -52,6 +52,14 @@ def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
             questions=[{"text": "What happened?"}],
         )
 
+    with pytest.raises(ValidationError):
+        TelegramReportCreateRequest(
+            telegram_chat_id=uuid.uuid4(),
+            start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            questions=[{"text": "What happened?"}],
+        )
+
 
 def test_chat_sync_interval_is_limited_to_supported_presets() -> None:
     with pytest.raises(ValidationError):
