@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.models import JobStatus, TelegramSyncStatus
+from app.models import Job, JobStatus, TelegramChat, TelegramIngestMode, TelegramSyncStatus
 from app.workers import run_telegram_collector
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
 
@@ -49,6 +49,116 @@ def test_snapshot_waits_until_collector_lease_is_released(monkeypatch) -> None:
 
     assert len(events) == 1
     assert events[0]["event_type"] == "telegram.sync.waiting"
+
+
+def test_partial_snapshot_skips_external_wait_and_fails_without_messages(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    job_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    job = SimpleNamespace(
+        id=job_id,
+        owner_user_id=uuid.uuid4(),
+        telegram_chat_id=chat_id,
+        report_start_at=now - timedelta(hours=2),
+        report_end_at=now,
+        status=JobStatus.queued,
+        started_at=None,
+        completed_at=None,
+        error_message=None,
+        options={"allow_partial_telegram_sync": True},
+    )
+    chat = SimpleNamespace(
+        id=chat_id,
+        ingest_mode=TelegramIngestMode.external_push,
+        coverage_start=None,
+        coverage_end=None,
+        next_sync_at=now + timedelta(hours=1),
+        updated_at=now,
+    )
+    events = []
+
+    class Scalars:
+        def all(self):
+            return []
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def get(self, model, value):
+            if model is Job:
+                return job
+            if model is TelegramChat:
+                return chat
+            return None
+
+        async def execute(self, query):
+            return Result()
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        events.append(kwargs)
+
+    async def fail_wait(session, job, chat):
+        raise AssertionError("partial report should not wait for external coverage")
+
+    worker.emit_event = emit_event
+    worker._wait_for_external_coverage = fail_wait
+
+    asyncio.run(worker.handle(Session(), {"job_id": str(job_id)}))
+
+    assert chat.next_sync_at <= datetime.now(timezone.utc)
+    assert job.status == JobStatus.failed
+    assert job.error_message == "No collected Telegram messages exist in the requested interval"
+    assert any(event["event_type"] == "telegram.sync.partial" for event in events)
+    assert any(event["event_type"] == "telegram.snapshot.failed" for event in events)
+
+
+def test_backend_collector_prefers_completed_partial_report_interval() -> None:
+    now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    report_start = now - timedelta(days=2)
+    report_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.completed,
+        report_start_at=report_start,
+        report_end_at=now,
+        options={"allow_partial_telegram_sync": True},
+    )
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        initial_sync_from=now - timedelta(days=30),
+        coverage_start=now - timedelta(days=3),
+        coverage_end=now - timedelta(days=1),
+    )
+
+    class Scalars:
+        def all(self):
+            return [report_job]
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def execute(self, query):
+            return Result()
+
+    requested_start, requested_end, job_id = asyncio.run(
+        run_telegram_collector.sync_request_for_chat(Session(), chat, now)
+    )
+
+    assert requested_start == report_start
+    assert requested_end == now
+    assert job_id == report_job.id
 
 
 def test_collector_startup_releases_only_non_report_leases(monkeypatch) -> None:

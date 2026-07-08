@@ -55,6 +55,7 @@ class QuestionInput(BaseModel):
 class JobOptions(BaseModel):
     translate: bool = False
     analyze_media: bool = True
+    allow_partial_telegram_sync: bool = False
     retrieval_k: int = Field(default=50, ge=1, le=200)
     rerank_k: int = Field(default=15, ge=1, le=100)
 
@@ -106,6 +107,7 @@ class ScheduledReportJobMetadata(BaseModel):
     timezone: str
     run_time_local: str
     question_set_id: uuid.UUID | None = None
+    allow_partial_telegram_sync: bool = False
 
 
 class JobResponse(BaseModel):
@@ -263,6 +265,7 @@ class TelegramReportScheduleCreateRequest(BaseModel):
     timezone: str = Field(min_length=1, max_length=128)
     rolling_window_days: int
     enabled: bool = True
+    allow_partial_telegram_sync: bool = False
 
     @field_validator("timezone")
     @classmethod
@@ -288,6 +291,7 @@ class TelegramReportScheduleUpdateRequest(BaseModel):
     timezone: str | None = Field(default=None, min_length=1, max_length=128)
     rolling_window_days: int | None = None
     enabled: bool | None = None
+    allow_partial_telegram_sync: bool | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -313,6 +317,7 @@ class TelegramReportScheduleResponse(BaseModel):
     telegram_chat_id: uuid.UUID
     question_set_id: uuid.UUID
     enabled: bool
+    allow_partial_telegram_sync: bool
     run_time_local: str
     timezone: str
     rolling_window_days: int

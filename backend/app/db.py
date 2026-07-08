@@ -57,3 +57,12 @@ async def init_db() -> None:
             )
         )
         await conn.execute(text("ALTER TABLE telegram_chats ALTER COLUMN connection_id DROP NOT NULL"))
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE telegram_report_schedules
+                ADD COLUMN IF NOT EXISTS allow_partial_telegram_sync boolean
+                DEFAULT false NOT NULL
+                """
+            )
+        )

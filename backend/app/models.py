@@ -316,6 +316,7 @@ class TelegramReportSchedule(Base):
     timezone: Mapped[str] = mapped_column(String(128))
     rolling_window_days: Mapped[int] = mapped_column(Integer)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    allow_partial_telegram_sync: Mapped[bool] = mapped_column(Boolean, default=False)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_job_id: Mapped[uuid.UUID | None] = mapped_column(

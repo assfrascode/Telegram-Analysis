@@ -18,6 +18,7 @@ from app.models import (
     TelegramSyncRun,
     TelegramSyncStatus,
 )
+from app.services.telegram_ingest import ensure_utc, report_job_needing_coverage
 from app.services.telegram_sync import periodic_sync_start, synchronize_chat
 
 settings = get_settings()
@@ -62,6 +63,21 @@ async def claim_due_chat() -> uuid.UUID | None:
         chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
         await session.commit()
         return chat.id
+
+
+async def sync_request_for_chat(
+    session,
+    chat: TelegramChat,
+    now: datetime,
+) -> tuple[datetime, datetime, uuid.UUID | None]:
+    report_job = await report_job_needing_coverage(session, chat)
+    if report_job is not None:
+        return (
+            ensure_utc(report_job.report_start_at),
+            ensure_utc(report_job.report_end_at),
+            report_job.id,
+        )
+    return periodic_sync_start(chat), now, None
 
 
 async def release_orphaned_collector_leases() -> int:
@@ -123,8 +139,12 @@ async def collect(chat_id: uuid.UUID) -> None:
         chat = await session.get(TelegramChat, chat_id)
         if chat is None or chat.lease_owner != COLLECTOR_ID:
             return
-        requested_start = periodic_sync_start(chat)
         requested_end = utc_now()
+        requested_start, requested_end, job_id = await sync_request_for_chat(
+            session,
+            chat,
+            requested_end,
+        )
         print(
             f"Telegram collector sync started chat_id={chat.id} title={chat.title!r} "
             f"range={requested_start.isoformat()}..{requested_end.isoformat()}",
@@ -135,6 +155,7 @@ async def collect(chat_id: uuid.UUID) -> None:
             chat=chat,
             requested_start=requested_start,
             requested_end=requested_end,
+            job_id=job_id,
         )
         print(
             f"Telegram collector sync completed chat_id={chat.id} "

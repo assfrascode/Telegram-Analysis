@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.routes_telegram_ingest import chat_response
-from app.models import TelegramChat, TelegramChatStatus, TelegramIngestMode
+from app.models import JobStatus, TelegramChat, TelegramChatStatus, TelegramIngestMode
 from app.schemas import (
     TelegramIngestChatUpsertRequest,
     TelegramIngestRunCompleteRequest,
@@ -245,3 +245,79 @@ def test_external_claim_prefers_waiting_report_interval(monkeypatch) -> None:
     assert chat.status == TelegramChatStatus.syncing
     assert chat.last_error is None
     assert chat.lease_owner == f"external:{run.id}"
+
+
+def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch) -> None:
+    now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        initial_sync_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sync_interval_minutes=60,
+        status=TelegramChatStatus.active,
+        last_error=None,
+        next_sync_at=now,
+        coverage_start=now - timedelta(days=3),
+        coverage_end=now - timedelta(days=1),
+        lease_owner=None,
+        lease_expires_at=None,
+        updated_at=None,
+    )
+    report_start = now - timedelta(days=2)
+    report_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.completed,
+        report_start_at=report_start,
+        report_end_at=now,
+        options={"allow_partial_telegram_sync": True},
+    )
+
+    class Scalars:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class Result:
+        def __init__(self, *, scalar=None, values=None):
+            self.scalar = scalar
+            self.values = values or []
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def scalars(self):
+            return Scalars(self.values)
+
+    class Session:
+        def __init__(self):
+            self.execute_count = 0
+            self.added = None
+
+        async def execute(self, query):
+            self.execute_count += 1
+            if self.execute_count == 1:
+                return Result(scalar=chat)
+            return Result(values=[report_job])
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+
+    run, claimed_chat = asyncio.run(
+        claim_next_external_chat(
+            Session(),
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+        )
+    )
+
+    assert claimed_chat is chat
+    assert run.job_id == report_job.id
+    assert run.requested_start == report_start
+    assert run.requested_end == now

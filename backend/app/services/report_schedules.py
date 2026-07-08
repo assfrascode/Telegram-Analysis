@@ -61,6 +61,7 @@ def response(schedule: TelegramReportSchedule) -> TelegramReportScheduleResponse
         telegram_chat_id=schedule.telegram_chat_id,
         question_set_id=schedule.question_set_id,
         enabled=schedule.enabled,
+        allow_partial_telegram_sync=bool(getattr(schedule, "allow_partial_telegram_sync", False)),
         run_time_local=schedule.run_time_local,
         timezone=schedule.timezone,
         rolling_window_days=schedule.rolling_window_days,
@@ -168,6 +169,7 @@ async def create_report_schedule(
         timezone=payload.timezone,
         rolling_window_days=payload.rolling_window_days,
         enabled=payload.enabled,
+        allow_partial_telegram_sync=payload.allow_partial_telegram_sync,
         next_run_at=(
             calculate_next_run_at(payload.run_time_local, payload.timezone)
             if payload.enabled
@@ -211,6 +213,8 @@ async def update_report_schedule(
     if payload.enabled is not None:
         schedule.enabled = payload.enabled
         should_recalculate = True
+    if payload.allow_partial_telegram_sync is not None:
+        schedule.allow_partial_telegram_sync = payload.allow_partial_telegram_sync
 
     if schedule.enabled and (should_recalculate or schedule.next_run_at is None):
         schedule.next_run_at = calculate_next_run_at(schedule.run_time_local, schedule.timezone)

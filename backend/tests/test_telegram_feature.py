@@ -36,6 +36,23 @@ def test_telegram_secrets_are_encrypted_and_round_trip() -> None:
 
 
 def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
+    default_request = TelegramReportCreateRequest(
+        telegram_chat_id=uuid.uuid4(),
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        questions=[{"text": "What happened?"}],
+    )
+    assert default_request.options.allow_partial_telegram_sync is False
+
+    partial_request = TelegramReportCreateRequest(
+        telegram_chat_id=uuid.uuid4(),
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        questions=[{"text": "What happened?"}],
+        options={"allow_partial_telegram_sync": True},
+    )
+    assert partial_request.options.allow_partial_telegram_sync is True
+
     with pytest.raises(ValidationError):
         TelegramReportCreateRequest(
             telegram_chat_id=uuid.uuid4(),

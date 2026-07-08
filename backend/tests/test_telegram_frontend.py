@@ -12,9 +12,12 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "/telegram/connection/password" in panel
     assert "Collected chat" in create
     assert "Use the last 30 days" in create
+    assert "Allow partial report" in create
+    assert "allow_partial_telegram_sync" in create
     assert "Open Telegram Setup" in create
     assert "Scheduled reports" in panel
     assert "/telegram/report-schedules" in panel
+    assert "allow_partial_telegram_sync" in panel
     assert "Scheduled:" in (root / "components/AppSidebar.jsx").read_text()
     assert 'activeView === "telegram"' in app
     assert 'request("/jobs/telegram"' in app

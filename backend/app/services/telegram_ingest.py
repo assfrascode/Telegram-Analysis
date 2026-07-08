@@ -76,6 +76,22 @@ def chat_covers_interval(chat: TelegramChat, start_at: datetime, end_at: datetim
     )
 
 
+def job_allows_partial_telegram_sync(job: Job) -> bool:
+    return bool((getattr(job, "options", None) or {}).get("allow_partial_telegram_sync"))
+
+
+def job_still_needs_report_coverage(job: Job, chat: TelegramChat) -> bool:
+    if not job.report_start_at or not job.report_end_at:
+        return False
+    if chat_covers_interval(chat, job.report_start_at, job.report_end_at):
+        return False
+
+    status = getattr(job, "status", JobStatus.queued)
+    if status in {JobStatus.queued, JobStatus.running}:
+        return True
+    return status == JobStatus.completed and job_allows_partial_telegram_sync(job)
+
+
 def safe_filename(value: str) -> str:
     name = Path(value).name.replace("\x00", "").strip()
     return name[:900] or "attachment"
@@ -228,7 +244,7 @@ async def claim_next_external_chat(
     if chat is None:
         return None
 
-    report_job = await external_report_job_needing_coverage(session, chat)
+    report_job = await report_job_needing_coverage(session, chat)
     if report_job is not None:
         requested_start = ensure_utc(report_job.report_start_at)
         requested_end = ensure_utc(report_job.report_end_at)
@@ -261,6 +277,13 @@ async def external_report_job_needing_coverage(
     session: AsyncSession,
     chat: TelegramChat,
 ) -> Job | None:
+    return await report_job_needing_coverage(session, chat)
+
+
+async def report_job_needing_coverage(
+    session: AsyncSession,
+    chat: TelegramChat,
+) -> Job | None:
     jobs = list(
         (
             await session.execute(
@@ -269,7 +292,7 @@ async def external_report_job_needing_coverage(
                     Job.owner_user_id == chat.owner_user_id,
                     Job.telegram_chat_id == chat.id,
                     Job.source_type == JobSourceType.telegram_chat,
-                    Job.status.in_([JobStatus.queued, JobStatus.running]),
+                    Job.status.in_([JobStatus.queued, JobStatus.running, JobStatus.completed]),
                     Job.report_start_at.is_not(None),
                     Job.report_end_at.is_not(None),
                 )
@@ -280,7 +303,7 @@ async def external_report_job_needing_coverage(
         .all()
     )
     for job in jobs:
-        if not chat_covers_interval(chat, job.report_start_at, job.report_end_at):
+        if job_still_needs_report_coverage(job, chat):
             return job
     return None
 

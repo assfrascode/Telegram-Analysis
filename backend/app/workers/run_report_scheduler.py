@@ -87,7 +87,7 @@ def scheduled_report_metadata(
     schedule: TelegramReportSchedule,
     *,
     scheduled_for: datetime,
-) -> dict[str, str | int]:
+) -> dict[str, str | int | bool]:
     return {
         "schedule_id": str(schedule.id),
         "scheduled_for": scheduled_for.isoformat(),
@@ -95,6 +95,7 @@ def scheduled_report_metadata(
         "timezone": schedule.timezone,
         "run_time_local": schedule.run_time_local,
         "question_set_id": str(schedule.question_set_id),
+        "allow_partial_telegram_sync": bool(getattr(schedule, "allow_partial_telegram_sync", False)),
     }
 
 
@@ -167,12 +168,16 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
             await session.commit()
             return None
 
+        options = question_set_options(question_set)
+        options.allow_partial_telegram_sync = bool(
+            getattr(schedule, "allow_partial_telegram_sync", False)
+        )
         payload = TelegramReportCreateRequest(
             telegram_chat_id=schedule.telegram_chat_id,
             start_at=scheduled_for - timedelta(days=schedule.rolling_window_days),
             end_at=scheduled_for,
             question_set_id=schedule.question_set_id,
-            options=question_set_options(question_set),
+            options=options,
         )
         try:
             job = await create_telegram_job_record(session, schedule.owner_user_id, payload)

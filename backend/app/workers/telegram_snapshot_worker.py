@@ -23,6 +23,7 @@ from app.models import (
     TelegramSyncRun,
     TelegramSyncStatus,
 )
+from app.services.telegram_ingest import job_allows_partial_telegram_sync
 from app.services.telegram_sync import TelegramSyncError, synchronize_chat
 from app.workers import subjects
 from app.workers.base import Worker
@@ -64,8 +65,12 @@ class TelegramSnapshotWorker(Worker):
         )
         await session.commit()
 
+        allow_partial_sync = job_allows_partial_telegram_sync(job)
         try:
-            if chat.ingest_mode == TelegramIngestMode.external_push:
+            if allow_partial_sync:
+                await self._prepare_partial_report_sync(session, job, chat)
+                run = None
+            elif chat.ingest_mode == TelegramIngestMode.external_push:
                 run = await self._wait_for_external_coverage(session, job, chat)
             else:
                 await self._wait_for_chat_lease(session, job, chat)
@@ -117,6 +122,7 @@ class TelegramSnapshotWorker(Worker):
                 "attachments_seen": attachments_seen,
                 "attachments_failed": attachments_failed,
                 "ingest_mode": chat.ingest_mode.value,
+                "allow_partial_telegram_sync": allow_partial_sync,
             },
         )
         await session.commit()
@@ -282,6 +288,36 @@ class TelegramSnapshotWorker(Worker):
                 "task_key": f"{next_key}:{job.id}",
             },
         )
+
+    async def _prepare_partial_report_sync(
+        self,
+        session: AsyncSession,
+        job: Job,
+        chat: TelegramChat,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        chat.next_sync_at = now
+        chat.updated_at = now
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="telegram.sync.partial",
+            message="Bericht nutzt vorhandene Telegram-Nachrichten; fehlende Synchronisierung läuft nach",
+            level="warning",
+            payload={
+                "chat_id": str(chat.id),
+                "ingest_mode": chat.ingest_mode.value,
+                "start_at": job.report_start_at.isoformat() if job.report_start_at else None,
+                "end_at": job.report_end_at.isoformat() if job.report_end_at else None,
+                "coverage_start": chat.coverage_start.isoformat()
+                if chat.coverage_start
+                else None,
+                "coverage_end": chat.coverage_end.isoformat()
+                if chat.coverage_end
+                else None,
+            },
+        )
+        await session.commit()
 
     def _chat_covers_report(self, chat: TelegramChat, job: Job) -> bool:
         return bool(

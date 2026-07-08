@@ -349,6 +349,7 @@ function ScheduledReportsSection({
   const [timezone, setTimezone] = useState(browserTimezone);
   const [rollingWindowDays, setRollingWindowDays] = useState(1);
   const [enabled, setEnabled] = useState(true);
+  const [allowPartialTelegramSync, setAllowPartialTelegramSync] = useState(false);
 
   useEffect(() => {
     if (!activeChats.some((chat) => chat.id === chatId)) {
@@ -372,6 +373,7 @@ function ScheduledReportsSection({
     setTimezone(browserTimezone());
     setRollingWindowDays(1);
     setEnabled(true);
+    setAllowPartialTelegramSync(false);
   };
 
   const editSchedule = (schedule) => {
@@ -382,6 +384,7 @@ function ScheduledReportsSection({
     setTimezone(schedule.timezone);
     setRollingWindowDays(schedule.rolling_window_days);
     setEnabled(schedule.enabled);
+    setAllowPartialTelegramSync(Boolean(schedule.allow_partial_telegram_sync));
   };
 
   const save = async () => {
@@ -392,6 +395,7 @@ function ScheduledReportsSection({
       timezone,
       rolling_window_days: Number(rollingWindowDays),
       enabled,
+      allow_partial_telegram_sync: allowPartialTelegramSync,
     });
     if (saved) resetForm();
   };
@@ -458,6 +462,14 @@ function ScheduledReportsSection({
           <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
           <span>Enabled</span>
         </label>
+        <label className="option-row schedule-enabled">
+          <input
+            type="checkbox"
+            checked={allowPartialTelegramSync}
+            onChange={(event) => setAllowPartialTelegramSync(event.target.checked)}
+          />
+          <span>Allow partial report</span>
+        </label>
         <div className="schedule-form-actions">
           {editingId && (
             <button className="button button-ghost button-small" type="button" onClick={resetForm} disabled={busy}>
@@ -493,7 +505,12 @@ function ScheduledReportsSection({
                   </td>
                   <td>{questionSetName(schedule.question_set_id)}</td>
                   <td>{schedule.run_time_local} <span className="muted-inline">{schedule.timezone}</span></td>
-                  <td>{rollingWindowLabel(schedule.rolling_window_days)}</td>
+                  <td>
+                    {rollingWindowLabel(schedule.rolling_window_days)}
+                    {schedule.allow_partial_telegram_sync && (
+                      <span className="muted-inline">Partial</span>
+                    )}
+                  </td>
                   <td>{schedule.enabled ? formatDate(schedule.next_run_at) : "-"}</td>
                   <td>{formatDate(schedule.last_run_at)}</td>
                   <td>

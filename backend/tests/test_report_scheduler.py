@@ -8,12 +8,28 @@ import pytest
 from pydantic import ValidationError
 
 from app.models import Job, JobStatus, QuestionSet, TelegramChat, TelegramChatStatus, TelegramReportSchedule
-from app.schemas import TelegramReportScheduleCreateRequest
-from app.services.report_schedules import calculate_next_run_at
+from app.schemas import (
+    TelegramReportScheduleCreateRequest,
+    TelegramReportScheduleResponse,
+    TelegramReportScheduleUpdateRequest,
+)
+from app.services.report_schedules import calculate_next_run_at, response as schedule_response
 from app.workers import run_report_scheduler
 
 
 def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
+    default_request = TelegramReportScheduleCreateRequest(
+        telegram_chat_id=uuid.uuid4(),
+        question_set_id=uuid.uuid4(),
+        run_time_local="05:00",
+        timezone="Europe/Berlin",
+        rolling_window_days=1,
+    )
+    assert default_request.allow_partial_telegram_sync is False
+
+    update_request = TelegramReportScheduleUpdateRequest(allow_partial_telegram_sync=True)
+    assert update_request.allow_partial_telegram_sync is True
+
     with pytest.raises(ValidationError):
         TelegramReportScheduleCreateRequest(
             telegram_chat_id=uuid.uuid4(),
@@ -104,6 +120,7 @@ def make_schedule(**overrides):
         "run_time_local": "05:00",
         "timezone": "UTC",
         "rolling_window_days": 7,
+        "allow_partial_telegram_sync": False,
         "enabled": True,
         "next_run_at": datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc),
         "last_job_id": None,
@@ -111,6 +128,7 @@ def make_schedule(**overrides):
         "last_error": None,
         "lease_owner": run_report_scheduler.SCHEDULER_ID,
         "lease_expires_at": datetime(2026, 1, 1, 5, 5, tzinfo=timezone.utc),
+        "created_at": datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc),
     }
     values.update(overrides)
@@ -164,6 +182,7 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
         telegram_chat_id=chat_id,
         question_set_id=question_set_id,
         rolling_window_days=14,
+        allow_partial_telegram_sync=True,
     )
     chat = SimpleNamespace(id=chat_id, owner_user_id=owner_id, status=TelegramChatStatus.active)
     question_set = SimpleNamespace(
@@ -191,6 +210,7 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
         assert payload.end_at == datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc)
         assert payload.options.translate is True
         assert payload.options.analyze_media is False
+        assert payload.options.allow_partial_telegram_sync is True
         assert payload.options.retrieval_k == 40
         assert payload.options.rerank_k == 10
         job = SimpleNamespace(id=uuid.uuid4(), options={})
@@ -220,3 +240,13 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
     assert metadata["schedule_id"] == str(schedule.id)
     assert metadata["scheduled_for"] == "2026-01-01T05:00:00+00:00"
     assert metadata["rolling_window_days"] == 14
+    assert metadata["allow_partial_telegram_sync"] is True
+
+
+def test_report_schedule_response_exposes_partial_flag() -> None:
+    schedule = make_schedule(allow_partial_telegram_sync=True)
+
+    result = schedule_response(schedule)
+
+    assert isinstance(result, TelegramReportScheduleResponse)
+    assert result.allow_partial_telegram_sync is True

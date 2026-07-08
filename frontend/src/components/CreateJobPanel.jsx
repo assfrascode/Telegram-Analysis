@@ -214,6 +214,14 @@ export function CreateJobPanel({
                 >
                   Use the last 30 days
                 </button>
+                <label className="option-row field-wide">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(options.allow_partial_telegram_sync)}
+                    onChange={(event) => setOption("allow_partial_telegram_sync", event.target.checked)}
+                  />
+                  <span>Allow partial report</span>
+                </label>
               </div>
             )}
 
