@@ -1,0 +1,9 @@
+NB_SETUP_KEY=
+NB_MANAGEMENT_URL=https://api.netbird.io:443
+NB_ADMIN_URL=https://app.netbird.io:443
+NB_LOG_LEVEL=info
+NB_EXTRA_DNS_LABELS=
+NETBIRD_HOSTNAME=chat-analyse-netbird
+NETBIRD_FRONTEND_UPSTREAM=chat-analyse-frontend:80
+NETBIRD_BACKEND_UPSTREAM=backend:8000
+NETBIRD_LITELLM_UPSTREAM=litellm:4000
