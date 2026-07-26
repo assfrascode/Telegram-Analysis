@@ -253,6 +253,7 @@ class TelegramChatResponse(BaseModel):
     status: str
     last_error: str | None = None
     last_sync_at: datetime | None = None
+    last_collected_message_id: int | None = None
     next_sync_at: datetime
     coverage_start: datetime | None = None
     coverage_end: datetime | None = None
@@ -370,6 +371,7 @@ class TelegramIngestClaimResponse(BaseModel):
     chat: TelegramChatResponse
     requested_start: datetime
     requested_end: datetime
+    after_message_id: int | None = None
 
 
 class TelegramIngestMessageInput(BaseModel):

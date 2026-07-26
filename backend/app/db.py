@@ -60,6 +60,30 @@ async def init_db() -> None:
         await conn.execute(
             text(
                 """
+                ALTER TABLE telegram_chats
+                ADD COLUMN IF NOT EXISTS last_collected_message_id bigint
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE telegram_chats AS chat
+                SET last_collected_message_id = collected.last_message_id
+                FROM (
+                    SELECT chat_id, MAX(telegram_message_id) AS last_message_id
+                    FROM collected_telegram_messages
+                    GROUP BY chat_id
+                ) AS collected
+                WHERE chat.id = collected.chat_id
+                  AND chat.last_sync_at IS NOT NULL
+                  AND chat.last_collected_message_id IS NULL
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
                 ALTER TABLE telegram_report_schedules
                 ADD COLUMN IF NOT EXISTS allow_partial_telegram_sync boolean
                 DEFAULT false NOT NULL

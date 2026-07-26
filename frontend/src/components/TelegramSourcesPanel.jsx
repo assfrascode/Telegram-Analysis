@@ -20,6 +20,11 @@ function rollingWindowLabel(days) {
   return Number(days) === 1 ? "1 day" : `${days} days`;
 }
 
+function scheduleIntervalLabel(days) {
+  const window = rollingWindowLabel(days);
+  return `Every ${window} · previous ${window}`;
+}
+
 function chatSourceLabel(chat) {
   return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
 }
@@ -411,7 +416,7 @@ function ScheduledReportsSection({
           <span className="section-index">04</span>
           <div>
             <h2>Scheduled reports</h2>
-            <p>Generate recurring Telegram reports from collected chats and saved question sets.</p>
+            <p>The selected interval controls both how often the report runs and how far it looks back.</p>
           </div>
         </div>
       </div>
@@ -450,12 +455,12 @@ function ScheduledReportsSection({
           <input value={timezone} onChange={(event) => setTimezone(event.target.value)} />
         </label>
         <label className="field">
-          <span>Report window</span>
+          <span>Run interval and report range</span>
           <select value={rollingWindowDays} onChange={(event) => setRollingWindowDays(Number(event.target.value))}>
-            <option value={1}>Last 1 day</option>
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
+            <option value={1}>Every day · analyze the previous day</option>
+            <option value={7}>Every 7 days · analyze the previous 7 days</option>
+            <option value={14}>Every 14 days · analyze the previous 14 days</option>
+            <option value={30}>Every 30 days · analyze the previous 30 days</option>
           </select>
         </label>
         <label className="option-row schedule-enabled">
@@ -490,7 +495,7 @@ function ScheduledReportsSection({
                 <th>Chat</th>
                 <th>Questions</th>
                 <th>Time</th>
-                <th>Window</th>
+                <th>Schedule</th>
                 <th>Next run</th>
                 <th>Last run</th>
                 <th><span className="sr-only">Actions</span></th>
@@ -506,7 +511,7 @@ function ScheduledReportsSection({
                   <td>{questionSetName(schedule.question_set_id)}</td>
                   <td>{schedule.run_time_local} <span className="muted-inline">{schedule.timezone}</span></td>
                   <td>
-                    {rollingWindowLabel(schedule.rolling_window_days)}
+                    {scheduleIntervalLabel(schedule.rolling_window_days)}
                     {schedule.allow_partial_telegram_sync && (
                       <span className="muted-inline">Partial</span>
                     )}

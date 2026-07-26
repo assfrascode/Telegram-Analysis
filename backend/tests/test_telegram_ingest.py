@@ -1,13 +1,22 @@
 import asyncio
+import importlib.util
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from app.api.routes_telegram_ingest import chat_response
-from app.models import JobStatus, TelegramChat, TelegramChatStatus, TelegramIngestMode
+from app.models import (
+    JobStatus,
+    TelegramChat,
+    TelegramChatStatus,
+    TelegramIngestMode,
+    TelegramSyncRun,
+    TelegramSyncStatus,
+)
 from app.schemas import (
     TelegramIngestChatUpsertRequest,
     TelegramIngestRunCompleteRequest,
@@ -16,11 +25,20 @@ from app.services import telegram_ingest
 from app.services.telegram_ingest import (
     IngestPrincipal,
     claim_next_external_chat,
+    complete_external_run,
     hash_ingest_token,
     new_ingest_token,
     upsert_external_chat,
 )
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
+
+collector_spec = importlib.util.spec_from_file_location(
+    "external_telegram_collector",
+    Path(__file__).resolve().parents[2] / "external_telegram_collector" / "collector.py",
+)
+assert collector_spec and collector_spec.loader
+external_collector = importlib.util.module_from_spec(collector_spec)
+collector_spec.loader.exec_module(external_collector)
 
 
 def test_ingest_tokens_are_prefixed_and_hashed() -> None:
@@ -46,6 +64,83 @@ def test_external_chat_schema_uses_existing_interval_presets() -> None:
 def test_ingest_run_completion_requires_known_status() -> None:
     with pytest.raises(ValidationError):
         TelegramIngestRunCompleteRequest(status="cancelled")
+
+
+def test_external_collector_uses_claim_cursor_as_telegram_min_id() -> None:
+    requested_end = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+
+    kwargs = external_collector.message_scan_kwargs(requested_end, 987)
+
+    assert kwargs["offset_date"] == requested_end
+    assert kwargs["min_id"] == 987
+    assert kwargs["reverse"] is False
+
+
+def test_completed_external_run_advances_durable_cursor() -> None:
+    now = datetime.now(timezone.utc)
+    owner_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        owner_user_id=owner_id,
+        chat_id=chat_id,
+        job_id=None,
+        status=TelegramSyncStatus.running,
+        requested_start=now - timedelta(hours=1),
+        requested_end=now,
+        messages_seen=0,
+        attachments_seen=0,
+        attachments_failed=0,
+        error_message=None,
+        completed_at=None,
+    )
+    chat = SimpleNamespace(
+        id=chat_id,
+        owner_user_id=owner_id,
+        ingest_mode=TelegramIngestMode.external_push,
+        lease_owner=f"external:{run_id}",
+        lease_expires_at=now + timedelta(minutes=5),
+        sync_interval_minutes=60,
+        last_collected_message_id=100,
+        coverage_start=now - timedelta(days=1),
+        coverage_end=now - timedelta(hours=1),
+        status=TelegramChatStatus.syncing,
+        updated_at=now,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return 105
+
+    class Session:
+        async def get(self, model, value):
+            if model is TelegramSyncRun:
+                return run
+            if model is TelegramChat:
+                return chat
+            return None
+
+        async def execute(self, query):
+            return Result()
+
+        async def flush(self):
+            return None
+
+    asyncio.run(
+        complete_external_run(
+            Session(),
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+            run_id=run_id,
+            payload=TelegramIngestRunCompleteRequest(
+                status="completed",
+                messages_seen=5,
+            ),
+        )
+    )
+
+    assert chat.last_collected_message_id == 105
+    assert run.status == TelegramSyncStatus.completed
 
 
 def test_external_chat_response_exposes_ingest_mode_without_connection() -> None:
@@ -163,7 +258,7 @@ def test_snapshot_external_coverage_helper_accepts_existing_coverage() -> None:
     result = asyncio.run(worker._wait_for_external_coverage(Session(), job, chat))
 
     assert result is None
-    assert chat.next_sync_at <= datetime.now(timezone.utc)
+    assert chat.next_sync_at == now + timedelta(hours=1)
 
 
 def test_external_claim_prefers_waiting_report_interval(monkeypatch) -> None:
@@ -229,7 +324,7 @@ def test_external_claim_prefers_waiting_report_interval(monkeypatch) -> None:
     monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
     session = Session()
 
-    run, claimed_chat = asyncio.run(
+    run, claimed_chat, after_message_id = asyncio.run(
         claim_next_external_chat(
             session,
             principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
@@ -242,6 +337,7 @@ def test_external_claim_prefers_waiting_report_interval(monkeypatch) -> None:
     assert run.requested_start == report_start
     assert run.requested_end == now
     assert run.requested_start != chat.initial_sync_from
+    assert after_message_id is None
     assert chat.status == TelegramChatStatus.syncing
     assert chat.last_error is None
     assert chat.lease_owner == f"external:{run.id}"
@@ -260,6 +356,7 @@ def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch
         next_sync_at=now,
         coverage_start=now - timedelta(days=3),
         coverage_end=now - timedelta(days=1),
+        last_collected_message_id=500,
         lease_owner=None,
         lease_expires_at=None,
         updated_at=None,
@@ -310,7 +407,7 @@ def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch
 
     monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
 
-    run, claimed_chat = asyncio.run(
+    run, claimed_chat, after_message_id = asyncio.run(
         claim_next_external_chat(
             Session(),
             principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
@@ -319,5 +416,6 @@ def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch
 
     assert claimed_chat is chat
     assert run.job_id == report_job.id
-    assert run.requested_start == report_start
+    assert run.requested_start == chat.coverage_end
     assert run.requested_end == now
+    assert after_message_id == 500

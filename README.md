@@ -19,7 +19,7 @@ The project is still an MVP, but it includes a functional backend, worker pipeli
 - Optional audio/video transcription through the OpenAI Audio Transcriptions API.
 - Chunking, embedding, Qdrant indexing, retrieval, reranking, answer generation, BLUF synthesis, and static report rendering.
 - Per-job retrieval and rerank limits, with prompt budgets derived from model context length.
-- Scheduled Telegram reports from collected chats, saved question sets, local run time, timezone, and rolling windows of 1, 7, 14, or 30 days.
+- Scheduled Telegram reports from collected chats and saved question sets. A selected 1, 7, 14, or 30-day interval controls both the recurrence and rolling report window while preserving the configured local run time and timezone.
 - Live job monitoring through WebSocket events with polling fallback.
 - Job history, pipeline stage view, event log filtering, cancellation, capacity checks, retry tracking, and dead-letter visibility.
 - Report-only ZIP download containing the static `report/` folder without original Telegram media.
@@ -103,6 +103,14 @@ Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export in JS
 ### Backend Telegram Collection
 
 Use `Telegram Setup` in the frontend to connect a Telegram account with credentials from `my.telegram.org`, load available groups/channels, and select chats to collect. The backend stores Telegram API credentials and session data encrypted at rest, then syncs active chats at the selected interval.
+
+Completed syncs continue from the highest stored Telegram message ID instead of
+rescanning a time overlap. Long syncs use progress-based inactivity limits:
+`TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS` and
+`TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS` both default to 900 seconds.
+The former `TELEGRAM_SYNC_TIMEOUT_SECONDS` and
+`TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS` names remain accepted as deprecated
+fallbacks.
 
 Set a dedicated Fernet key in production:
 

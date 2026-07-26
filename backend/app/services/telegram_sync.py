@@ -55,6 +55,51 @@ def ensure_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def chat_covers_interval(
+    chat: TelegramChat,
+    start_at: datetime,
+    end_at: datetime,
+) -> bool:
+    return bool(
+        chat.coverage_start
+        and chat.coverage_end
+        and ensure_utc(chat.coverage_start) <= ensure_utc(start_at)
+        and ensure_utc(chat.coverage_end) >= ensure_utc(end_at)
+    )
+
+
+def missing_sync_range(
+    chat: TelegramChat,
+    start_at: datetime,
+    end_at: datetime,
+) -> tuple[datetime, datetime] | None:
+    """Return one uncovered edge of an interval without rescanning covered data."""
+    start_at = ensure_utc(start_at)
+    end_at = ensure_utc(end_at)
+    if chat_covers_interval(chat, start_at, end_at):
+        return None
+
+    coverage_start = ensure_utc(chat.coverage_start) if chat.coverage_start else None
+    coverage_end = ensure_utc(chat.coverage_end) if chat.coverage_end else None
+    if coverage_start is None or coverage_end is None:
+        return start_at, end_at
+    if start_at < coverage_start:
+        return start_at, min(end_at, coverage_start)
+    if end_at > coverage_end:
+        return max(start_at, coverage_end), end_at
+    return start_at, end_at
+
+
+def forward_sync_cursor(chat: TelegramChat, requested_start: datetime) -> int | None:
+    """Use the durable cursor only when synchronizing forward from known coverage."""
+    cursor = getattr(chat, "last_collected_message_id", None)
+    if cursor is None or chat.coverage_start is None:
+        return None
+    if ensure_utc(requested_start) < ensure_utc(chat.coverage_start):
+        return None
+    return int(cursor)
+
+
 def json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
@@ -309,6 +354,7 @@ async def synchronize_chat(
     requested_start: datetime,
     requested_end: datetime,
     job_id: uuid.UUID | None = None,
+    after_message_id: int | None = None,
 ) -> TelegramSyncRun:
     requested_start = ensure_utc(requested_start)
     requested_end = ensure_utc(requested_end)
@@ -316,6 +362,8 @@ async def synchronize_chat(
         raise TelegramSyncError("Synchronization start must be before end")
     if chat.ingest_mode != TelegramIngestMode.backend_pull:
         raise TelegramSyncError("Telegram chat is configured for external ingestion")
+    if after_message_id is None:
+        after_message_id = forward_sync_cursor(chat, requested_start)
 
     connection = await session.get(TelegramConnection, chat.connection_id)
     if connection is None or connection.status != TelegramConnectionStatus.connected:
@@ -335,55 +383,88 @@ async def synchronize_chat(
 
     client = None
     try:
-        async with asyncio.timeout(settings.telegram_sync_timeout_seconds):
-            client = await connected_client(connection)
-            entity = await _resolve_entity(client, chat)
-            chat.lease_expires_at = utc_now() + timedelta(
-                minutes=settings.telegram_sync_lease_minutes
-            )
-            await session.commit()
-            print(
-                f"Telegram sync connected chat_id={chat.id} "
-                f"telegram_chat_id={chat.telegram_chat_id}",
-                flush=True,
-            )
-            messages_seen = 0
-            attachments_seen = 0
-            attachments_failed = 0
-            async for message in client.iter_messages(
-                entity,
-                offset_date=requested_end,
-                reverse=False,
-            ):
-                message_date = ensure_utc(message.date)
-                if message_date < requested_start:
-                    break
-                if message_date >= requested_end:
-                    continue
-                message_row = await _upsert_message(session, chat=chat, message=message)
-                has_attachment, failed = await _download_media(
-                    session,
-                    chat=chat,
-                    message_row=message_row,
-                    message=message,
+        try:
+            async with asyncio.timeout(settings.telegram_sync_inactivity_timeout_seconds):
+                client = await connected_client(connection)
+                entity = await _resolve_entity(client, chat)
+        except TimeoutError as exc:
+            raise TelegramSyncError(
+                "Telegram synchronization made no progress for "
+                f"{settings.telegram_sync_inactivity_timeout_seconds} seconds"
+            ) from exc
+
+        chat.lease_expires_at = utc_now() + timedelta(
+            minutes=settings.telegram_sync_lease_minutes
+        )
+        await session.commit()
+        print(
+            f"Telegram sync connected chat_id={chat.id} "
+            f"telegram_chat_id={chat.telegram_chat_id} "
+            f"after_message_id={after_message_id}",
+            flush=True,
+        )
+        messages_seen = 0
+        attachments_seen = 0
+        attachments_failed = 0
+        highest_message_id = after_message_id
+        iter_kwargs: dict[str, Any] = {
+            "offset_date": requested_end,
+            "reverse": False,
+        }
+        if after_message_id is not None:
+            iter_kwargs["min_id"] = after_message_id
+        iterator = client.iter_messages(entity, **iter_kwargs).__aiter__()
+        while True:
+            try:
+                async with asyncio.timeout(settings.telegram_sync_inactivity_timeout_seconds):
+                    message = await anext(iterator)
+            except StopAsyncIteration:
+                break
+            except TimeoutError as exc:
+                raise TelegramSyncError(
+                    "Telegram synchronization made no progress for "
+                    f"{settings.telegram_sync_inactivity_timeout_seconds} seconds"
+                ) from exc
+
+            message_date = ensure_utc(message.date)
+            if message_date < requested_start:
+                break
+            if message_date >= requested_end:
+                continue
+            try:
+                async with asyncio.timeout(settings.telegram_sync_inactivity_timeout_seconds):
+                    message_row = await _upsert_message(session, chat=chat, message=message)
+                    has_attachment, failed = await _download_media(
+                        session,
+                        chat=chat,
+                        message_row=message_row,
+                        message=message,
+                    )
+            except TimeoutError as exc:
+                raise TelegramSyncError(
+                    "Telegram synchronization made no progress for "
+                    f"{settings.telegram_sync_inactivity_timeout_seconds} seconds"
+                ) from exc
+
+            highest_message_id = max(highest_message_id or message.id, message.id)
+            messages_seen += 1
+            attachments_seen += int(has_attachment)
+            attachments_failed += int(failed)
+            if messages_seen % 25 == 0:
+                run.messages_seen = messages_seen
+                run.attachments_seen = attachments_seen
+                run.attachments_failed = attachments_failed
+                chat.lease_expires_at = utc_now() + timedelta(
+                    minutes=settings.telegram_sync_lease_minutes
                 )
-                messages_seen += 1
-                attachments_seen += int(has_attachment)
-                attachments_failed += int(failed)
-                if messages_seen % 25 == 0:
-                    run.messages_seen = messages_seen
-                    run.attachments_seen = attachments_seen
-                    run.attachments_failed = attachments_failed
-                    chat.lease_expires_at = utc_now() + timedelta(
-                        minutes=settings.telegram_sync_lease_minutes
-                    )
-                    await session.commit()
-                    print(
-                        f"Telegram sync progress chat_id={chat.id} messages={messages_seen} "
-                        f"attachments={attachments_seen} "
-                        f"attachment_failures={attachments_failed}",
-                        flush=True,
-                    )
+                chat.updated_at = utc_now()
+                await session.commit()
+                print(
+                    f"Telegram sync progress chat_id={chat.id} messages={messages_seen} "
+                    f"attachments={attachments_seen} "
+                    f"attachment_failures={attachments_failed}",
+                    flush=True,
+                )
 
         now = utc_now()
         run.status = TelegramSyncStatus.completed
@@ -393,6 +474,11 @@ async def synchronize_chat(
         run.completed_at = now
         chat.status = TelegramChatStatus.active
         chat.last_sync_at = now
+        if highest_message_id is not None:
+            chat.last_collected_message_id = max(
+                getattr(chat, "last_collected_message_id", None) or highest_message_id,
+                highest_message_id,
+            )
         chat.next_sync_at = now + timedelta(minutes=chat.sync_interval_minutes)
         chat.coverage_start = min(
             [value for value in (chat.coverage_start, requested_start) if value is not None]
@@ -429,12 +515,7 @@ async def synchronize_chat(
         await session.commit()
         raise TelegramSyncError(connection.last_error) from exc
     except Exception as exc:
-        error_message = (
-            "Telegram synchronization timed out after "
-            f"{settings.telegram_sync_timeout_seconds} seconds"
-            if isinstance(exc, TimeoutError)
-            else str(exc) or exc.__class__.__name__
-        )
+        error_message = str(exc) or exc.__class__.__name__
         run.status = TelegramSyncStatus.failed
         run.error_message = error_message[:4000]
         run.completed_at = utc_now()
@@ -461,7 +542,4 @@ async def synchronize_chat(
 def periodic_sync_start(chat: TelegramChat) -> datetime:
     if chat.coverage_end is None:
         return ensure_utc(chat.initial_sync_from)
-    return max(
-        ensure_utc(chat.initial_sync_from),
-        ensure_utc(chat.coverage_end) - timedelta(hours=settings.telegram_sync_overlap_hours),
-    )
+    return max(ensure_utc(chat.initial_sync_from), ensure_utc(chat.coverage_end))

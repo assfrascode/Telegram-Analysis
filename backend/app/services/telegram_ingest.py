@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -33,7 +33,12 @@ from app.schemas import (
     TelegramIngestRunCompleteRequest,
 )
 from app.services.minio_store import put_stream
-from app.services.telegram_sync import periodic_sync_start
+from app.services.telegram_sync import (
+    chat_covers_interval as sync_chat_covers_interval,
+    forward_sync_cursor,
+    missing_sync_range,
+    periodic_sync_start,
+)
 
 settings = get_settings()
 TOKEN_PREFIX = "tg_ingest_"
@@ -68,12 +73,7 @@ def lease_owner_for_run(run_id: uuid.UUID) -> str:
 
 
 def chat_covers_interval(chat: TelegramChat, start_at: datetime, end_at: datetime) -> bool:
-    return bool(
-        chat.coverage_start
-        and chat.coverage_end
-        and ensure_utc(chat.coverage_start) <= ensure_utc(start_at)
-        and ensure_utc(chat.coverage_end) >= ensure_utc(end_at)
-    )
+    return sync_chat_covers_interval(chat, start_at, end_at)
 
 
 def job_allows_partial_telegram_sync(job: Job) -> bool:
@@ -215,7 +215,7 @@ async def claim_next_external_chat(
     session: AsyncSession,
     *,
     principal: IngestPrincipal,
-) -> tuple[TelegramSyncRun, TelegramChat] | None:
+) -> tuple[TelegramSyncRun, TelegramChat, int | None] | None:
     now = utc_now()
     chat = (
         await session.execute(
@@ -246,13 +246,20 @@ async def claim_next_external_chat(
 
     report_job = await report_job_needing_coverage(session, chat)
     if report_job is not None:
-        requested_start = ensure_utc(report_job.report_start_at)
-        requested_end = ensure_utc(report_job.report_end_at)
+        missing_range = missing_sync_range(
+            chat,
+            ensure_utc(report_job.report_start_at),
+            ensure_utc(report_job.report_end_at),
+        )
+        if missing_range is None:
+            return None
+        requested_start, requested_end = missing_range
         job_id = report_job.id
     else:
         requested_start = periodic_sync_start(chat)
         requested_end = now
         job_id = None
+    after_message_id = forward_sync_cursor(chat, requested_start)
 
     run = TelegramSyncRun(
         chat_id=chat.id,
@@ -270,7 +277,7 @@ async def claim_next_external_chat(
     chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
     chat.updated_at = now
     await session.flush()
-    return run, chat
+    return run, chat, after_message_id
 
 
 async def external_report_job_needing_coverage(
@@ -549,12 +556,29 @@ async def complete_external_run(
         chat.status = TelegramChatStatus.active
         chat.last_error = None
         chat.last_sync_at = now
-        chat.next_sync_at = now + timedelta(minutes=chat.sync_interval_minutes)
         chat.coverage_start = min(
             [value for value in (chat.coverage_start, run.requested_start) if value is not None]
         )
         chat.coverage_end = max(
             [value for value in (chat.coverage_end, run.requested_end) if value is not None]
+        )
+        highest_message_id = (
+            await session.execute(
+                select(func.max(CollectedTelegramMessage.telegram_message_id)).where(
+                    CollectedTelegramMessage.chat_id == chat.id
+                )
+            )
+        ).scalar_one_or_none()
+        if highest_message_id is not None:
+            chat.last_collected_message_id = max(
+                getattr(chat, "last_collected_message_id", None) or highest_message_id,
+                highest_message_id,
+            )
+        report_job = await session.get(Job, run.job_id) if run.job_id else None
+        chat.next_sync_at = (
+            now
+            if report_job is not None and job_still_needs_report_coverage(report_job, chat)
+            else now + timedelta(minutes=chat.sync_interval_minutes)
         )
     else:
         error = payload.error_message or "External Telegram ingestion failed"

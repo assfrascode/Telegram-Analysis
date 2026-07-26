@@ -1,10 +1,15 @@
 from functools import lru_cache
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file="../.env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file="../.env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     app_name: str = "Chat Analyse MVP"
     app_env: str = "local"
@@ -15,12 +20,23 @@ class Settings(BaseSettings):
     telegram_login_challenge_minutes: int = 15
     telegram_sync_poll_seconds: int = 30
     telegram_sync_lease_minutes: int = 30
-    telegram_sync_overlap_hours: int = 48
     telegram_sync_concurrency: int = 2
-    telegram_sync_timeout_seconds: int = 20 * 60
+    telegram_sync_inactivity_timeout_seconds: int = Field(
+        default=15 * 60,
+        validation_alias=AliasChoices(
+            "TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS",
+            "TELEGRAM_SYNC_TIMEOUT_SECONDS",
+        ),
+    )
     telegram_media_download_timeout_seconds: int = 10 * 60
     telegram_sync_retry_minutes: int = 5
-    telegram_external_coverage_wait_seconds: int = 300
+    telegram_external_inactivity_timeout_seconds: int = Field(
+        default=15 * 60,
+        validation_alias=AliasChoices(
+            "TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS",
+            "TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS",
+        ),
+    )
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
 

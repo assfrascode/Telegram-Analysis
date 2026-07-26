@@ -74,6 +74,51 @@ def test_next_run_uses_local_wall_clock_timezone() -> None:
     assert next_day == datetime(2026, 1, 2, 4, 0, tzinfo=timezone.utc)
 
 
+def test_recurring_run_uses_window_days_and_preserves_wall_clock_across_dst() -> None:
+    previous = datetime(2026, 3, 21, 4, 0, tzinfo=timezone.utc)
+
+    next_run = calculate_next_run_at(
+        "05:00",
+        "Europe/Berlin",
+        interval_days=14,
+        now=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+        previous_scheduled_for=previous,
+    )
+
+    assert next_run == datetime(2026, 4, 4, 3, 0, tzinfo=timezone.utc)
+
+
+def test_recurring_run_skips_elapsed_intervals_without_drifting() -> None:
+    next_run = calculate_next_run_at(
+        "05:00",
+        "Europe/Berlin",
+        interval_days=14,
+        now=datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc),
+        previous_scheduled_for=datetime(2026, 3, 21, 4, 0, tzinfo=timezone.utc),
+    )
+
+    assert next_run == datetime(2026, 5, 2, 3, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("interval_days", "expected_day"),
+    [(1, 2), (7, 8), (14, 15), (30, 31)],
+)
+def test_each_report_window_preset_is_also_the_recurrence(
+    interval_days: int,
+    expected_day: int,
+) -> None:
+    next_run = calculate_next_run_at(
+        "05:00",
+        "UTC",
+        interval_days=interval_days,
+        now=datetime(2026, 1, 1, 6, 0, tzinfo=timezone.utc),
+        previous_scheduled_for=datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc),
+    )
+
+    assert next_run == datetime(2026, 1, expected_day, 5, 0, tzinfo=timezone.utc)
+
+
 class FakeSession:
     def __init__(self, *, schedule, chat=None, question_set=None, previous_job=None):
         self.schedule = schedule
@@ -228,6 +273,11 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
     monkeypatch.setattr(run_report_scheduler, "create_telegram_job_record", create_job)
     monkeypatch.setattr(run_report_scheduler, "publish_initial_job_task", publish_task)
     monkeypatch.setattr(run_report_scheduler, "nats_context", fake_nats_context)
+    monkeypatch.setattr(
+        run_report_scheduler,
+        "utc_now",
+        lambda: datetime(2026, 1, 1, 5, 1, tzinfo=timezone.utc),
+    )
 
     result = asyncio.run(run_report_scheduler.process_schedule(schedule.id))
 
@@ -235,7 +285,7 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
     assert published_jobs == [created_jobs[0].id]
     assert schedule.last_job_id == created_jobs[0].id
     assert schedule.last_error is None
-    assert schedule.next_run_at > datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc)
+    assert schedule.next_run_at == datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc)
     metadata = created_jobs[0].options["scheduled_report"]
     assert metadata["schedule_id"] == str(schedule.id)
     assert metadata["scheduled_for"] == "2026-01-01T05:00:00+00:00"

@@ -2,10 +2,11 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.models import (
     CollectedMediaAnalysis,
     CollectedMediaTranscript,
@@ -24,7 +25,13 @@ from app.models import (
     TelegramSyncStatus,
 )
 from app.services.telegram_ingest import job_allows_partial_telegram_sync
-from app.services.telegram_sync import TelegramSyncError, synchronize_chat
+from app.services.telegram_sync import (
+    TelegramSyncError,
+    chat_covers_interval,
+    forward_sync_cursor,
+    missing_sync_range,
+    synchronize_chat,
+)
 from app.workers import subjects
 from app.workers.base import Worker
 from app.workers.pipeline import next_subject_after_messages
@@ -73,18 +80,7 @@ class TelegramSnapshotWorker(Worker):
             elif chat.ingest_mode == TelegramIngestMode.external_push:
                 run = await self._wait_for_external_coverage(session, job, chat)
             else:
-                await self._wait_for_chat_lease(session, job, chat)
-                now = datetime.now(timezone.utc)
-                chat.lease_owner = f"report:{job.id}"
-                chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
-                await session.commit()
-                run = await synchronize_chat(
-                    session,
-                    chat=chat,
-                    requested_start=job.report_start_at,
-                    requested_end=job.report_end_at,
-                    job_id=job.id,
-                )
+                run = await self._synchronize_backend_coverage(session, job, chat)
         except TelegramSyncError as exc:
             print(
                 f"Telegram report sync failed job_id={job.id} chat_id={chat.id}: {exc}",
@@ -321,13 +317,97 @@ class TelegramSnapshotWorker(Worker):
 
     def _chat_covers_report(self, chat: TelegramChat, job: Job) -> bool:
         return bool(
-            chat.coverage_start
-            and chat.coverage_end
-            and job.report_start_at
+            job.report_start_at
             and job.report_end_at
-            and chat.coverage_start <= job.report_start_at
-            and chat.coverage_end >= job.report_end_at
+            and chat_covers_interval(chat, job.report_start_at, job.report_end_at)
         )
+
+    async def _synchronize_backend_coverage(
+        self,
+        session: AsyncSession,
+        job: Job,
+        chat: TelegramChat,
+    ) -> TelegramSyncRun | None:
+        latest_run = None
+        while True:
+            missing_range = missing_sync_range(
+                chat,
+                job.report_start_at,
+                job.report_end_at,
+            )
+            if missing_range is None:
+                return latest_run
+
+            await self._wait_for_chat_lease(session, job, chat)
+            now = datetime.now(timezone.utc)
+            chat.lease_owner = f"report:{job.id}"
+            chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
+            await session.commit()
+            requested_start, requested_end = missing_range
+            stopped = asyncio.Event()
+            heartbeat = asyncio.create_task(
+                self._report_lease_heartbeat(chat.id, f"report:{job.id}", stopped)
+            )
+            try:
+                latest_run = await synchronize_chat(
+                    session,
+                    chat=chat,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                    job_id=job.id,
+                    after_message_id=forward_sync_cursor(chat, requested_start),
+                )
+            finally:
+                stopped.set()
+                try:
+                    await heartbeat
+                except Exception as exc:
+                    print(
+                        f"Telegram report lease heartbeat failed job_id={job.id} "
+                        f"chat_id={chat.id}: {exc}",
+                        flush=True,
+                    )
+            await self.checkpoint_cancelled(
+                session,
+                job,
+                event_type="telegram.sync.cancelled",
+                message="Telegram-Synchronisierung wurde abgebrochen",
+            )
+
+    async def _report_lease_heartbeat(
+        self,
+        chat_id: uuid.UUID,
+        lease_owner: str,
+        stopped: asyncio.Event,
+    ) -> None:
+        interval_seconds = max(
+            10,
+            min(60, settings.telegram_sync_lease_minutes * 60 // 3),
+        )
+        while True:
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=interval_seconds)
+                return
+            except TimeoutError:
+                pass
+
+            now = datetime.now(timezone.utc)
+            async with SessionLocal() as heartbeat_session:
+                result = await heartbeat_session.execute(
+                    update(TelegramChat)
+                    .where(
+                        TelegramChat.id == chat_id,
+                        TelegramChat.lease_owner == lease_owner,
+                    )
+                    .values(
+                        lease_expires_at=now
+                        + timedelta(minutes=settings.telegram_sync_lease_minutes),
+                        updated_at=now,
+                    )
+                )
+                await heartbeat_session.commit()
+                if result.rowcount != 1:
+                    return
 
     async def _latest_completed_external_run(
         self,
@@ -355,20 +435,36 @@ class TelegramSnapshotWorker(Worker):
         job: Job,
         chat: TelegramChat,
     ) -> TelegramSyncRun | None:
+        if self._chat_covers_report(chat, job):
+            return await self._latest_completed_external_run(session, job, chat)
+
         now = datetime.now(timezone.utc)
         chat.next_sync_at = now
         chat.updated_at = now
         await session.commit()
 
-        deadline = now + timedelta(seconds=settings.telegram_external_coverage_wait_seconds)
+        last_activity_at = now
         waiting_event_emitted = False
         while True:
             await session.refresh(chat)
             if self._chat_covers_report(chat, job):
                 return await self._latest_completed_external_run(session, job, chat)
 
-            if datetime.now(timezone.utc) >= deadline:
-                detail = "External Telegram collector did not provide the requested coverage before timeout"
+            current_time = datetime.now(timezone.utc)
+            chat_activity_at = chat.updated_at or last_activity_at
+            if chat_activity_at.tzinfo is None:
+                chat_activity_at = chat_activity_at.replace(tzinfo=timezone.utc)
+            else:
+                chat_activity_at = chat_activity_at.astimezone(timezone.utc)
+            last_activity_at = max(last_activity_at, chat_activity_at)
+            if (
+                current_time - last_activity_at
+                >= timedelta(seconds=settings.telegram_external_inactivity_timeout_seconds)
+            ):
+                detail = (
+                    "External Telegram collector made no progress for "
+                    f"{settings.telegram_external_inactivity_timeout_seconds} seconds"
+                )
                 if chat.last_error:
                     detail = f"{detail}: {chat.last_error}"
                 raise TelegramSyncError(detail)
@@ -389,7 +485,9 @@ class TelegramSnapshotWorker(Worker):
                         "coverage_end": chat.coverage_end.isoformat()
                         if chat.coverage_end
                         else None,
-                        "timeout_seconds": settings.telegram_external_coverage_wait_seconds,
+                        "inactivity_timeout_seconds": (
+                            settings.telegram_external_inactivity_timeout_seconds
+                        ),
                     },
                 )
                 await session.commit()

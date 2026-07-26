@@ -70,6 +70,21 @@ def ensure_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def message_scan_kwargs(
+    requested_end: datetime,
+    after_message_id: int | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "offset_date": requested_end,
+        "reverse": False,
+    }
+    if after_message_id is not None:
+        kwargs["min_id"] = int(after_message_id)
+    if USE_TAKEOUT:
+        kwargs["wait_time"] = TAKEOUT_WAIT_TIME
+    return kwargs
+
+
 def json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
@@ -414,10 +429,12 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
     chat = claim["chat"]
     requested_start = datetime.fromisoformat(claim["requested_start"])
     requested_end = datetime.fromisoformat(claim["requested_end"])
+    after_message_id = claim.get("after_message_id")
     log(
         f"Received external sync claim run={run_id} chat={chat['title']!r} "
         f"telegram_chat_id={chat['telegram_chat_id']} "
-        f"range={requested_start.isoformat()}..{requested_end.isoformat()}"
+        f"range={requested_start.isoformat()}..{requested_end.isoformat()} "
+        f"after_message_id={after_message_id}"
     )
     entity = await resolve_entity(client, chat["telegram_chat_id"])
     log(
@@ -452,12 +469,7 @@ async def process_claim(backend: Backend, client: TelegramClient, claim: dict[st
     async def scan_messages(scan_client: TelegramClient) -> None:
         nonlocal messages_seen, attachments_seen, attachments_failed
         mode = "takeout" if scan_client is not client else "regular"
-        iter_kwargs: dict[str, Any] = {
-            "offset_date": requested_end,
-            "reverse": False,
-        }
-        if USE_TAKEOUT:
-            iter_kwargs["wait_time"] = TAKEOUT_WAIT_TIME
+        iter_kwargs = message_scan_kwargs(requested_end, after_message_id)
         log(f"Starting Telegram message scan run={run_id} mode={mode}")
         async for message in scan_client.iter_messages(entity, **iter_kwargs):
             message_date = ensure_utc(message.date)

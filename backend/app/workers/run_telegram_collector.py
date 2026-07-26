@@ -19,7 +19,7 @@ from app.models import (
     TelegramSyncStatus,
 )
 from app.services.telegram_ingest import ensure_utc, report_job_needing_coverage
-from app.services.telegram_sync import periodic_sync_start, synchronize_chat
+from app.services.telegram_sync import missing_sync_range, periodic_sync_start, synchronize_chat
 
 settings = get_settings()
 COLLECTOR_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
@@ -72,11 +72,13 @@ async def sync_request_for_chat(
 ) -> tuple[datetime, datetime, uuid.UUID | None]:
     report_job = await report_job_needing_coverage(session, chat)
     if report_job is not None:
-        return (
+        missing_range = missing_sync_range(
+            chat,
             ensure_utc(report_job.report_start_at),
             ensure_utc(report_job.report_end_at),
-            report_job.id,
         )
+        if missing_range is not None:
+            return missing_range[0], missing_range[1], report_job.id
     return periodic_sync_start(chat), now, None
 
 

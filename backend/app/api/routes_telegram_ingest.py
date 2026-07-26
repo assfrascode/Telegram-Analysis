@@ -45,6 +45,7 @@ def chat_response(chat: TelegramChat) -> TelegramChatResponse:
         status=chat.status.value,
         last_error=chat.last_error,
         last_sync_at=chat.last_sync_at,
+        last_collected_message_id=chat.last_collected_message_id,
         next_sync_at=chat.next_sync_at,
         coverage_start=chat.coverage_start,
         coverage_end=chat.coverage_end,
@@ -115,13 +116,14 @@ async def claim_next(
     if claimed is None:
         await session.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    run, chat = claimed
+    run, chat, after_message_id = claimed
     await session.commit()
     return TelegramIngestClaimResponse(
         run_id=run.id,
         chat=chat_response(chat),
         requested_start=run.requested_start,
         requested_end=run.requested_end,
+        after_message_id=after_message_id,
     )
 
 

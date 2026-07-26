@@ -80,6 +80,7 @@ def chat_response(chat: TelegramChat) -> TelegramChatResponse:
         status=chat.status.value,
         last_error=chat.last_error,
         last_sync_at=chat.last_sync_at,
+        last_collected_message_id=chat.last_collected_message_id,
         next_sync_at=chat.next_sync_at,
         coverage_start=chat.coverage_start,
         coverage_end=chat.coverage_end,

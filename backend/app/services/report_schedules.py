@@ -38,20 +38,33 @@ def calculate_next_run_at(
     run_time_local: str,
     timezone_name: str,
     *,
+    interval_days: int = 1,
     now: datetime | None = None,
+    previous_scheduled_for: datetime | None = None,
 ) -> datetime:
     reference = ensure_utc(now or utc_now())
     zone = ZoneInfo(timezone_name)
     local_now = reference.astimezone(zone)
     run_time = parse_run_time(run_time_local)
-    candidate = local_now.replace(
-        hour=run_time.hour,
-        minute=run_time.minute,
-        second=0,
-        microsecond=0,
-    )
-    if candidate <= local_now:
-        candidate = candidate + timedelta(days=1)
+    if previous_scheduled_for is None:
+        candidate = local_now.replace(
+            hour=run_time.hour,
+            minute=run_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate <= local_now:
+            candidate = candidate + timedelta(days=1)
+    else:
+        previous_local = ensure_utc(previous_scheduled_for).astimezone(zone)
+        candidate = previous_local.replace(
+            hour=run_time.hour,
+            minute=run_time.minute,
+            second=0,
+            microsecond=0,
+        ) + timedelta(days=interval_days)
+        while candidate <= local_now:
+            candidate = candidate + timedelta(days=interval_days)
     return candidate.astimezone(timezone.utc)
 
 
@@ -171,7 +184,11 @@ async def create_report_schedule(
         enabled=payload.enabled,
         allow_partial_telegram_sync=payload.allow_partial_telegram_sync,
         next_run_at=(
-            calculate_next_run_at(payload.run_time_local, payload.timezone)
+            calculate_next_run_at(
+                payload.run_time_local,
+                payload.timezone,
+                interval_days=payload.rolling_window_days,
+            )
             if payload.enabled
             else None
         ),
@@ -210,6 +227,7 @@ async def update_report_schedule(
         should_recalculate = True
     if payload.rolling_window_days is not None:
         schedule.rolling_window_days = payload.rolling_window_days
+        should_recalculate = True
     if payload.enabled is not None:
         schedule.enabled = payload.enabled
         should_recalculate = True
@@ -217,7 +235,11 @@ async def update_report_schedule(
         schedule.allow_partial_telegram_sync = payload.allow_partial_telegram_sync
 
     if schedule.enabled and (should_recalculate or schedule.next_run_at is None):
-        schedule.next_run_at = calculate_next_run_at(schedule.run_time_local, schedule.timezone)
+        schedule.next_run_at = calculate_next_run_at(
+            schedule.run_time_local,
+            schedule.timezone,
+            interval_days=schedule.rolling_window_days,
+        )
     elif not schedule.enabled:
         schedule.next_run_at = None
 

@@ -3,8 +3,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.models import Job, JobStatus, TelegramChat, TelegramIngestMode, TelegramSyncStatus
-from app.workers import run_telegram_collector
+from app.workers import run_telegram_collector, telegram_snapshot_worker
 from app.workers.telegram_snapshot_worker import TelegramSnapshotWorker
 
 
@@ -49,6 +51,147 @@ def test_snapshot_waits_until_collector_lease_is_released(monkeypatch) -> None:
 
     assert len(events) == 1
     assert events[0]["event_type"] == "telegram.sync.waiting"
+
+
+def test_backend_snapshot_skips_sync_when_report_is_already_covered(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        report_start_at=now - timedelta(hours=2),
+        report_end_at=now - timedelta(hours=1),
+    )
+    chat = SimpleNamespace(
+        coverage_start=now - timedelta(hours=3),
+        coverage_end=now,
+    )
+
+    async def fail_sync(*args, **kwargs):
+        raise AssertionError("covered reports must not synchronize again")
+
+    monkeypatch.setattr(telegram_snapshot_worker, "synchronize_chat", fail_sync)
+
+    result = asyncio.run(
+        TelegramSnapshotWorker()._synchronize_backend_coverage(object(), job, chat)
+    )
+
+    assert result is None
+
+
+def test_external_wait_can_exceed_twenty_minutes_with_fresh_activity(monkeypatch) -> None:
+    start = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        report_start_at=start - timedelta(hours=2),
+        report_end_at=start,
+    )
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        coverage_start=start - timedelta(hours=2),
+        coverage_end=start - timedelta(hours=1),
+        next_sync_at=start,
+        updated_at=start,
+        last_error=None,
+        ingest_mode=TelegramIngestMode.external_push,
+    )
+
+    class Clock:
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Session:
+        refresh_count = 0
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, value):
+            self.refresh_count += 1
+            if self.refresh_count >= 2:
+                value.updated_at = Clock.current
+                value.coverage_end = job.report_end_at
+
+        async def execute(self, query):
+            return Result()
+
+    async def advance_time(seconds):
+        Clock.current += timedelta(minutes=21)
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        return None
+
+    async def checkpoint_cancelled(session, job, **kwargs):
+        return None
+
+    worker.emit_event = emit_event
+    worker.checkpoint_cancelled = checkpoint_cancelled
+    monkeypatch.setattr(telegram_snapshot_worker, "datetime", Clock)
+    monkeypatch.setattr(asyncio, "sleep", advance_time)
+
+    result = asyncio.run(worker._wait_for_external_coverage(Session(), job, chat))
+
+    assert result is None
+
+
+def test_external_wait_fails_after_configured_inactivity(monkeypatch) -> None:
+    start = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        report_start_at=start - timedelta(hours=2),
+        report_end_at=start,
+    )
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        coverage_start=None,
+        coverage_end=None,
+        next_sync_at=start,
+        updated_at=start,
+        last_error=None,
+        ingest_mode=TelegramIngestMode.external_push,
+    )
+
+    class Clock:
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    class Session:
+        async def commit(self):
+            return None
+
+        async def refresh(self, value):
+            return None
+
+    async def advance_time(seconds):
+        Clock.current += timedelta(
+            seconds=telegram_snapshot_worker.settings.telegram_external_inactivity_timeout_seconds
+        )
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        return None
+
+    async def checkpoint_cancelled(session, job, **kwargs):
+        return None
+
+    worker.emit_event = emit_event
+    worker.checkpoint_cancelled = checkpoint_cancelled
+    monkeypatch.setattr(telegram_snapshot_worker, "datetime", Clock)
+    monkeypatch.setattr(asyncio, "sleep", advance_time)
+
+    with pytest.raises(telegram_snapshot_worker.TelegramSyncError, match="made no progress"):
+        asyncio.run(worker._wait_for_external_coverage(Session(), job, chat))
 
 
 def test_partial_snapshot_skips_external_wait_and_fails_without_messages(monkeypatch) -> None:
@@ -156,7 +299,7 @@ def test_backend_collector_prefers_completed_partial_report_interval() -> None:
         run_telegram_collector.sync_request_for_chat(Session(), chat, now)
     )
 
-    assert requested_start == report_start
+    assert requested_start == chat.coverage_end
     assert requested_end == now
     assert job_id == report_job.id
 

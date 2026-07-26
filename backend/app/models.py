@@ -150,6 +150,7 @@ class TelegramChat(Base):
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_collected_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     next_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, index=True)
     coverage_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     coverage_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

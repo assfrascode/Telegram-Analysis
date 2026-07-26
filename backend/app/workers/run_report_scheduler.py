@@ -196,7 +196,9 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
         schedule.next_run_at = calculate_next_run_at(
             schedule.run_time_local,
             schedule.timezone,
+            interval_days=schedule.rolling_window_days,
             now=utc_now(),
+            previous_scheduled_for=scheduled_for,
         )
         release_schedule(schedule)
         await session.commit()

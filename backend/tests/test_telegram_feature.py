@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from telethon.tl.types import Channel
 
+from app.config import Settings
 from app.models import (
     Job,
     JobSourceType,
@@ -33,6 +34,26 @@ def test_telegram_secrets_are_encrypted_and_round_trip() -> None:
     encrypted = encrypt_telegram_secret("api-hash-value")
     assert encrypted != "api-hash-value"
     assert decrypt_telegram_secret(encrypted) == "api-hash-value"
+
+
+def test_sync_inactivity_settings_accept_new_names_and_legacy_aliases() -> None:
+    current = Settings(
+        _env_file=None,
+        secret_key="test",
+        telegram_sync_inactivity_timeout_seconds=900,
+        telegram_external_inactivity_timeout_seconds=900,
+    )
+    legacy = Settings(
+        _env_file=None,
+        secret_key="test",
+        TELEGRAM_SYNC_TIMEOUT_SECONDS=1200,
+        TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS=300,
+    )
+
+    assert current.telegram_sync_inactivity_timeout_seconds == 900
+    assert current.telegram_external_inactivity_timeout_seconds == 900
+    assert legacy.telegram_sync_inactivity_timeout_seconds == 1200
+    assert legacy.telegram_external_inactivity_timeout_seconds == 300
 
 
 def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
@@ -191,7 +212,7 @@ def test_backend_pull_chat_accepts_connected_backend_account_for_sync_source() -
     asyncio.run(ensure_chat_sync_source_available(Session(), chat))
 
 
-def test_periodic_sync_rewinds_overlap_but_not_before_initial_start() -> None:
+def test_periodic_sync_starts_at_completed_coverage_end() -> None:
     initial = datetime(2026, 1, 1, tzinfo=timezone.utc)
     chat = TelegramChat(
         owner_user_id=uuid.uuid4(),
@@ -203,7 +224,7 @@ def test_periodic_sync_rewinds_overlap_but_not_before_initial_start() -> None:
         next_sync_at=initial,
         coverage_end=initial + timedelta(hours=12),
     )
-    assert periodic_sync_start(chat) == initial
+    assert periodic_sync_start(chat) == initial + timedelta(hours=12)
 
 
 def test_collected_media_does_not_emit_broken_report_link() -> None:

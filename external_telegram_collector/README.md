@@ -50,7 +50,8 @@ and legacy static UI, not the React frontend.
 By default, an empty `TELEGRAM_CHAT_IDS` registers every visible group/channel
 for the Telegram account. Set `TELEGRAM_CHAT_IDS` only when you want an
 allowlist. The collector then polls `/telegram/ingest/claims/next` and processes
-due sync runs.
+due sync runs. After a completed sync, each claim includes the last stored
+Telegram message ID and the collector requests only newer messages.
 
 Set `TELEGRAM_USE_TAKEOUT=true` for large historical exports or media-heavy
 syncs. In takeout mode, startup registration and claim polling still use the
