@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mediengalerie – Chat Analyse</title>
+  <link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+  <main class="report-shell report-shell--gallery">
+    <nav class="top-nav">
+      <a href="index.html">← Übersicht</a>
+      <span>{{ media_gallery|length }} Medienreferenzen</span>
+    </nav>
+
+    <header class="dossier-header gallery-header">
+      <div class="dossier-kicker">
+        <span class="classification">Media Inventory</span>
+        <span class="status-pill">Externe Referenzen</span>
+      </div>
+      <div class="dossier-title-row">
+        <div>
+          <p class="eyebrow">Chat Analyse</p>
+          <h1>Mediengalerie</h1>
+          <p class="lead">Übersicht aller Medienreferenzen des Chats. Die Originaldateien sind nicht Bestandteil dieses Reports.</p>
+        </div>
+        <aside class="case-file case-file--compact">
+          <dl>
+            <div><dt>Medien</dt><dd>{{ media_gallery|length }}</dd></div>
+            {% if job.source_name %}<div><dt>Chat</dt><dd>{{ job.source_name }}</dd></div>{% endif %}
+            <div><dt>Generiert</dt><dd>{{ generated_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd></div>
+          </dl>
+        </aside>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="section-label">Media Index</div>
+      <div class="section-heading-row">
+        <div>
+          <h2>Originalmedien</h2>
+          <p class="muted">Verfügbare Links zeigen relativ aus dem Report-Ordner auf die Dateien des ursprünglichen Telegram-Exports.</p>
+        </div>
+      </div>
+
+      {% if media_gallery %}
+      <div class="media-gallery-grid">
+        {% for media in media_gallery %}
+        <article class="media-gallery-card{% if not media.relative_href %} media-gallery-card--unavailable{% endif %}">
+          <div class="media-card__top">
+            <span class="media-type">{{ media.media_type|upper }}</span>
+            {% if media.missing_reason or not media.relative_href %}
+            <span class="badge badge--warning">{{ media.status }}</span>
+            {% else %}
+            <span class="badge">{{ media.status }}</span>
+            {% endif %}
+          </div>
+
+          <h3>{{ media.filename }}</h3>
+          <div class="media-path"><code>{{ media.original_path }}</code></div>
+
+          <dl class="media-gallery-meta">
+            <div><dt>Zeitpunkt</dt><dd>{% if media.timestamp_iso %}<time datetime="{{ media.timestamp_iso }}">{{ media.timestamp }}</time>{% else %}{{ media.timestamp }}{% endif %}</dd></div>
+            <div><dt>Absender</dt><dd>{{ media.sender_name or media.sender_id or "Unbekannt" }}</dd></div>
+            <div><dt>Nachricht</dt><dd>{% if media.telegram_message_id is not none %}msgID {{ media.telegram_message_id }}{% else %}–{% endif %}</dd></div>
+            <div><dt>Größe</dt><dd>{% if media.size_bytes is not none %}{{ media.size_bytes }} Bytes{% else %}–{% endif %}</dd></div>
+          </dl>
+
+          {% if media.relative_href %}
+          <a class="media-open media-open--gallery" href="{{ media.relative_href }}">Originaldatei öffnen</a>
+          {% else %}
+          <p class="media-unavailable">{{ media.link_unavailable_reason }}</p>
+          {% endif %}
+
+          {% if media.missing_reason %}
+          <p class="warning">Fehlend/Problem: {{ media.missing_reason }}</p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="gallery-empty-state">
+        <h3>Keine Medienreferenzen</h3>
+        <p>Für diesen Chat wurden keine Medien erfasst.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="panel placement-note-panel">
+      <div class="section-label">Medienlinks</div>
+      <p>Lege den Ordner <code>report/</code> in den ursprünglichen Telegram-Export, damit verfügbare relative Links wie <code>../photos/example.jpg</code> funktionieren.</p>
+    </section>
+  </main>
+</body>
+</html>

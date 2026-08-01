@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.services.minio_store import put_bytes
 from app.services.report_builder import (
+    ReportGalleryItem,
     ReportQuestion,
     bluf_question_blocks,
     bluf_source_questions,
@@ -37,19 +38,22 @@ from app.services.report_builder import (
     build_bluf_synthesis_prompt,
     build_bluf_synthesis_prompt_from_blocks,
     build_report_evidence_chunk,
+    build_report_gallery_item,
     build_report_message,
     make_bluf,
     parse_uuid_list,
+    sort_report_gallery_items,
+)
+from app.services.report_naming import (
+    build_report_filename,
+    report_date_for_job,
+    resolve_report_source_name,
 )
 from app.workers import subjects
 from app.workers.base import Worker
 
 settings = get_settings()
 BLUF_MAX_TOKENS = 1024
-
-
-def _report_zip_name(job_id: uuid.UUID) -> str:
-    return f"chat-analyse-report-{job_id}.zip"
 
 
 def _score(value: float | None) -> str:
@@ -136,11 +140,12 @@ class ReportWorker(Worker):
 
         env = Environment(
             loader=FileSystemLoader("app/templates/report"),
-            autoescape=select_autoescape(["html", "xml"]),
+            autoescape=select_autoescape(["html", "xml", "html.j2"]),
         )
         env.filters["score"] = _score
 
         questions = await self._load_questions(session, job)
+        media_gallery = await self._load_media_gallery(session, job)
         stats = await self._load_stats(session, job)
         await self.checkpoint_cancelled(
             session,
@@ -167,11 +172,19 @@ class ReportWorker(Worker):
         bluf = await self._synthesize_bluf(session, job, questions)
 
         generated_at = datetime.now(timezone.utc)
+        source_name = await resolve_report_source_name(session, job)
+        if not job.source_name:
+            job.source_name = source_name
+        filename = build_report_filename(
+            source_name,
+            report_date_for_job(job, generated_at),
+        )
         report_bytes = self._render_report_zip(
             env,
             job=job,
             generated_at=generated_at,
             questions=questions,
+            media_gallery=media_gallery,
             stats=stats,
             bluf=bluf,
         )
@@ -188,7 +201,6 @@ class ReportWorker(Worker):
         put_bytes(object_key, report_bytes, content_type="application/zip")
 
         existing = (await session.execute(select(Report).where(Report.job_id == job.id))).scalar_one_or_none()
-        filename = _report_zip_name(job.id)
         if existing:
             existing.object_key = object_key
             existing.filename = filename
@@ -354,13 +366,22 @@ class ReportWorker(Worker):
         questions: list[ReportQuestion],
         stats: dict[str, Any],
         bluf: str,
+        media_gallery: list[ReportGalleryItem] | None = None,
     ) -> bytes:
+        gallery_items = media_gallery or []
         index_html = env.get_template("index.html.j2").render(
             job=job,
             generated_at=generated_at,
             questions=questions,
+            media_gallery=gallery_items,
             stats=stats,
             bluf=bluf,
+        )
+
+        media_gallery_html = env.get_template("media_gallery.html.j2").render(
+            job=job,
+            generated_at=generated_at,
+            media_gallery=gallery_items,
         )
 
         report_css = env.get_template("report.css.j2").render()
@@ -369,6 +390,7 @@ class ReportWorker(Worker):
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("report/index.html", index_html)
+            zf.writestr("report/media_gallery.html", media_gallery_html)
             zf.writestr("report/assets/report.css", report_css)
             zf.writestr("report/assets/report.js", report_js)
 
@@ -382,6 +404,23 @@ class ReportWorker(Worker):
                 zf.writestr(f"report/{question.filename}", html)
 
         return zip_buffer.getvalue()
+
+    async def _load_media_gallery(
+        self,
+        session: AsyncSession,
+        job: Job,
+    ) -> list[ReportGalleryItem]:
+        rows = list(
+            (
+                await session.execute(
+                    select(TelegramMedia, TelegramMessage)
+                    .outerjoin(TelegramMessage, TelegramMessage.id == TelegramMedia.message_id)
+                    .where(TelegramMedia.job_id == job.id)
+                )
+            ).all()
+        )
+        items = [build_report_gallery_item(media, message) for media, message in rows]
+        return sort_report_gallery_items(items)
 
     async def _load_questions(self, session: AsyncSession, job: Job) -> list[ReportQuestion]:
         question_rows = list(

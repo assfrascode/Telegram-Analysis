@@ -110,6 +110,22 @@ function shortId(id) {
   return String(id || "").slice(0, 8);
 }
 
+function downloadFilenameFromResponse(response) {
+  const contentDisposition = response.headers.get("Content-Disposition") || "";
+  const encodedMatch = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
+  const plainMatch = contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+  let filename = quotedMatch?.[1] || plainMatch?.[1] || "report.zip";
+  if (encodedMatch?.[1]) {
+    try {
+      filename = decodeURIComponent(encodedMatch[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      // Keep the ASCII fallback when an invalid extended filename is returned.
+    }
+  }
+  return filename.replaceAll("\\", "/").split("/").pop() || "report.zip";
+}
+
 function setBusy(isBusy) {
   ["start", "login", "authModeLogin", "authModeRegister", "refreshCapacity", "refreshJobs", "refreshJob", "retry"].forEach((id) => {
     const el = $(id);
@@ -1306,7 +1322,7 @@ async function downloadReport() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `report-${shortId(currentJobId)}.zip`;
+    a.download = downloadFilenameFromResponse(res);
     document.body.appendChild(a);
     a.click();
     a.remove();

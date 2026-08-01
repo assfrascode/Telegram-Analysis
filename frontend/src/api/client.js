@@ -50,7 +50,20 @@ export async function apiJson(path, { token, method = "GET", body, headers = {} 
 export async function downloadBlob(path, { token } = {}) {
   const response = await fetch(buildApiUrl(path), { headers: authHeaders(token) });
   if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
-  return response.blob();
+  const contentDisposition = response.headers.get("Content-Disposition") || "";
+  const encodedMatch = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
+  const plainMatch = contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+  let filename = quotedMatch?.[1] || plainMatch?.[1] || "report.zip";
+  if (encodedMatch?.[1]) {
+    try {
+      filename = decodeURIComponent(encodedMatch[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      // Keep the ASCII fallback when an invalid extended filename is returned.
+    }
+  }
+  filename = filename.replaceAll("\\", "/").split("/").pop() || "report.zip";
+  return { blob: await response.blob(), filename };
 }
 
 export function uploadFileToObjectStore(upload, file, onProgress) {

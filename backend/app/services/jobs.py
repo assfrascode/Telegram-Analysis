@@ -377,6 +377,7 @@ async def create_telegram_job_record(
         telegram_chat_id=chat.id,
         report_start_at=payload.start_at,
         report_end_at=payload.end_at,
+        source_name=chat.title,
         status=JobStatus.queued,
         options=options,
     )

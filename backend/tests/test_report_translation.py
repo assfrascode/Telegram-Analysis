@@ -71,7 +71,7 @@ def test_report_message_and_subreport_render_saved_translation() -> None:
     template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
     env = Environment(
         loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
     )
 
     html = env.get_template("subreport.html.j2").render(
@@ -150,7 +150,7 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
     template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
     env = Environment(
         loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
     )
 
     html = env.get_template("subreport.html.j2").render(

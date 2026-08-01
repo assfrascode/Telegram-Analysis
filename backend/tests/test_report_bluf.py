@@ -80,7 +80,7 @@ def test_report_index_renders_synthesized_bluf_instead_of_question_list() -> Non
     template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
     env = Environment(
         loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
     )
     env.filters["score"] = lambda value: "–" if value is None else f"{value:.4f}"
 
@@ -112,6 +112,7 @@ def test_report_index_renders_synthesized_bluf_instead_of_question_list() -> Non
         job=SimpleNamespace(id=uuid.uuid4()),
         generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         questions=questions,
+        media_gallery=[],
         stats=stats,
         bluf="Synthetisierte Gesamt-BLUF.",
     )

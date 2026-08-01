@@ -8,7 +8,7 @@ import { TelegramSourcesPanel } from "./components/TelegramSourcesPanel";
 import { Toast } from "./components/Toast";
 import { useJobSocket } from "./hooks/useJobSocket";
 import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS, MAX_EVENTS, STAGES, STORAGE_JOB, STORAGE_TOKEN } from "./lib/constants";
-import { normalizeEvent, normalizeQuestions, optionsFromState, shortId } from "./lib/format";
+import { normalizeEvent, normalizeQuestions, optionsFromState } from "./lib/format";
 
 function makeDerivedEvent(stage, currentJob, message = `${stage.label} completed`) {
   return {
@@ -575,11 +575,11 @@ export default function App() {
   const downloadReport = async () => {
     if (!token || !currentJobId) return;
     try {
-      const blob = await downloadBlob(`/jobs/${currentJobId}/report/download`, { token });
+      const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/download`, { token });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `report-${shortId(currentJobId)}.zip`;
+      anchor.download = filename;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();

@@ -15,6 +15,7 @@ from app.models import (
     StepStatus,
     TelegramChat,
     TelegramConnectionStatus,
+    TelegramChatStatus,
     TelegramIngestMode,
     TelegramMedia,
 )
@@ -23,7 +24,7 @@ from app.schemas import (
     TelegramDialogResponse,
     TelegramReportCreateRequest,
 )
-from app.services.jobs import initial_task_payload
+from app.services.jobs import create_telegram_job_record, initial_task_payload
 from app.services.report_builder import build_report_media
 from app.services.telegram_crypto import decrypt_telegram_secret, encrypt_telegram_secret
 from app.services.telegram_chat_access import ensure_chat_sync_source_available
@@ -176,6 +177,47 @@ def test_initial_task_uses_telegram_snapshot_subject_payload() -> None:
     assert payload["telegram_chat_id"] == str(job.telegram_chat_id)
     assert payload["task_key"] == f"telegram-snapshot:{job.id}"
     assert "upload_id" not in payload
+
+
+def test_telegram_report_job_snapshots_chat_title_as_source_name() -> None:
+    owner_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    chat = SimpleNamespace(
+        id=chat_id,
+        owner_user_id=owner_id,
+        title="Example Group",
+        status=TelegramChatStatus.active,
+        ingest_mode=TelegramIngestMode.external_push,
+        connection_id=None,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return chat
+
+    class Session:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, statement):
+            return Result()
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def flush(self):
+            return None
+
+    payload = TelegramReportCreateRequest(
+        telegram_chat_id=chat_id,
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        questions=[{"text": "What happened?"}],
+    )
+
+    job = asyncio.run(create_telegram_job_record(Session(), owner_id, payload))
+
+    assert job.source_name == "Example Group"
 
 
 def test_external_chat_does_not_require_backend_connection_for_sync_source() -> None:

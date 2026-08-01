@@ -125,6 +125,16 @@ def relative_media_href_from_subreport(original_path: str | None) -> str | None:
     return f"../../{cleaned}"
 
 
+def relative_media_href_from_gallery(original_path: str | None) -> str | None:
+    """Return a media href from ``report/media_gallery.html`` to the export root."""
+    if not original_path:
+        return None
+    cleaned = str(original_path).replace("\\", "/").lstrip("/").strip()
+    if not cleaned or cleaned.startswith("../") or "/../" in cleaned:
+        return None
+    return f"../{cleaned}"
+
+
 def status_label(status: StepStatus | str | None) -> str:
     value = status.value if isinstance(status, StepStatus) else str(status or "unknown")
     return value.replace("_", " ")
@@ -179,6 +189,24 @@ class ReportMessage:
     translation_source_confidence: float | None = None
     translation_provider: str | None = None
     media: list[ReportMedia] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ReportGalleryItem:
+    id: str
+    media_type: str
+    filename: str
+    original_path: str
+    relative_href: str | None
+    link_unavailable_reason: str | None
+    status: str
+    missing_reason: str | None
+    size_bytes: int | None
+    telegram_message_id: int | None
+    timestamp: str
+    timestamp_iso: str
+    sender_id: str | None
+    sender_name: str | None
 
 
 @dataclass(slots=True)
@@ -346,6 +374,55 @@ def build_report_message(
             build_report_media(media, analysis, transcript)
             for media, analysis, transcript in (media_items or [])
         ],
+    )
+
+
+def build_report_gallery_item(
+    media: TelegramMedia,
+    message: TelegramMessage | None,
+) -> ReportGalleryItem:
+    relative_href = None
+    link_unavailable_reason = None
+    if media.source_media_id is not None:
+        link_unavailable_reason = "Für direkt synchronisierte Medien existiert kein lokaler Exportpfad."
+    elif media.missing_reason:
+        link_unavailable_reason = "Die Originaldatei ist im Telegram-Export nicht verfügbar."
+    else:
+        relative_href = relative_media_href_from_gallery(media.original_path)
+        if relative_href is None:
+            link_unavailable_reason = "Der gespeicherte Medienpfad ist nicht sicher verwendbar."
+
+    normalized_path = str(media.original_path or "").replace("\\", "/").rstrip("/")
+    filename = normalized_path.rsplit("/", 1)[-1] or "Unbenanntes Medium"
+    return ReportGalleryItem(
+        id=str(media.id),
+        media_type=media.media_type,
+        filename=filename,
+        original_path=media.original_path,
+        relative_href=relative_href,
+        link_unavailable_reason=link_unavailable_reason,
+        status=status_label(media.status),
+        missing_reason=media.missing_reason,
+        size_bytes=media.size_bytes,
+        telegram_message_id=(message.telegram_message_id if message else None),
+        timestamp=(display_timestamp(message.timestamp) if message else "Unbekannter Zeitpunkt"),
+        timestamp_iso=(isoformat_or_empty(message.timestamp) if message else ""),
+        sender_id=(message.sender_id if message else None),
+        sender_name=(message.sender_name if message else None),
+    )
+
+
+def sort_report_gallery_items(items: list[ReportGalleryItem]) -> list[ReportGalleryItem]:
+    return sorted(
+        items,
+        key=lambda item: (
+            not bool(item.timestamp_iso),
+            item.timestamp_iso,
+            item.telegram_message_id is None,
+            item.telegram_message_id or 0,
+            item.original_path.casefold(),
+            item.id,
+        ),
     )
 
 

@@ -34,6 +34,12 @@ from app.services.jobs import (
 from app.services.events import record_event
 from app.services.worker_control import mark_job_cancelled
 from app.services.minio_store import get_bytes
+from app.services.report_naming import (
+    attachment_content_disposition,
+    build_report_filename,
+    report_date_for_job,
+    resolve_report_source_name,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
@@ -276,6 +282,10 @@ async def download_report(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
 
     data = await asyncio.to_thread(get_bytes, report.object_key)
-    filename = report.filename or "report.zip"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    source_name = await resolve_report_source_name(session, job)
+    filename = build_report_filename(
+        source_name,
+        report_date_for_job(job, report.created_at),
+    )
+    headers = {"Content-Disposition": attachment_content_disposition(filename)}
     return StreamingResponse(BytesIO(data), media_type="application/zip", headers=headers)
