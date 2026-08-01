@@ -1,10 +1,14 @@
+import asyncio
 import json
+import uuid
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from app.services.zip_ingest import extract_zip_to_minio
+from app.services.zip_ingest import ExtractionResult, extract_zip_to_minio
+from app.workers import ingest_worker
 
 
 SETTINGS = SimpleNamespace(
@@ -46,7 +50,7 @@ def _zip_bytes(files: dict[str, bytes | str]) -> bytes:
 
 
 def test_extract_zip_prefers_existing_result_json_over_html_fallback() -> None:
-    result_json = b'{"messages":[{"id":99,"text":"json wins"}]}'
+    result_json = b'{"name":"  JSON Chat  ","messages":[{"id":99,"text":"json wins"}]}'
     client = FakeMinio(
         _zip_bytes(
             {
@@ -66,6 +70,7 @@ def test_extract_zip_prefers_existing_result_json_over_html_fallback() -> None:
 
     assert result.result_json_object_key == "users/u/jobs/j/extract/Chat/result.json"
     assert result.source_format == "json"
+    assert result.source_name == "JSON Chat"
     assert result.html_pages_total == 0
     assert client.objects[result.result_json_object_key]["data"] == result_json
 
@@ -99,6 +104,7 @@ def test_extract_zip_generates_result_json_from_html_only_export() -> None:
 
     assert result.result_json_object_key == "users/u/jobs/j/extract/Chat/result.json"
     assert result.source_format == "html"
+    assert result.source_name == "HTML Chat"
     assert result.html_pages_total == 1
     assert result.html_messages_total == 1
 
@@ -122,5 +128,75 @@ def test_extract_zip_without_json_or_html_returns_no_parseable_export() -> None:
 
     assert result.result_json_object_key is None
     assert result.source_format == "json"
+    assert result.source_name is None
     assert result.html_pages_total == 0
     assert result.html_messages_total == 0
+
+
+def test_extract_zip_ignores_invalid_chat_name() -> None:
+    client = FakeMinio(
+        _zip_bytes(
+            {
+                "Chat/result.json": '{"name":{"unexpected":true},"messages":[{"id":1}]}',
+            }
+        )
+    )
+
+    result = extract_zip_to_minio(
+        client=client,
+        bucket="bucket",
+        upload_object_key="upload.zip",
+        extracted_prefix="users/u/jobs/j/extract/",
+        settings=SETTINGS,
+    )
+
+    assert result.result_json_object_key is not None
+    assert result.source_name is None
+
+
+def test_extract_worker_persists_source_name(monkeypatch) -> None:
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        upload_id=uuid.uuid4(),
+        source_name=None,
+    )
+    upload = SimpleNamespace(object_key="users/u/uploads/export.zip")
+    extraction = ExtractionResult(
+        extracted_prefix="users/u/jobs/j/extract/",
+        files_total=1,
+        bytes_total=100,
+        result_json_object_key="users/u/jobs/j/extract/result.json",
+        source_name="Persisted Group",
+    )
+
+    class Result:
+        def __init__(self, value) -> None:
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+    class Session:
+        def __init__(self) -> None:
+            self.values = iter((job, upload))
+
+        async def execute(self, statement):
+            return Result(next(self.values))
+
+    async def run_inline(function, **kwargs):
+        return function(**kwargs)
+
+    monkeypatch.setattr(ingest_worker, "extract_zip_to_minio", lambda **kwargs: extraction)
+    monkeypatch.setattr(ingest_worker, "extracted_prefix", lambda owner_id, job_id: extraction.extracted_prefix)
+    monkeypatch.setattr(ingest_worker, "minio_client", lambda: object())
+    monkeypatch.setattr(ingest_worker.asyncio, "to_thread", run_inline)
+
+    worker = ingest_worker.ExtractWorker()
+    worker.emit_event = AsyncMock()
+    worker.checkpoint_cancelled = AsyncMock()
+    worker.enqueue = AsyncMock()
+
+    asyncio.run(worker.handle(Session(), {"job_id": str(job.id)}))
+
+    assert job.source_name == "Persisted Group"

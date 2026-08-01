@@ -91,6 +91,9 @@ class ExtractWorker(Worker):
             )
             return
 
+        if extraction.source_name:
+            job.source_name = extraction.source_name
+
         await self.checkpoint_cancelled(
             session,
             job,

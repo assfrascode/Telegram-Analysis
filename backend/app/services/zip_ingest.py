@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from minio import Minio
 
 from app.config import Settings
+from app.services.telegram_export import read_result_name
 from app.services.telegram_html_export import (
     TelegramHtmlExportError,
     TelegramHtmlPage,
@@ -38,6 +39,7 @@ class ExtractionResult:
     source_format: str = "json"
     html_pages_total: int = 0
     html_messages_total: int = 0
+    source_name: str | None = None
 
 
 def normalize_zip_member_path(name: str) -> str:
@@ -99,9 +101,9 @@ def _convert_html_export_to_result_json(
     client: Minio,
     bucket: str,
     extracted_prefix: str,
-) -> tuple[str | None, int, int]:
+) -> tuple[str | None, int, int, str | None]:
     if not html_page_paths:
-        return None, 0, 0
+        return None, 0, 0, None
 
     first_page = PurePosixPath(html_page_paths[0])
     export_root = "" if str(first_page.parent) == "." else f"{first_page.parent}/"
@@ -116,7 +118,7 @@ def _convert_html_export_to_result_json(
 
     conversion = convert_html_export_pages(pages)
     if conversion.messages_total == 0:
-        return None, conversion.pages_total, 0
+        return None, conversion.pages_total, 0, conversion.source_name
 
     result_json_object_key = f"{extracted_prefix}{export_root}result.json"
     result_json = html_conversion_result_to_json_bytes(conversion)
@@ -127,7 +129,12 @@ def _convert_html_export_to_result_json(
         length=len(result_json),
         content_type="application/json",
     )
-    return result_json_object_key, conversion.pages_total, conversion.messages_total
+    return (
+        result_json_object_key,
+        conversion.pages_total,
+        conversion.messages_total,
+        conversion.source_name,
+    )
 
 
 def extract_zip_to_minio(
@@ -152,6 +159,7 @@ def extract_zip_to_minio(
     source_format = "json"
     html_pages_total = 0
     html_messages_total = 0
+    source_name: str | None = None
 
     try:
         if not zipfile.is_zipfile(temp_path):
@@ -191,6 +199,7 @@ def extract_zip_to_minio(
                         result_json_object_key,
                         html_pages_total,
                         html_messages_total,
+                        source_name,
                     ) = _convert_html_export_to_result_json(
                         archive=archive,
                         infos_by_path=infos_by_path,
@@ -203,6 +212,11 @@ def extract_zip_to_minio(
                     raise ZipSecurityError(f"Telegram HTML export could not be converted: {exc}") from exc
                 if result_json_object_key is not None:
                     source_format = "html"
+            elif result_json_relative_path is not None:
+                result_info = infos_by_path.get(result_json_relative_path)
+                if result_info is not None:
+                    with archive.open(result_info, mode="r") as source:
+                        source_name = read_result_name(source)
 
         return ExtractionResult(
             extracted_prefix=extracted_prefix,
@@ -212,6 +226,7 @@ def extract_zip_to_minio(
             source_format=source_format,
             html_pages_total=html_pages_total,
             html_messages_total=html_messages_total,
+            source_name=source_name,
         )
     finally:
         try:

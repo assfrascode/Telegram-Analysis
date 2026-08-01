@@ -117,6 +117,7 @@ class JobResponse(BaseModel):
     telegram_chat_id: uuid.UUID | None = None
     report_start_at: datetime | None = None
     report_end_at: datetime | None = None
+    source_name: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
     error_message: str | None = None

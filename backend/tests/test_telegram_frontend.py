@@ -55,6 +55,7 @@ def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> No
     assert "New Analysis" in sidebar
     assert "Telegram Setup" in sidebar
     assert "Uploaded export" in sidebar
+    assert "`Uploaded: ${job.source_name}`" in sidebar
     assert "status-dot-${job.status}" in sidebar
     assert "window.prompt" not in question_sets
     assert "inline-template-form" in question_sets

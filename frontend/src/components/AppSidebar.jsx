@@ -2,7 +2,9 @@ import { EventLogPanel } from "./EventLogPanel";
 import { formatDate, statusLabel } from "../lib/format";
 
 function jobTitle(job, chats) {
-  if (job.source_type !== "telegram_chat") return "Uploaded export";
+  if (job.source_type !== "telegram_chat") {
+    return job.source_name ? `Uploaded: ${job.source_name}` : "Uploaded export";
+  }
   const title = chats.find((chat) => chat.id === job.telegram_chat_id)?.title || "Telegram chat";
   return job.scheduled_report ? `Scheduled: ${title}` : title;
 }

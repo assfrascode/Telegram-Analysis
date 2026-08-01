@@ -14,6 +14,7 @@ from app.services.telegram_export import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     TelegramExportError,
+    normalize_export_name,
     normalize_export_path,
     parse_datetime,
 )
@@ -53,6 +54,7 @@ class TelegramHtmlConversionResult:
     data: dict[str, Any]
     messages_total: int
     pages_total: int
+    source_name: str | None
 
 
 def is_messages_html_page_name(name: str) -> bool:
@@ -107,6 +109,8 @@ def convert_html_export_pages(pages: Iterable[TelegramHtmlPage]) -> TelegramHtml
     if page_count == 0:
         raise TelegramHtmlExportError("Telegram HTML export has no message pages")
 
+    chat_name = normalize_export_name(chat_name)
+
     return TelegramHtmlConversionResult(
         data={
             "name": chat_name or "Telegram HTML export",
@@ -116,6 +120,7 @@ def convert_html_export_pages(pages: Iterable[TelegramHtmlPage]) -> TelegramHtml
         },
         messages_total=len(messages),
         pages_total=page_count,
+        source_name=chat_name,
     )
 
 

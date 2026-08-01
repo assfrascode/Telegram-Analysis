@@ -11,6 +11,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpeg", ".mpg"}
 AUDIO_EXTENSIONS = {".flac", ".m4a", ".mp3", ".mpga", ".ogg", ".wav", ".webm"}
 MEDIA_PATH_FIELDS = ("photo", "file")
+MAX_EXPORT_NAME_LENGTH = 512
 
 MISSING_FILE_MARKERS = (
     "file not included",
@@ -46,6 +47,40 @@ class ParsedMessage:
     reactions: list[dict[str, Any]]
     raw: dict[str, Any]
     media: list[ParsedMediaReference]
+
+
+def normalize_export_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized[:MAX_EXPORT_NAME_LENGTH] or None
+
+
+def read_result_name(file_obj: BinaryIO) -> str | None:
+    """Best-effort read of a Telegram chat export's top-level name.
+
+    Telegram places ``name`` before the potentially large ``messages`` array.
+    Stop at that array so a missing label does not require parsing the export's
+    complete message history.
+    """
+    try:
+        import ijson  # type: ignore
+    except ImportError:
+        try:
+            data = json.load(file_obj)
+        except Exception:
+            return None
+        return normalize_export_name(data.get("name")) if isinstance(data, dict) else None
+
+    try:
+        for prefix, event, value in ijson.parse(file_obj):
+            if prefix == "name":
+                return normalize_export_name(value) if event == "string" else None
+            if prefix == "messages" and event == "start_array":
+                return None
+    except Exception:
+        return None
+    return None
 
 
 def normalize_export_path(path: str) -> str:

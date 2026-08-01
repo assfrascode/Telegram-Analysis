@@ -359,6 +359,7 @@ class Job(Base):
     )
     report_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     report_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.queued, index=True)
     options: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

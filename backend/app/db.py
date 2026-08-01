@@ -90,3 +90,11 @@ async def init_db() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE jobs
+                ADD COLUMN IF NOT EXISTS source_name varchar(512)
+                """
+            )
+        )

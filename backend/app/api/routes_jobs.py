@@ -58,6 +58,7 @@ def _job_response(job: Job) -> JobResponse:
         telegram_chat_id=job.telegram_chat_id,
         report_start_at=job.report_start_at,
         report_end_at=job.report_end_at,
+        source_name=job.source_name,
         created_at=job.created_at,
         completed_at=job.completed_at,
         error_message=job.error_message,
