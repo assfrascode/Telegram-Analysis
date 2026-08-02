@@ -21,7 +21,7 @@ from app.services.telegram_export import (
 )
 from app.workers import subjects
 from app.workers.base import Worker
-from app.workers.pipeline import next_subject_after_messages
+from app.workers.pipeline import next_tasks_after_messages
 
 settings = get_settings()
 
@@ -265,6 +265,7 @@ class ParserWorker(Worker):
             except FileNotFoundError:
                 pass
 
+        await session.commit()
         await self.checkpoint_cancelled(
             session,
             job,
@@ -272,12 +273,12 @@ class ParserWorker(Worker):
             message="Telegram-Parsing nach Abschluss wegen Job-Abbruch nicht weitergeführt",
         )
 
-        next_subject, next_key = next_subject_after_messages(job)
-        await self.enqueue(
-            next_subject,
-            {
-                "job_id": str(job.id),
-                "owner_user_id": str(job.owner_user_id),
-                "task_key": f"{next_key}:{job.id}",
-            },
-        )
+        for next_subject, next_key in next_tasks_after_messages(job):
+            await self.enqueue(
+                next_subject,
+                {
+                    "job_id": str(job.id),
+                    "owner_user_id": str(job.owner_user_id),
+                    "task_key": f"{next_key}:{job.id}",
+                },
+            )

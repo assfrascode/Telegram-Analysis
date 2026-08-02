@@ -34,7 +34,7 @@ from app.services.telegram_sync import (
 )
 from app.workers import subjects
 from app.workers.base import Worker
-from app.workers.pipeline import next_subject_after_messages
+from app.workers.pipeline import next_tasks_after_messages
 
 settings = get_settings()
 
@@ -275,15 +275,15 @@ class TelegramSnapshotWorker(Worker):
             },
         )
         await session.commit()
-        next_subject, next_key = next_subject_after_messages(job)
-        await self.enqueue(
-            next_subject,
-            {
-                "job_id": str(job.id),
-                "owner_user_id": str(job.owner_user_id),
-                "task_key": f"{next_key}:{job.id}",
-            },
-        )
+        for next_subject, next_key in next_tasks_after_messages(job):
+            await self.enqueue(
+                next_subject,
+                {
+                    "job_id": str(job.id),
+                    "owner_user_id": str(job.owner_user_id),
+                    "task_key": f"{next_key}:{job.id}",
+                },
+            )
 
     async def _prepare_partial_report_sync(
         self,

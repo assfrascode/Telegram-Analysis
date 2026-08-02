@@ -24,6 +24,7 @@ from app.services.minio_store import minio_client
 from app.services.openai_transcription import OpenAITranscriptionClient
 from app.workers import subjects
 from app.workers.base import Worker
+from app.workers.pipeline import MEDIA_TRANSCRIPTION_STEP, complete_media_branch
 
 settings = get_settings()
 
@@ -208,10 +209,21 @@ class TranscriptionWorker(Worker):
             payload=final_stats,
         )
 
-        await self.enqueue(
-            subjects.CHUNK_CREATE,
-            {"job_id": str(job.id), "owner_user_id": str(job.owner_user_id), "task_key": f"chunk:{job.id}"},
+        next_task = await complete_media_branch(
+            session,
+            job_id=job.id,
+            step_name=MEDIA_TRANSCRIPTION_STEP,
         )
+        if next_task is not None:
+            next_subject, next_key = next_task
+            await self.enqueue(
+                next_subject,
+                {
+                    "job_id": str(job.id),
+                    "owner_user_id": str(job.owner_user_id),
+                    "task_key": f"{next_key}:{job.id}",
+                },
+            )
 
     async def _next_batch(self, session: AsyncSession, job_id: uuid.UUID) -> list[TelegramMedia]:
         transcript_join = (

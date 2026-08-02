@@ -12,7 +12,7 @@ from app.services.libretranslate import LibreTranslateClient
 from app.services.worker_control import PermanentWorkerError
 from app.workers import subjects
 from app.workers.base import Worker
-from app.workers.pipeline import next_subject_after_translation
+from app.workers.pipeline import next_tasks_after_translation
 
 settings = get_settings()
 
@@ -224,12 +224,12 @@ class TranslateWorker(Worker):
             message="Übersetzung nach Abschluss wegen Job-Abbruch nicht weitergeführt",
         )
 
-        next_subject, next_key = next_subject_after_translation(job)
-        await self.enqueue(
-            next_subject,
-            {
-                "job_id": str(job.id),
-                "owner_user_id": str(job.owner_user_id),
-                "task_key": f"{next_key}:{job.id}",
-            },
-        )
+        for next_subject, next_key in next_tasks_after_translation(job):
+            await self.enqueue(
+                next_subject,
+                {
+                    "job_id": str(job.id),
+                    "owner_user_id": str(job.owner_user_id),
+                    "task_key": f"{next_key}:{job.id}",
+                },
+            )

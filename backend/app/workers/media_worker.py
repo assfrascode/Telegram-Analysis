@@ -22,7 +22,7 @@ from app.services.media_sources import build_media_source_url
 from app.workers import subjects
 from app.services.worker_control import WorkerCancelled
 from app.workers.base import Worker
-from app.workers.pipeline import next_subject_after_media_analysis
+from app.workers.pipeline import MEDIA_DESCRIPTION_STEP, complete_media_branch
 
 settings = get_settings()
 
@@ -200,15 +200,21 @@ class MediaWorker(Worker):
         )
         await session.commit()
 
-        next_subject, next_key = next_subject_after_media_analysis(job)
-        await self.enqueue(
-            next_subject,
-            {
-                "job_id": str(job.id),
-                "owner_user_id": str(job.owner_user_id),
-                "task_key": f"{next_key}:{job.id}",
-            },
+        next_task = await complete_media_branch(
+            session,
+            job_id=job.id,
+            step_name=MEDIA_DESCRIPTION_STEP,
         )
+        if next_task is not None:
+            next_subject, next_key = next_task
+            await self.enqueue(
+                next_subject,
+                {
+                    "job_id": str(job.id),
+                    "owner_user_id": str(job.owner_user_id),
+                    "task_key": f"{next_key}:{job.id}",
+                },
+            )
 
     async def _analyze_batch_with_cancellation_checks(
         self,
