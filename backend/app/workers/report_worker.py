@@ -132,7 +132,7 @@ class ReportWorker(Worker):
             session,
             job=job,
             event_type="report.render.started",
-            message="Report-Erstellung gestartet",
+            message="Report generation started",
         )
         await session.commit()
 
@@ -152,7 +152,7 @@ class ReportWorker(Worker):
             session,
             job,
             event_type="report.render.cancelled",
-            message="Report-Erstellung wegen Job-Abbruch beendet",
+            message="Report generation stopped because the job was cancelled",
             payload={"questions_total": len(questions)},
         )
 
@@ -160,7 +160,7 @@ class ReportWorker(Worker):
             session,
             job=job,
             event_type="report.render.progress",
-            message="Antworten und Evidenzdaten für Report geladen",
+            message="Answers and evidence loaded for the report",
             payload={
                 "questions_total": len(questions),
                 "evidence_chunks_total": sum(len(question.evidence) for question in questions),
@@ -194,7 +194,7 @@ class ReportWorker(Worker):
             session,
             job,
             event_type="report.render.cancelled",
-            message="Report-Erstellung vor Speichern wegen Job-Abbruch beendet",
+            message="Report generation stopped before saving because the job was cancelled",
             payload={"report_bytes": len(report_bytes)},
         )
 
@@ -213,7 +213,7 @@ class ReportWorker(Worker):
             session,
             job,
             event_type="report.render.cancelled",
-            message="Report-Erstellung nach Speichern wegen Job-Abbruch nicht als abgeschlossen markiert",
+            message="Saved report left incomplete because the job was cancelled",
             payload={"report_object_key": object_key},
         )
 
@@ -223,7 +223,7 @@ class ReportWorker(Worker):
             session,
             job=job,
             event_type="job.completed",
-            message="Report wurde erstellt",
+            message="Report generated",
             payload={
                 "report_object_key": object_key,
                 "report_filename": filename,
@@ -245,7 +245,7 @@ class ReportWorker(Worker):
             session,
             job=job,
             event_type="report.bluf.started",
-            message="Report-BLUF-Synthese gestartet",
+            message="Report summary generation started",
             payload={
                 "questions_total": len(questions),
                 "source_questions": len(source_questions),
@@ -262,7 +262,7 @@ class ReportWorker(Worker):
                 session,
                 job=job,
                 event_type="report.bluf.completed",
-                message="Report-BLUF ohne beantwortete Kurzantworten erstellt",
+                message="Report summary created without completed question summaries",
                 payload={
                     "questions_total": len(questions),
                     "source_questions": 0,
@@ -294,7 +294,7 @@ class ReportWorker(Worker):
             session,
             job,
             event_type="report.render.cancelled",
-            message="Report-BLUF-Synthese wegen Job-Abbruch beendet",
+            message="Report summary generation stopped because the job was cancelled",
             payload={
                 "questions_total": len(questions),
                 "source_questions": len(source_questions),
@@ -311,7 +311,7 @@ class ReportWorker(Worker):
             session,
             job=job,
             event_type="report.bluf.completed",
-            message="Report-BLUF-Synthese abgeschlossen",
+            message="Report summary generation completed",
             payload={
                 "questions_total": len(questions),
                 "source_questions": len(source_questions),
@@ -459,8 +459,8 @@ class ReportWorker(Worker):
                     index=question.question_index,
                     filename=f"questions/q_{question.question_index:03d}.html",
                     question=question.text,
-                    answer=run.answer if run and run.answer else "Noch keine Antwort gespeichert.",
-                    short_answer=(run.short_answer if run and run.short_answer else "Noch keine Kurzantwort gespeichert."),
+                    answer=run.answer if run and run.answer else "No answer has been saved yet.",
+                    short_answer=(run.short_answer if run and run.short_answer else "No summary has been saved yet."),
                     status=(run.status.value if run else StepStatus.pending.value),
                     retrieval_k=(run.retrieval_k if run else None),
                     rerank_k=(run.rerank_k if run else None),

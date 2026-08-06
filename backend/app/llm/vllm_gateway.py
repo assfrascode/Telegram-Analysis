@@ -24,15 +24,15 @@ DEFAULT_MEDIA_DESCRIPTION_PROMPT = (
 )
 
 ANSWER_SYSTEM_PROMPT = (
-    "Du beantwortest Fragen ausschließlich auf Basis der bereitgestellten Chat-Evidenz. "
-    "Wenn die Evidenz nicht reicht, sage das explizit. "
-    "Erfinde keine Belege und nutze keine externen Informationen."
+    "Answer questions using only the supplied chat evidence. "
+    "State clearly when the evidence is insufficient. "
+    "Do not invent evidence or use external information. Always answer in English."
 )
 
 BLUF_SYSTEM_PROMPT = (
-    "Du erstellst eine knappe deutsche BLUF für einen analytischen Report. "
-    "Nutze ausschließlich die bereitgestellten Fragen und Kurzantworten. "
-    "Erfinde keine neuen Fakten, Belege oder Schlussfolgerungen."
+    "Write a concise English bottom-line summary for an analytical report. "
+    "Use only the supplied questions and short answers. "
+    "Do not invent facts, evidence, or conclusions."
 )
 
 
@@ -118,8 +118,8 @@ class VLLMGateway:
     ) -> dict[str, Any]:
         if settings.llm_mock_enabled:
             return _mock_chat_response(
-                "[MOCK_LLM] Antwort wurde ohne vLLM-Server erzeugt. "
-                "Dieser Text dient nur zum schnellen Testen der Pipeline.",
+                "[MOCK_LLM] This response was generated without a vLLM server. "
+                "It is only intended for a quick pipeline test.",
                 model=model,
             )
 
@@ -231,10 +231,10 @@ class VLLMGateway:
         if settings.llm_mock_enabled:
             prompt_preview = prompt.strip().replace("\n", " ")[:500]
             return (
-                "[MOCK_ANSWER] Diese Antwort wurde ohne vLLM-Server erzeugt. "
-                "Die Pipeline hat Evidenz-Chunks geladen und einen Antwortprompt gebaut.\n\n"
-                "Kurzbewertung: Die eigentliche inhaltliche Antwort steht erst mit aktiviertem Textmodell zur Verfügung.\n\n"
-                f"Promptvorschau: {prompt_preview}"
+                "[MOCK_ANSWER] This answer was generated without a vLLM server. "
+                "The pipeline loaded evidence chunks and built an answer prompt.\n\n"
+                "Summary: A substantive answer is available once the text model is enabled.\n\n"
+                f"Prompt preview: {prompt_preview}"
             )
 
         messages = [
@@ -260,10 +260,9 @@ class VLLMGateway:
         if settings.llm_mock_enabled:
             prompt_preview = prompt.strip().replace("\n", " ")[:500]
             return (
-                "[MOCK_BLUF] Diese BLUF wurde ohne vLLM-Server erzeugt. "
-                "Die Pipeline hat die Kurzantworten der beantworteten Fragen geladen "
-                "und einen Synthese-Prompt gebaut.\n\n"
-                f"Promptvorschau: {prompt_preview}"
+                "[MOCK_BLUF] This summary was generated without a vLLM server. "
+                "The pipeline loaded the completed question summaries and built a synthesis prompt.\n\n"
+                f"Prompt preview: {prompt_preview}"
             )
 
         messages = [
@@ -286,5 +285,5 @@ class VLLMGateway:
 
     async def answer_question(self, question: str, context: str) -> str:
         """Backward-compatible helper for callers that pass question/context."""
-        prompt = f"Frage:\n{question}\n\nEvidenz:\n{context}\n\nAntwort:"
+        prompt = f"Question:\n{question}\n\nEvidence:\n{context}\n\nAnswer:"
         return await self.answer_prompt(prompt)

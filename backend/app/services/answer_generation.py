@@ -318,12 +318,13 @@ def build_answer_prompt(question: str, context: str) -> str:
     prompt body in a helper makes the worker deterministic and testable.
     """
     return (
-        "Beantworte die folgende Frage ausschließlich anhand der Evidenz-Chunks.\n"
-        "Nutze keine externen Informationen. Wenn die Evidenz nicht ausreicht, sage das explizit.\n"
-        "Erwähne zentrale Belege knapp und widersprüchliche oder schwache Evidenz, falls vorhanden.\n\n"
-        f"Frage:\n{question.strip()}\n\n"
-        f"Evidenz-Chunks:\n{context.strip()}\n\n"
-        "Antwort:"
+        "Answer the following question using only the evidence chunks.\n"
+        "Do not use external information. State clearly when the evidence is insufficient.\n"
+        "Briefly cite the key evidence and note contradictions or weak evidence when relevant.\n"
+        "Answer in English even when the question or evidence is in another language.\n\n"
+        f"Question:\n{question.strip()}\n\n"
+        f"Evidence chunks:\n{context.strip()}\n\n"
+        "Answer:"
     )
 
 
@@ -334,15 +335,14 @@ def build_evidence_map_prompt(
     batch_count: int,
 ) -> str:
     return (
-        "Fasse die folgenden Evidenz-Chunks als Zwischenzusammenfassung für die spätere "
-        "Fragenbeantwortung zusammen.\n"
-        "Nutze ausschließlich diese Evidenz. Erhalte zentrale Fakten, Chunk-IDs, Message-IDs, "
-        "Zeitbereiche, Widersprüche, schwache Evidenz und Unsicherheiten.\n"
-        "Schreibe knapp, aber vollständig genug, damit die Ausgangsfrage später nur anhand "
-        "dieser Zwischenzusammenfassung beantwortet werden kann.\n\n"
-        f"Ausgangsfrage:\n{question.strip()}\n\n"
-        f"Evidenz-Batch {batch.batch_index}/{batch_count}:\n{batch.context.strip()}\n\n"
-        "Zwischenzusammenfassung:"
+        "Summarize the following evidence chunks for a later answer.\n"
+        "Use only this evidence. Preserve key facts, chunk IDs, message IDs, time ranges, "
+        "contradictions, weak evidence, and uncertainty.\n"
+        "Be concise but complete enough to answer the original question from this summary alone.\n"
+        "Write the summary in English.\n\n"
+        f"Original question:\n{question.strip()}\n\n"
+        f"Evidence batch {batch.batch_index}/{batch_count}:\n{batch.context.strip()}\n\n"
+        "Intermediate summary:"
     )
 
 
@@ -495,26 +495,26 @@ def build_summary_reduce_prompt(
     batch_count: int,
 ) -> str:
     return (
-        "Verdichte die folgenden Zwischenzusammenfassungen für eine weitere Reduktionsrunde.\n"
-        "Nutze ausschließlich die bereitgestellten Zwischenzusammenfassungen. Erhalte Fakten, "
-        "Chunk-IDs, Message-IDs, Zeitbereiche, Widersprüche und Unsicherheiten.\n"
-        "Erfinde keine neuen Belege oder Schlussfolgerungen.\n\n"
-        f"Ausgangsfrage:\n{question.strip()}\n\n"
-        f"Reduktionsrunde {round_index}, Batch {summary_batch.batch_index}/{batch_count}:\n"
+        "Condense the following intermediate summaries for another reduction round.\n"
+        "Use only the provided summaries. Preserve facts, chunk IDs, message IDs, time ranges, "
+        "contradictions, and uncertainty.\n"
+        "Do not introduce new evidence or conclusions. Write in English.\n\n"
+        f"Original question:\n{question.strip()}\n\n"
+        f"Reduction round {round_index}, batch {summary_batch.batch_index}/{batch_count}:\n"
         f"{summary_batch.context.strip()}\n\n"
-        "Verdichtete Zwischenzusammenfassung:"
+        "Condensed intermediate summary:"
     )
 
 
 def build_reduce_answer_prompt(question: str, summary_context: str) -> str:
     return (
-        "Beantworte die folgende Frage ausschließlich anhand der Zwischenzusammenfassungen.\n"
-        "Nutze keine externen Informationen. Wenn die Zusammenfassungen nicht ausreichen, sage "
-        "das explizit.\n"
-        "Erwähne zentrale Belege knapp und widersprüchliche oder schwache Evidenz, falls vorhanden.\n\n"
-        f"Frage:\n{question.strip()}\n\n"
-        f"Zwischenzusammenfassungen:\n{summary_context.strip()}\n\n"
-        "Antwort:"
+        "Answer the following question using only the intermediate summaries.\n"
+        "Do not use external information. State clearly when the summaries are insufficient.\n"
+        "Briefly cite the key evidence and note contradictions or weak evidence when relevant.\n"
+        "Answer in English even when the question or source evidence is in another language.\n\n"
+        f"Question:\n{question.strip()}\n\n"
+        f"Intermediate summaries:\n{summary_context.strip()}\n\n"
+        "Answer:"
     )
 
 
@@ -525,7 +525,7 @@ def make_short_answer(answer: str, *, max_chars: int = 320) -> str:
     """
     normalized = " ".join((answer or "").split())
     if not normalized:
-        return "Keine Antwort erzeugt."
+        return "No answer was generated."
     if len(normalized) <= max_chars:
         return normalized
     return normalized[: max(0, max_chars - 1)].rstrip() + "…"
@@ -533,7 +533,7 @@ def make_short_answer(answer: str, *, max_chars: int = 320) -> str:
 
 def no_evidence_answer(question: str) -> str:
     return (
-        "Die Frage kann auf Basis der Retrieval-/Reranking-Ergebnisse nicht belastbar beantwortet werden, "
-        "weil keine Evidenz-Chunks als Antwortkontext markiert wurden.\n\n"
-        f"Frage: {question.strip()}"
+        "The question cannot be answered reliably from the retrieval and reranking results "
+        "because no evidence chunks were selected as answer context.\n\n"
+        f"Question: {question.strip()}"
     )

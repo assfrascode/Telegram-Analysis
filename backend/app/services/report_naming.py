@@ -38,7 +38,7 @@ def sanitize_report_source_name(value: str | None) -> str:
 
 def build_report_filename(source_name: str | None, report_date: date) -> str:
     source_component = sanitize_report_source_name(source_name)
-    return f"chat-analyse-{source_component}-{report_date.isoformat()}.zip"
+    return f"chat-analysis-{source_component}-{report_date.isoformat()}.zip"
 
 
 def build_download_all_filename(upload_filename: str | None) -> str:
@@ -92,6 +92,6 @@ def attachment_content_disposition(filename: str) -> str:
     )
     ascii_name = _ASCII_FILENAME_RE.sub("-", ascii_name).strip("-.")
     if not ascii_name.lower().endswith(".zip"):
-        ascii_name = "chat-analyse-report.zip"
+        ascii_name = "chat-analysis-report.zip"
     encoded_name = quote(filename, safe="")
     return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'

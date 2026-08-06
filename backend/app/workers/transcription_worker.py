@@ -284,8 +284,8 @@ class TranscriptionWorker(Worker):
                 status=StepStatus.completed,
                 transcript_text=(
                     f"[MOCK_{normalized_type.upper()}_TRANSCRIPT] "
-                    f"Neutrales Platzhaltertranskript für {row.original_path}. "
-                    "Es wurde kein OpenAI-Request ausgeführt."
+                    "Neutral placeholder transcript. "
+                    "No OpenAI request was made."
                 ),
                 raw_response={
                     "mock": True,

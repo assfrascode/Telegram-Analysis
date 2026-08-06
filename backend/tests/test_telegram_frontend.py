@@ -15,6 +15,10 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "Allow partial report" in create
     assert "allow_partial_telegram_sync" in create
     assert "Open Telegram Setup" in create
+    assert "analysis-overview" in create
+    assert "analysis-source-choice" in create
+    assert "Processing enhancements" in create
+    assert "Use a period of 30 days or less" in create
     assert "Scheduled reports" in panel
     assert "/telegram/report-schedules" in panel
     assert "allow_partial_telegram_sync" in panel
@@ -32,8 +36,11 @@ def test_react_frontend_exposes_external_collector_without_backend_credentials()
     assert "External collector" in panel
     assert "No backend account required" in panel
     assert "Backend Telegram account" in panel
-    assert "Show backend account setup" in panel
-    assert "Request collector sync" in panel
+    assert "Connect another account" in panel
+    assert "Connect Telegram" in panel
+    assert "Request sync" in panel
+    assert "Show archived" in panel
+    assert "info-tooltip" in panel
     assert "Collector synchronization requested" in panel
     assert 'chat.ingest_mode === "external_push"' in panel
     assert "showBackendSetup" in panel

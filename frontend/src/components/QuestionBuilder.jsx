@@ -64,7 +64,7 @@ export function QuestionBuilder({ questions, setQuestions, status, setStatus }) 
               aria-label={`Remove question ${index + 1}`}
               onClick={() => removeQuestion(index)}
             >
-              x
+              ×
             </button>
           </div>
         ))}

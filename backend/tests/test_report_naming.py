@@ -17,7 +17,7 @@ def test_report_filename_uses_readable_safe_group_slug() -> None:
         datetime(2026, 8, 1, tzinfo=timezone.utc).date(),
     )
 
-    assert filename == "chat-analyse-gruppe-blau-grösse-2026-08-01.zip"
+    assert filename == "chat-analysis-gruppe-blau-grösse-2026-08-01.zip"
     assert sanitize_report_source_name("///") == "telegram-chat"
     assert len(sanitize_report_source_name("界" * 100).encode("utf-8")) <= 120
 
@@ -38,12 +38,12 @@ def test_report_date_uses_telegram_period_end_in_utc() -> None:
 
 
 def test_content_disposition_has_ascii_fallback_and_unicode_filename() -> None:
-    filename = "chat-analyse-gruppe-grün-2026-08-01.zip"
+    filename = "chat-analysis-gruppe-grün-2026-08-01.zip"
 
     header = attachment_content_disposition(filename)
 
-    assert header.startswith('attachment; filename="chat-analyse-gruppe-grun-2026-08-01.zip"')
-    assert "filename*=UTF-8''chat-analyse-gruppe-gr%C3%BCn-2026-08-01.zip" in header
+    assert header.startswith('attachment; filename="chat-analysis-gruppe-grun-2026-08-01.zip"')
+    assert "filename*=UTF-8''chat-analysis-gruppe-gr%C3%BCn-2026-08-01.zip" in header
 
 
 def test_download_all_filename_uses_original_upload_stem() -> None:

@@ -24,9 +24,9 @@ class FakeGateway:
 
     async def answer_prompt(self, prompt: str, *, max_tokens: int = 4096) -> str:
         self.calls.append((prompt, max_tokens))
-        if "Evidenz-Batch" in prompt:
+        if "Evidence batch" in prompt:
             return f"mapped summary {len(self.calls)}"
-        if "Zwischenzusammenfassungen:" in prompt:
+        if "Intermediate summaries:" in prompt:
             return "final answer from mapped summaries"
         return "direct answer from raw evidence"
 
@@ -131,7 +131,7 @@ def test_answer_worker_uses_map_reduce_when_evidence_overflows(monkeypatch) -> N
     assert raw_response["summary_chars"] > 0
     assert raw_response["prompt_chars"] == len(gateway.calls[-1][0])
     assert len(gateway.calls) == raw_response["evidence_batch_count"] + 1
-    assert "Zwischenzusammenfassungen:" in gateway.calls[-1][0]
+    assert "Intermediate summaries:" in gateway.calls[-1][0]
     assert "RAW-A" not in gateway.calls[-1][0]
     event_types = [event["event_type"] for event in events]
     assert event_types[0] == "answer.map_reduce.started"

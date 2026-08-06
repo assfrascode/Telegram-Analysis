@@ -39,6 +39,7 @@ def _media(path: str, **overrides) -> TelegramMedia:
         "message_id": uuid.uuid4(),
         "media_type": "image",
         "original_path": path,
+        "minio_object_key": f"jobs/test/{path}",
         "size_bytes": 1234,
         "status": StepStatus.completed,
     }
@@ -77,18 +78,37 @@ def test_gallery_links_only_safe_available_export_media() -> None:
         message,
     )
     missing = build_report_gallery_item(
-        _media("videos/missing.mp4", missing_reason="not_included_in_export"),
+        _media(
+            "videos/missing.mp4",
+            minio_object_key=None,
+            missing_reason="not_included_in_export",
+        ),
         message,
     )
     unsafe = build_report_gallery_item(_media("../photos/escape.jpg"), message)
 
     assert available.relative_href == "../photos/photo 1.jpg"
     assert collected.relative_href is None
-    assert "direkt synchronisierte" in collected.link_unavailable_reason
+    assert collected.link_unavailable_reason == "Collector file not included"
     assert missing.relative_href is None
-    assert "nicht verfügbar" in missing.link_unavailable_reason
+    assert missing.link_unavailable_reason == "Not included in export"
     assert unsafe.relative_href is None
-    assert "nicht sicher" in unsafe.link_unavailable_reason
+    assert unsafe.link_unavailable_reason == "Invalid file reference"
+
+
+def test_gallery_keeps_original_link_when_only_media_analysis_failed() -> None:
+    message = _message(42, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    item = build_report_gallery_item(
+        _media(
+            "photos/still-available.jpg",
+            status=StepStatus.failed_permanent,
+            missing_reason="vision model request failed",
+        ),
+        message,
+    )
+
+    assert item.relative_href == "../photos/still-available.jpg"
+    assert item.link_unavailable_reason is None
 
 
 def test_gallery_items_sort_by_timestamp_message_id_and_path_with_unknowns_last() -> None:
@@ -135,7 +155,7 @@ def test_report_zip_contains_link_only_gallery_and_no_media_binaries() -> None:
         questions=[],
         media_gallery=media_gallery,
         stats=_stats(len(media_gallery)),
-        bluf="Keine beantworteten Fragen.",
+        bluf="No answered questions were available.",
     )
 
     with zipfile.ZipFile(BytesIO(report_bytes)) as archive:
@@ -149,12 +169,14 @@ def test_report_zip_contains_link_only_gallery_and_no_media_binaries() -> None:
         gallery_html = archive.read("report/media_gallery.html").decode("utf-8")
 
     assert 'href="media_gallery.html"' in index_html
-    assert "Mediengalerie <span>2</span>" in index_html
+    assert "Media" in index_html
+    assert '<span class="button-count">2</span>' in index_html
     assert 'href="../photos/&lt;script&gt;.jpg"' in gallery_html
     assert "&lt;Admin&gt;" in gallery_html
     assert "<script>.jpg" not in gallery_html
-    assert "Originaldatei öffnen" in gallery_html
-    assert "Für direkt synchronisierte Medien" in gallery_html
+    assert "Open original" in gallery_html
+    assert "Collector file not included" in gallery_html
+    assert "telegram/source/video.mp4" not in gallery_html
     assert "<img" not in gallery_html
     assert "<video" not in gallery_html
     assert "<audio" not in gallery_html
@@ -173,4 +195,4 @@ def test_gallery_template_renders_empty_state() -> None:
         media_gallery=[],
     )
 
-    assert "Keine Medienreferenzen" in html
+    assert "No attachments" in html

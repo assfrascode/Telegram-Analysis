@@ -17,8 +17,8 @@ from app.models import (
 )
 
 
-NO_ANSWER_BLUF = "Es wurden keine beantworteten Fragen gefunden."
-MISSING_SHORT_ANSWER = "Noch keine Kurzantwort gespeichert."
+NO_ANSWER_BLUF = "No answered questions were available for this report."
+MISSING_SHORT_ANSWER = "No summary has been saved yet."
 
 
 def isoformat_or_empty(value: datetime | None) -> str:
@@ -31,7 +31,7 @@ def isoformat_or_empty(value: datetime | None) -> str:
 
 def display_timestamp(value: datetime | None) -> str:
     if value is None:
-        return "Unbekannter Zeitpunkt"
+        return "Unknown time"
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -136,6 +136,38 @@ def relative_media_href_from_gallery(original_path: str | None) -> str | None:
     return f"../{cleaned}"
 
 
+def report_media_link(
+    media: TelegramMedia,
+    *,
+    from_subreport: bool,
+) -> tuple[str | None, str | None]:
+    """Return an offline-safe media link and a concise user-facing fallback reason.
+
+    Media processing state and file availability are deliberately kept separate:
+    an attachment can still be opened when its AI analysis failed. Collector media,
+    on the other hand, does not live beside an exported offline report.
+    """
+    if media.source_media_id is not None:
+        return None, "Collector file not included"
+
+    if not media.minio_object_key:
+        if media.missing_reason == "unsafe_path":
+            return None, "Invalid file reference"
+        if media.missing_reason == "not_included_in_export":
+            return None, "Not included in export"
+        return None, "File missing"
+
+    href_builder = (
+        relative_media_href_from_subreport
+        if from_subreport
+        else relative_media_href_from_gallery
+    )
+    relative_href = href_builder(media.original_path)
+    if relative_href is None:
+        return None, "Invalid file reference"
+    return relative_href, None
+
+
 def status_label(status: StepStatus | str | None) -> str:
     value = status.value if isinstance(status, StepStatus) else str(status or "unknown")
     return value.replace("_", " ")
@@ -153,6 +185,7 @@ class ReportMedia:
     media_type: str
     original_path: str
     relative_href: str | None
+    unavailable_reason: str | None
     status: str
     missing_reason: str | None
     size_bytes: int | None
@@ -268,9 +301,9 @@ def bluf_question_blocks(questions: list[ReportQuestion]) -> list[str]:
         blocks.append(
             "\n".join(
                 [
-                    f"Frage {question.index}:",
-                    f"Ausgangsfrage: {question.question.strip()}",
-                    f"Kurzantwort: {question.short_answer.strip()}",
+                    f"Question {question.index}:",
+                    f"Original question: {question.question.strip()}",
+                    f"Short answer: {question.short_answer.strip()}",
                 ]
             )
         )
@@ -281,14 +314,14 @@ def build_bluf_synthesis_prompt_from_blocks(blocks: list[str]) -> str:
     if not blocks:
         return ""
     lines = [
-        "Erstelle eine knappe deutsche BLUF für den Hauptreport.",
-        "Nutze ausschließlich die folgenden Fragen und Kurzantworten.",
-        "Fasse die wichtigsten übergreifenden Befunde zusammen, "
-        "statt jede Frage einzeln aufzulisten.",
-        "Nenne Unsicherheiten oder fehlende Evidenz, wenn sie in den Kurzantworten enthalten sind.",
-        "Schreibe 3 bis 6 kurze Sätze oder kompakte Absätze.",
+        "Write a concise English bottom-line summary for the main report.",
+        "Use only the questions and short answers provided below.",
+        "Synthesize the most important findings instead of listing every question.",
+        "Retain uncertainty or missing evidence when it appears in the short answers.",
+        "Write 3 to 6 short sentences or compact paragraphs.",
+        "Respond in English even when the source question is in another language.",
         "",
-        "Fragen und Kurzantworten:",
+        "Questions and short answers:",
     ]
     for block in blocks:
         lines.extend([block.strip(), ""])
@@ -297,19 +330,19 @@ def build_bluf_synthesis_prompt_from_blocks(blocks: list[str]) -> str:
 
 def build_bluf_reduce_prompt(summaries: list[str]) -> str:
     lines = [
-        "Erstelle eine finale knappe deutsche BLUF aus den folgenden Teil-BLUFs.",
-        "Nutze ausschließlich die Teil-BLUFs. Erfinde keine neuen Fakten.",
-        "Fasse die wichtigsten übergreifenden Befunde zusammen und bewahre Unsicherheiten.",
-        "Schreibe 3 bis 6 kurze Sätze oder kompakte Absätze.",
+        "Write a final concise English bottom-line summary from the partial summaries below.",
+        "Use only the partial summaries. Do not introduce new facts.",
+        "Synthesize the most important findings and retain uncertainty.",
+        "Write 3 to 6 short sentences or compact paragraphs.",
         "",
-        "Teil-BLUFs:",
+        "Partial summaries:",
     ]
     for index, summary in enumerate(summaries, start=1):
         lines.extend(
             [
-                f"[TEIL_BLUF index={index}]",
+                f"[PARTIAL_SUMMARY index={index}]",
                 summary.strip(),
-                "[/TEIL_BLUF]",
+                "[/PARTIAL_SUMMARY]",
                 "",
             ]
         )
@@ -334,15 +367,13 @@ def build_report_media(
     transcript_error = transcript.error_message if transcript else None
     if english_only and source_transcript_text and not translated_transcript_text:
         transcript_error = "English translation unavailable"
+    relative_href, unavailable_reason = report_media_link(media, from_subreport=True)
     return ReportMedia(
         id=str(media.id),
         media_type=media.media_type,
         original_path=media.original_path,
-        relative_href=(
-            None
-            if media.source_media_id is not None
-            else relative_media_href_from_subreport(media.original_path)
-        ),
+        relative_href=relative_href,
+        unavailable_reason=unavailable_reason,
         status=status_label(media.status),
         missing_reason=media.missing_reason,
         size_bytes=media.size_bytes,
@@ -430,19 +461,10 @@ def build_report_gallery_item(
     media: TelegramMedia,
     message: TelegramMessage | None,
 ) -> ReportGalleryItem:
-    relative_href = None
-    link_unavailable_reason = None
-    if media.source_media_id is not None:
-        link_unavailable_reason = "Für direkt synchronisierte Medien existiert kein lokaler Exportpfad."
-    elif media.missing_reason:
-        link_unavailable_reason = "Die Originaldatei ist im Telegram-Export nicht verfügbar."
-    else:
-        relative_href = relative_media_href_from_gallery(media.original_path)
-        if relative_href is None:
-            link_unavailable_reason = "Der gespeicherte Medienpfad ist nicht sicher verwendbar."
+    relative_href, link_unavailable_reason = report_media_link(media, from_subreport=False)
 
     normalized_path = str(media.original_path or "").replace("\\", "/").rstrip("/")
-    filename = normalized_path.rsplit("/", 1)[-1] or "Unbenanntes Medium"
+    filename = normalized_path.rsplit("/", 1)[-1] or "Unnamed attachment"
     return ReportGalleryItem(
         id=str(media.id),
         media_type=media.media_type,
@@ -454,7 +476,7 @@ def build_report_gallery_item(
         missing_reason=media.missing_reason,
         size_bytes=media.size_bytes,
         telegram_message_id=(message.telegram_message_id if message else None),
-        timestamp=(display_timestamp(message.timestamp) if message else "Unbekannter Zeitpunkt"),
+        timestamp=(display_timestamp(message.timestamp) if message else "Unknown time"),
         timestamp_iso=(isoformat_or_empty(message.timestamp) if message else ""),
         sender_id=(message.sender_id if message else None),
         sender_name=(message.sender_name if message else None),
@@ -503,7 +525,9 @@ def make_bluf(questions: list[ReportQuestion], *, max_items: int = 5) -> str:
 
     lines: list[str] = []
     for question in completed[:max_items]:
-        lines.append(f"Frage {question.index}: {question.short_answer}")
+        lines.append(f"Question {question.index}: {question.short_answer}")
     if len(completed) > max_items:
-        lines.append(f"Weitere {len(completed) - max_items} Antworten sind in den Subreports enthalten.")
+        lines.append(
+            f"Another {len(completed) - max_items} answers are available in the question reports."
+        )
     return "\n".join(lines)

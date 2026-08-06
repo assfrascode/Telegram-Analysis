@@ -121,7 +121,8 @@ def test_build_answer_prompt_contains_question_and_context():
 
     assert "Welche Narrative?" in prompt
     assert "Evidence" in prompt
-    assert "ausschließlich anhand der Evidenz" in prompt
+    assert "using only the evidence chunks" in prompt
+    assert "Answer in English" in prompt
 
 
 def test_map_and_reduce_prompts_contain_question_and_summary_context():
@@ -129,9 +130,9 @@ def test_map_and_reduce_prompts_contain_question_and_summary_context():
     map_prompt = build_evidence_map_prompt("Welche Narrative?", batch, batch_count=1)
 
     assert "Welche Narrative?" in map_prompt
-    assert "Evidenz-Batch 1/1" in map_prompt
+    assert "Evidence batch 1/1" in map_prompt
     assert "chunk_id=00000000-0000-0000-0000-000000000001" in map_prompt
-    assert "Zwischenzusammenfassung" in map_prompt
+    assert "Intermediate summary" in map_prompt
 
     summary_batch = build_summary_batches(["Zusammenfassung A", "Zusammenfassung B"], max_chars=10_000)[0]
     reduce_summary_prompt = build_summary_reduce_prompt(
@@ -142,9 +143,9 @@ def test_map_and_reduce_prompts_contain_question_and_summary_context():
     )
     final_prompt = build_reduce_answer_prompt("Welche Narrative?", summary_batch.context)
 
-    assert "Reduktionsrunde 1" in reduce_summary_prompt
+    assert "Reduction round 1" in reduce_summary_prompt
     assert "Zusammenfassung A" in reduce_summary_prompt
-    assert "Zwischenzusammenfassungen" in final_prompt
+    assert "Intermediate summaries" in final_prompt
     assert "Welche Narrative?" in final_prompt
 
 
@@ -157,7 +158,7 @@ def test_make_short_answer_truncates_deterministically():
 def test_no_evidence_answer_is_explicit():
     answer = no_evidence_answer("Frage?")
 
-    assert "keine Evidenz-Chunks" in answer
+    assert "no evidence chunks" in answer
     assert "Frage?" in answer
 
 

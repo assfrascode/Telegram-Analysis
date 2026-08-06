@@ -1,95 +1,90 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mediengalerie – Chat Analyse</title>
+  <title>Media · Chat Analysis</title>
   <link rel="stylesheet" href="assets/report.css">
 </head>
 <body>
   <main class="report-shell report-shell--gallery">
-    <nav class="top-nav">
-      <a href="index.html">← Übersicht</a>
-      <span>{{ media_gallery|length }} Medienreferenzen</span>
+    <nav class="top-nav" aria-label="Report navigation">
+      <a class="back-link" href="index.html"><span aria-hidden="true">←</span> Back to overview</a>
+      <span class="quiet-meta">{{ media_gallery|length }} attachment{% if media_gallery|length != 1 %}s{% endif %}</span>
     </nav>
 
-    <header class="dossier-header gallery-header">
-      <div class="dossier-kicker">
-        <span class="classification">Media Inventory</span>
-        <span class="status-pill">Externe Referenzen</span>
-      </div>
-      <div class="dossier-title-row">
-        <div>
-          <p class="eyebrow">Chat Analyse</p>
-          <h1>Mediengalerie</h1>
-          <p class="lead">Übersicht aller Medienreferenzen des Chats. Die Originaldateien sind nicht Bestandteil dieses Reports.</p>
+    <header class="report-hero report-hero--gallery">
+      <div class="report-hero__main">
+        <div class="report-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M4.75 6.75A2 2 0 0 1 6.75 4.75h10.5a2 2 0 0 1 2 2v10.5a2 2 0 0 1-2 2H6.75a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6"/>
+            <path d="m7.5 16 3.2-3.4 2.15 2.15 1.65-1.65 2.25 2.9M15.75 9.1h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
         </div>
-        <aside class="case-file case-file--compact">
-          <dl>
-            <div><dt>Medien</dt><dd>{{ media_gallery|length }}</dd></div>
-            {% if job.source_name %}<div><dt>Chat</dt><dd>{{ job.source_name }}</dd></div>{% endif %}
-            <div><dt>Generiert</dt><dd>{{ generated_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd></div>
-          </dl>
-        </aside>
+        <div class="report-hero__copy">
+          <div class="hero-label-row"><span class="status-pill"><span class="status-dot"></span>Reference library</span></div>
+          <p class="eyebrow">Chat analysis{% if job.source_name %} · {{ job.source_name }}{% endif %}</p>
+          <h1>Media</h1>
+          <p class="lead">A compact list of attachments referenced by this report.</p>
+        </div>
       </div>
+      <time class="generated-at" datetime="{{ generated_at.isoformat() }}">Generated {{ generated_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
     </header>
 
-    <section class="panel">
-      <div class="section-label">Media Index</div>
-      <div class="section-heading-row">
+    <section class="report-card">
+      <div class="section-heading section-heading--with-copy">
         <div>
-          <h2>Originalmedien</h2>
-          <p class="muted">Verfügbare Links zeigen relativ aus dem Report-Ordner auf die Dateien des ursprünglichen Telegram-Exports.</p>
+          <p class="section-kicker">Attachments</p>
+          <h2>Original files</h2>
+          <p>Files are linked, not embedded. Missing files show a short reason.</p>
         </div>
+        <span class="count-pill">{{ media_gallery|length }} total</span>
       </div>
 
       {% if media_gallery %}
       <div class="media-gallery-grid">
         {% for media in media_gallery %}
         <article class="media-gallery-card{% if not media.relative_href %} media-gallery-card--unavailable{% endif %}">
-          <div class="media-card__top">
-            <span class="media-type">{{ media.media_type|upper }}</span>
-            {% if media.missing_reason or not media.relative_href %}
-            <span class="badge badge--warning">{{ media.status }}</span>
+          <div class="media-gallery-card__top">
+            <span class="attachment-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m8.1 15.4 6.7-6.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            {% if media.relative_href %}
+            <span class="availability-tag availability-tag--ready"><span class="status-dot"></span>Available</span>
             {% else %}
-            <span class="badge">{{ media.status }}</span>
+            <span class="availability-tag availability-tag--warning">Unavailable</span>
             {% endif %}
           </div>
 
+          <span class="media-type">{{ media.media_type|replace("_", " ")|upper }}</span>
           <h3>{{ media.filename }}</h3>
-          <div class="media-path"><code>{{ media.original_path }}</code></div>
-
-          <dl class="media-gallery-meta">
-            <div><dt>Zeitpunkt</dt><dd>{% if media.timestamp_iso %}<time datetime="{{ media.timestamp_iso }}">{{ media.timestamp }}</time>{% else %}{{ media.timestamp }}{% endif %}</dd></div>
-            <div><dt>Absender</dt><dd>{{ media.sender_name or media.sender_id or "Unbekannt" }}</dd></div>
-            <div><dt>Nachricht</dt><dd>{% if media.telegram_message_id is not none %}msgID {{ media.telegram_message_id }}{% else %}–{% endif %}</dd></div>
-            <div><dt>Größe</dt><dd>{% if media.size_bytes is not none %}{{ media.size_bytes }} Bytes{% else %}–{% endif %}</dd></div>
-          </dl>
+          <div class="media-byline">
+            <span>{{ media.sender_name or "Unknown sender" }}</span>
+            <span aria-hidden="true">·</span>
+            {% if media.timestamp_iso %}<time datetime="{{ media.timestamp_iso }}">{{ media.timestamp }}</time>{% else %}<span>{{ media.timestamp }}</span>{% endif %}
+          </div>
 
           {% if media.relative_href %}
-          <a class="media-open media-open--gallery" href="{{ media.relative_href }}">Originaldatei öffnen</a>
+          <a class="button button--secondary media-open" href="{{ media.relative_href }}">Open original <span aria-hidden="true">↗</span></a>
           {% else %}
-          <p class="media-unavailable">{{ media.link_unavailable_reason }}</p>
-          {% endif %}
-
-          {% if media.missing_reason %}
-          <p class="warning">Fehlend/Problem: {{ media.missing_reason }}</p>
+          <div class="media-reason"><span>Reason</span><strong>{{ media.link_unavailable_reason or "File unavailable" }}</strong></div>
           {% endif %}
         </article>
         {% endfor %}
       </div>
       {% else %}
-      <div class="gallery-empty-state">
-        <h3>Keine Medienreferenzen</h3>
-        <p>Für diesen Chat wurden keine Medien erfasst.</p>
+      <div class="empty-state">
+        <span class="empty-state__icon" aria-hidden="true">◇</span>
+        <h3>No attachments</h3>
+        <p>No media references were captured for this chat.</p>
       </div>
       {% endif %}
     </section>
 
-    <section class="panel placement-note-panel">
-      <div class="section-label">Medienlinks</div>
-      <p>Im Gesamt-Download liegt <code>report/</code> bereits im ursprünglichen Telegram-Export. Beim separaten Report-Download muss der Ordner dort abgelegt werden, damit relative Links wie <code>../photos/example.jpg</code> funktionieren.</p>
-    </section>
+    <footer class="report-footer">
+      <a href="index.html">Back to report overview</a>
+      <p>Attachment links work when this report stays with its original Telegram export.</p>
+    </footer>
   </main>
 </body>
 </html>

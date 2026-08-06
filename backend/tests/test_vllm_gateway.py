@@ -64,10 +64,10 @@ def test_extract_chat_completion_text_from_segmented_content() -> None:
 def test_synthesize_bluf_returns_mock_response(monkeypatch) -> None:
     monkeypatch.setattr(settings, "llm_mock_enabled", True)
 
-    bluf = asyncio.run(VLLMGateway().synthesize_bluf("Frage 1: Kurzantwort"))
+    bluf = asyncio.run(VLLMGateway().synthesize_bluf("Question 1: Short answer"))
 
     assert bluf.startswith("[MOCK_BLUF]")
-    assert "Frage 1" in bluf
+    assert "Question 1" in bluf
 
 
 def test_answer_prompt_forwards_max_tokens(monkeypatch) -> None:
@@ -114,4 +114,4 @@ def test_synthesize_bluf_rejects_empty_model_response(monkeypatch) -> None:
     monkeypatch.setattr(VLLMGateway, "chat_completion", empty_chat_completion)
 
     with pytest.raises(ValueError, match="empty text"):
-        asyncio.run(VLLMGateway().synthesize_bluf("Frage 1: Kurzantwort"))
+        asyncio.run(VLLMGateway().synthesize_bluf("Question 1: Short answer"))

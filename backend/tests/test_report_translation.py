@@ -89,9 +89,9 @@ def test_report_message_and_subreport_render_saved_translation() -> None:
     )
 
     assert "translation-panel" in html
-    assert "EN translation" in html
+    assert "English translation" in html
     assert "Good morning" in html
-    assert "detected de" in html
+    assert "detected de" not in html
 
 
 def test_report_message_and_subreport_render_media_transcript() -> None:
@@ -112,6 +112,7 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
         message_id=message.id,
         media_type="audio",
         original_path="files/audio.mp3",
+        minio_object_key="jobs/test/files/audio.mp3",
         status=StepStatus.completed,
     )
     transcript = MediaTranscript(
@@ -167,9 +168,11 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
         stats={},
     )
 
-    assert "AUDIO_TRANSCRIPT" in html
-    assert "Transkribierter Inhalt." in html
-    assert "whisper-1" in html
+    assert "Audio attachment" in html
+    assert 'href="../../files/audio.mp3"' in html
+    assert "Transkribierter Inhalt." not in html
+    assert "whisper-1" not in html
+    assert "AUDIO_TRANSCRIPT" not in html
 
 
 def test_report_uses_only_english_evidence_when_requested() -> None:
@@ -198,6 +201,7 @@ def test_report_uses_only_english_evidence_when_requested() -> None:
         message_id=message.id,
         media_type="audio",
         original_path="files/audio.mp3",
+        minio_object_key="jobs/test/files/audio.mp3",
         status=StepStatus.completed,
     )
     transcript = MediaTranscript(

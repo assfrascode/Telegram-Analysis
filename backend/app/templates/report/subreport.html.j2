@@ -1,206 +1,179 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Frage {{ question.index }} – Chat Analyse</title>
+  <title>Question {{ question.index }} · Chat Analysis</title>
   <link rel="stylesheet" href="../assets/report.css">
   <script defer src="../assets/report.js"></script>
 </head>
 <body>
   <main class="report-shell report-shell--subreport">
-    <nav class="top-nav">
-      <a href="../index.html">← Übersicht</a>
-      <span>Frage {{ question.index }}</span>
+    <nav class="top-nav" aria-label="Report navigation">
+      <a class="back-link" href="../index.html">
+        <span aria-hidden="true">←</span> Back to overview
+      </a>
+      <span class="quiet-meta">Question {{ "%02d"|format(question.index) }}</span>
     </nav>
 
-    <header class="dossier-header subreport-header">
-      <div class="dossier-kicker">
-        <span class="classification">Question Dossier</span>
-        <span class="status-pill">{{ question.status }}</span>
-      </div>
-      <div class="dossier-title-row">
-        <div>
-          <p class="eyebrow">Subreport</p>
-          <h1>Frage {{ question.index }}</h1>
-          <p class="lead">{{ question.question }}</p>
+    <header class="report-hero report-hero--question">
+      <div class="report-hero__main">
+        <div class="report-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M9.85 9.5a2.3 2.3 0 1 1 3.15 2.14c-.7.3-1 .75-1 1.36v.25M12 16.6h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
         </div>
-        <aside class="case-file case-file--compact">
-          <dl>
-            <div><dt>Evidenzabschnitte</dt><dd>{{ question.evidence|length }}</dd></div>
-            <div><dt>Generiert</dt><dd>{{ generated_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd></div>
-          </dl>
-        </aside>
+        <div class="report-hero__copy">
+          <div class="hero-label-row">
+            <span class="status-pill{% if question.status == "completed" %} status-pill--ready{% else %} status-pill--warning{% endif %}"><span class="status-dot"></span>{{ question.status|replace("_", " ")|title }}</span>
+            <span class="evidence-pill">{{ question.evidence|length }} evidence section{% if question.evidence|length != 1 %}s{% endif %}</span>
+          </div>
+          <p class="eyebrow">Question {{ "%02d"|format(question.index) }}</p>
+          <h1>{{ question.question }}</h1>
+          <p class="lead">Answer and supporting source messages.</p>
+        </div>
       </div>
+      <time class="generated-at" datetime="{{ generated_at.isoformat() }}">Generated {{ generated_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
     </header>
 
-    <section class="answer-panel">
-      <div class="section-label">Analytical Answer</div>
-      <h2>Antwort</h2>
-      <article class="answer-body">
-        {{ question.answer | replace("\n", "<br>") | safe }}
-      </article>
+    <section class="report-card report-card--highlight answer-card">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Analysis</p>
+          <h2>Answer</h2>
+        </div>
+        <span class="section-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M7.5 7.5h9M7.5 11.5h9M7.5 15.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 3.75h14v16.5H5z" stroke="currentColor" stroke-width="1.6"/></svg>
+        </span>
+      </div>
+      <article class="answer-body">{{ question.answer }}</article>
     </section>
 
-    <section class="panel">
-      <div class="section-label">Evidence</div>
-      <h2>Verwendete Originalnachrichten</h2>
+    <section class="report-card evidence-section">
+      <div class="section-heading section-heading--with-copy">
+        <div>
+          <p class="section-kicker">Evidence</p>
+          <h2>Supporting messages</h2>
+          <p>Original chat messages selected for this answer.</p>
+        </div>
+        <span class="count-pill">{{ question.evidence|length }} section{% if question.evidence|length != 1 %}s{% endif %}</span>
+      </div>
+
       {% if question.evidence %}
-        <div class="evidence-stack">
+      <div class="evidence-stack">
         {% for item in question.evidence %}
         <article class="evidence" id="chunk-{{ item.chunk_index }}">
           <header class="evidence-header">
             <div>
-              <span class="chunk-label">Evidenzabschnitt {{ loop.index }}</span>
-              <h3>{{ item.start_timestamp }} – {{ item.end_timestamp }}</h3>
+              <span class="evidence-index">Evidence {{ "%02d"|format(loop.index) }}</span>
+              <h3>{{ item.start_timestamp }} <span aria-hidden="true">→</span> {{ item.end_timestamp }}</h3>
             </div>
+            <span class="message-count">{{ item.messages|length }} message{% if item.messages|length != 1 %}s{% endif %}</span>
           </header>
 
-          <details class="chunk-details">
-            <summary>Roh-Chunk anzeigen</summary>
-            <pre class="chunk-text">{{ item.text }}</pre>
-          </details>
-
-          <div class="message-thread" aria-label="Originalnachrichten">
+          <div class="message-thread" aria-label="Original messages">
             {% if item.messages %}
               {% for msg in item.messages %}
               <article class="telegram-message" id="msg-{{ msg.telegram_message_id }}">
-                <div class="telegram-avatar" aria-hidden="true">{{ (msg.sender_name or msg.sender_id or "?")[:1] | upper }}</div>
+                <div class="telegram-avatar" aria-hidden="true">{{ (msg.sender_name or "?")[:1] | upper }}</div>
                 <div class="telegram-bubble">
                   <header class="telegram-header">
-                    <div class="telegram-sender-block">
-                      <span class="sender-name">{{ msg.sender_name or "unknown" }}</span>
-                      {% if msg.sender_id %}<span class="sender-id">{{ msg.sender_id }}</span>{% endif %}
-                    </div>
-                    <a class="message-anchor" href="#msg-{{ msg.telegram_message_id }}">msgID {{ msg.telegram_message_id }}</a>
+                    <span class="sender-name">{{ msg.sender_name or "Unknown sender" }}</span>
+                    <a class="message-anchor" href="#msg-{{ msg.telegram_message_id }}" title="Link to this message" aria-label="Link to this message">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9.5 14.5 5-5M8.2 17.8l-2 .2a3 3 0 0 1-.2-6l3-.3M15.8 6.2l2-.2a3 3 0 0 1 .2 6l-3 .3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    </a>
                   </header>
 
                   {% if msg.reply_to_message_id or msg.forwarded_from %}
-                  <div class="telegram-context">
-                    {% if msg.reply_to_message_id %}<div><strong>Reply-To</strong> {{ msg.reply_to_message_id }}</div>{% endif %}
-                    {% if msg.forwarded_from %}<div><strong>Forwarded</strong> {{ msg.forwarded_from }}</div>{% endif %}
+                  <div class="message-context">
+                    {% if msg.reply_to_message_id %}<span>Reply</span>{% endif %}
+                    {% if msg.forwarded_from %}<span>Forwarded message</span>{% endif %}
                   </div>
                   {% endif %}
 
+                  {% if msg.text == "[NO_TEXT]" %}
+                  <p class="empty-message">This message has no text.</p>
+                  {% elif msg.text == "[ENGLISH_TRANSLATION_UNAVAILABLE]" %}
+                  <p class="empty-message">English translation unavailable.</p>
+                  {% else %}
                   <pre class="telegram-text">{{ msg.text }}</pre>
+                  {% endif %}
 
                   {% if msg.translation_applied %}
-                  <div class="translation-panel">
-                    <span>
-                      EN translation
-                      {% if msg.translation_source_language %}
-                      · detected {{ msg.translation_source_language }}
-                      {% endif %}
-                    </span>
-                  </div>
+                  <span class="translation-badge">Translated to English</span>
                   {% elif msg.translation_text %}
                   <div class="translation-panel">
-                    <span>
-                      {% if msg.translation_target_language %}
-                      {{ msg.translation_target_language|upper }} translation
-                      {% else %}
-                      Translation
-                      {% endif %}
-                      {% if msg.translation_source_language %}
-                      · detected {{ msg.translation_source_language }}
-                      {% endif %}
-                    </span>
+                    <span>English translation</span>
                     <pre>{{ msg.translation_text }}</pre>
                   </div>
                   {% endif %}
 
                   {% if msg.media %}
-                  <div class="telegram-media-stack">
+                  <div class="attachment-stack">
                     {% for media in msg.media %}
-                    <article class="media-card media-card--{{ media.status|replace(' ', '-') }}">
-                      <div class="media-card__top">
-                        <span class="media-type">{{ media.media_type|upper }}</span>
-                        {% if media.missing_reason or media.status in ["failed permanent", "failed retryable", "failed", "missing"] %}
-                        <span class="badge badge--warning">{{ media.status }}</span>
-                        {% else %}
-                        <span class="badge">{{ media.status }}</span>
-                        {% endif %}
-                      </div>
-                      <div class="media-path"><code>{{ media.original_path }}</code></div>
                       {% if media.relative_href %}
-                      <a class="media-open" href="{{ media.relative_href }}">Medium relativ öffnen</a>
-                      {% endif %}
-
-                      {% if media.description %}
-                      <div class="media-description">
-                        <span>{{ media.media_type|upper }}_DESCRIPTION</span>
-                        <p>{{ media.description }}</p>
+                      <a class="attachment-row" href="{{ media.relative_href }}">
+                        <span class="attachment-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m8.1 15.4 6.7-6.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        </span>
+                        <span class="attachment-copy"><strong>{{ media.media_type|replace("_", " ")|title }} attachment</strong><small>Original file</small></span>
+                        <span class="attachment-action">Open <span aria-hidden="true">↗</span></span>
+                      </a>
+                      {% else %}
+                      <div class="attachment-row attachment-row--unavailable">
+                        <span class="attachment-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        </span>
+                        <span class="attachment-copy"><strong>{{ media.media_type|replace("_", " ")|title }} attachment</strong><small>Original unavailable</small></span>
+                        <span class="reason-tag">{{ media.unavailable_reason or "File unavailable" }}</span>
                       </div>
-                      {% elif media.missing_reason or media.status in ["failed permanent", "failed retryable", "failed", "missing"] %}
-                      <p class="warning">Keine Medienbeschreibung verfügbar.</p>
                       {% endif %}
-
-                      {% if media.missing_reason %}
-                      <p class="warning">Fehlend/Problem: {{ media.missing_reason }}</p>
-                      {% endif %}
-
-                      {% if media.transcript_text %}
-                      <div class="media-description">
-                        <span>{{ "VIDEO_TRANSCRIPT" if media.media_type == "video" else "AUDIO_TRANSCRIPT" }}</span>
-                        <p>{{ media.transcript_text }}</p>
-                        {% if media.transcript_translation_provider %}
-                        <small>
-                          EN translation
-                          {% if media.transcript_translation_source_language %}
-                          · detected {{ media.transcript_translation_source_language }}
-                          {% endif %}
-                        </small>
-                        {% endif %}
-                      </div>
-                      {% elif media.transcript_error %}
-                      <p class="warning">Transkript nicht verfügbar: {{ media.transcript_error }}</p>
-                      {% endif %}
-
-                      <dl class="media-meta">
-                        {% if media.size_bytes %}<div><dt>Größe</dt><dd>{{ media.size_bytes }} Bytes</dd></div>{% endif %}
-                        {% if media.analysis_model %}<div><dt>Modell</dt><dd>{{ media.analysis_model }}</dd></div>{% endif %}
-                        {% if media.analysis_prompt_version %}<div><dt>Prompt</dt><dd>{{ media.analysis_prompt_version }}</dd></div>{% endif %}
-                        {% if media.transcript_model %}<div><dt>Transkript-Modell</dt><dd>{{ media.transcript_model }}</dd></div>{% endif %}
-                        {% if media.transcript_status %}<div><dt>Transkript-Status</dt><dd>{{ media.transcript_status }}</dd></div>{% endif %}
-                        {% if media.sha256 %}<div><dt>SHA256</dt><dd><code>{{ media.sha256 }}</code></dd></div>{% endif %}
-                      </dl>
-                    </article>
                     {% endfor %}
                   </div>
                   {% endif %}
 
                   {% if msg.reaction_chips %}
-                  <div class="reaction-bar" aria-label="Reaktionen">
-                    {% for reaction in msg.reaction_chips %}
-                    <span class="reaction-chip">{{ reaction }}</span>
-                    {% endfor %}
+                  <div class="reaction-bar" aria-label="Reactions">
+                    {% for reaction in msg.reaction_chips %}<span class="reaction-chip">{{ reaction }}</span>{% endfor %}
                   </div>
                   {% endif %}
 
                   <footer class="telegram-footer">
                     <time datetime="{{ msg.timestamp_iso }}">{{ msg.timestamp }}</time>
-                    {% if msg.message_type %}<span>{{ msg.message_type }}</span>{% endif %}
-                    {% if msg.edited_timestamp %}<span>edited {{ msg.edited_timestamp }}</span>{% endif %}
+                    {% if msg.edited_timestamp %}<span>Edited</span>{% endif %}
                   </footer>
                 </div>
               </article>
               {% endfor %}
             {% else %}
-              <p class="warning">Dieser Evidenzabschnitt enthält keine hydratisierbaren Originalnachrichten. Der Roh-Chunk bleibt oben als Fallback verfügbar.</p>
+            <div class="inline-notice inline-notice--warning">
+              <strong>Original messages unavailable</strong>
+              <span>The technical evidence text is still available below.</span>
+            </div>
             {% endif %}
           </div>
+
+          <details class="source-details">
+            <summary>Technical source text</summary>
+            <pre class="chunk-text">{{ item.text }}</pre>
+          </details>
         </article>
         {% endfor %}
-        </div>
+      </div>
       {% else %}
-        <p class="warning">Für diese Frage wurden keine Evidenzabschnitte als Antwortkontext markiert.</p>
+      <div class="empty-state empty-state--warning">
+        <span class="empty-state__icon" aria-hidden="true">!</span>
+        <h3>No supporting evidence selected</h3>
+        <p>No evidence sections were marked as answer context for this question.</p>
+      </div>
       {% endif %}
     </section>
 
-    <section class="panel placement-note-panel">
-      <div class="section-label">Medienlinks</div>
-      <p>Dieser Report enthält keine Originalmedien. Medienlinks zeigen relativ aus diesem Subreport heraus auf den Telegram-Export-Ordner, z. B. <code>../../photos/example.jpg</code>.</p>
-    </section>
+    <footer class="report-footer">
+      <a href="../index.html">Back to report overview</a>
+      <p>Attachment links work when this report stays with its original Telegram export.</p>
+    </footer>
   </main>
 </body>
 </html>

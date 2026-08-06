@@ -59,10 +59,11 @@ def test_bluf_prompt_uses_only_completed_real_question_summaries() -> None:
     prompt = build_bluf_synthesis_prompt(questions)
 
     assert len(bluf_source_questions(questions)) == 2
-    assert "Nutze ausschließlich" in prompt
-    assert "Ausgangsfrage: Welche Narrative dominieren?" in prompt
-    assert "Kurzantwort: Narrativ A dominiert, Evidenz ist stark." in prompt
-    assert "Ausgangsfrage: Welche Unsicherheiten gibt es?" in prompt
+    assert "Use only the questions" in prompt
+    assert "Original question: Welche Narrative dominieren?" in prompt
+    assert "Short answer: Narrativ A dominiert, Evidenz ist stark." in prompt
+    assert "Original question: Welche Unsicherheiten gibt es?" in prompt
+    assert "Respond in English" in prompt
     assert MISSING_SHORT_ANSWER not in prompt
 
 
@@ -114,11 +115,11 @@ def test_report_index_renders_synthesized_bluf_instead_of_question_list() -> Non
         questions=questions,
         media_gallery=[],
         stats=stats,
-        bluf="Synthetisierte Gesamt-BLUF.",
+        bluf="Synthesized overall summary.",
     )
 
     with zipfile.ZipFile(BytesIO(report_bytes)) as archive:
         index_html = archive.read("report/index.html").decode("utf-8")
 
-    assert "Synthetisierte Gesamt-BLUF." in index_html
-    assert "Frage 1: Alter Kurzbefund" not in index_html
+    assert "Synthesized overall summary." in index_html
+    assert "Question 1: Alter Kurzbefund" not in index_html
