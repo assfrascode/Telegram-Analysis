@@ -108,6 +108,11 @@ Completed syncs continue from the highest stored Telegram message ID instead of
 rescanning a time overlap. Long syncs use progress-based inactivity limits:
 `TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS` both default to 900 seconds.
+External collectors have 60 seconds to respond to a newly requested report sync,
+configured with `TELEGRAM_EXTERNAL_INITIAL_RESPONSE_TIMEOUT_SECONDS`. Once the
+collector responds, the longer progress-based timeout applies. Reports with
+`allow_partial_telegram_sync` enabled skip this wait and immediately use stored
+messages while collection catches up in the background.
 The former `TELEGRAM_SYNC_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS` names remain accepted as deprecated
 fallbacks.

@@ -109,9 +109,16 @@ def test_completed_external_run_advances_durable_cursor() -> None:
         updated_at=now,
     )
 
+    class Scalars:
+        def all(self):
+            return []
+
     class Result:
         def scalar_one_or_none(self):
             return 105
+
+        def scalars(self):
+            return Scalars()
 
     class Session:
         async def get(self, model, value):
@@ -141,6 +148,92 @@ def test_completed_external_run_advances_durable_cursor() -> None:
 
     assert chat.last_collected_message_id == 105
     assert run.status == TelegramSyncStatus.completed
+
+
+def test_completed_external_run_immediately_requeues_chat_for_another_waiting_report(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    completed_interval_end = now - timedelta(days=2)
+    run = SimpleNamespace(
+        id=run_id,
+        owner_user_id=owner_id,
+        chat_id=chat_id,
+        job_id=uuid.uuid4(),
+        status=TelegramSyncStatus.running,
+        requested_start=now - timedelta(days=9),
+        requested_end=completed_interval_end,
+        messages_seen=0,
+        attachments_seen=0,
+        attachments_failed=0,
+        error_message=None,
+        completed_at=None,
+    )
+    chat = SimpleNamespace(
+        id=chat_id,
+        owner_user_id=owner_id,
+        ingest_mode=TelegramIngestMode.external_push,
+        lease_owner=f"external:{run_id}",
+        lease_expires_at=now + timedelta(minutes=5),
+        sync_interval_minutes=60,
+        last_collected_message_id=None,
+        coverage_start=now - timedelta(days=9),
+        coverage_end=now - timedelta(days=3),
+        status=TelegramChatStatus.syncing,
+        updated_at=now,
+    )
+    waiting_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.running,
+        report_start_at=now - timedelta(days=7),
+        report_end_at=now - timedelta(days=1),
+        options={},
+    )
+
+    class Scalars:
+        def all(self):
+            return [waiting_job]
+
+    class Result:
+        def __init__(self, scalar=None):
+            self.scalar = scalar
+
+        def scalar_one_or_none(self):
+            return self.scalar
+
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def get(self, model, value):
+            if model is TelegramSyncRun:
+                return run
+            if model is TelegramChat:
+                return chat
+            return None
+
+        async def execute(self, query):
+            return Result()
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+
+    asyncio.run(
+        complete_external_run(
+            Session(),
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+            run_id=run_id,
+            payload=TelegramIngestRunCompleteRequest(status="completed"),
+        )
+    )
+
+    assert chat.coverage_end == completed_interval_end
+    assert chat.next_sync_at == now
 
 
 def test_external_chat_response_exposes_ingest_mode_without_connection() -> None:
@@ -419,3 +512,44 @@ def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch
     assert run.requested_start == chat.coverage_end
     assert run.requested_end == now
     assert after_message_id == 500
+
+
+def test_external_claim_prioritizes_active_report_over_older_partial_backfill() -> None:
+    now = datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc)
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        coverage_start=now - timedelta(days=30),
+        coverage_end=now - timedelta(days=6),
+    )
+    completed_partial_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.completed,
+        report_start_at=now - timedelta(days=14),
+        report_end_at=now - timedelta(days=5),
+        options={"allow_partial_telegram_sync": True},
+    )
+    active_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.running,
+        report_start_at=now - timedelta(days=7),
+        report_end_at=now - timedelta(days=2),
+        options={},
+    )
+
+    class Scalars:
+        def all(self):
+            # This is the creation-time order returned by the database.
+            return [completed_partial_job, active_job]
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def execute(self, query):
+            return Result()
+
+    selected = asyncio.run(telegram_ingest.report_job_needing_coverage(Session(), chat))
+
+    assert selected is active_job

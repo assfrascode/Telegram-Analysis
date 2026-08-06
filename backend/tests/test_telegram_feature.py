@@ -43,6 +43,7 @@ def test_sync_inactivity_settings_accept_new_names_and_legacy_aliases() -> None:
         secret_key="test",
         telegram_sync_inactivity_timeout_seconds=900,
         telegram_external_inactivity_timeout_seconds=900,
+        telegram_external_initial_response_timeout_seconds=60,
     )
     legacy = Settings(
         _env_file=None,
@@ -53,6 +54,7 @@ def test_sync_inactivity_settings_accept_new_names_and_legacy_aliases() -> None:
 
     assert current.telegram_sync_inactivity_timeout_seconds == 900
     assert current.telegram_external_inactivity_timeout_seconds == 900
+    assert current.telegram_external_initial_response_timeout_seconds == 60
     assert legacy.telegram_sync_inactivity_timeout_seconds == 1200
     assert legacy.telegram_external_inactivity_timeout_seconds == 300
 

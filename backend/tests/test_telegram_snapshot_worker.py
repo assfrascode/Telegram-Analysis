@@ -141,7 +141,7 @@ def test_external_wait_can_exceed_twenty_minutes_with_fresh_activity(monkeypatch
     assert result is None
 
 
-def test_external_wait_fails_after_configured_inactivity(monkeypatch) -> None:
+def test_external_wait_fails_after_initial_response_timeout(monkeypatch) -> None:
     start = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
     job = SimpleNamespace(
         id=uuid.uuid4(),
@@ -171,6 +171,66 @@ def test_external_wait_fails_after_configured_inactivity(monkeypatch) -> None:
 
         async def refresh(self, value):
             return None
+
+    async def advance_time(seconds):
+        Clock.current += timedelta(
+            seconds=(
+                telegram_snapshot_worker.settings.telegram_external_initial_response_timeout_seconds
+            )
+        )
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        return None
+
+    async def checkpoint_cancelled(session, job, **kwargs):
+        return None
+
+    worker.emit_event = emit_event
+    worker.checkpoint_cancelled = checkpoint_cancelled
+    monkeypatch.setattr(telegram_snapshot_worker, "datetime", Clock)
+    monkeypatch.setattr(asyncio, "sleep", advance_time)
+
+    with pytest.raises(telegram_snapshot_worker.TelegramSyncError, match="did not respond within 60"):
+        asyncio.run(worker._wait_for_external_coverage(Session(), job, chat))
+
+
+def test_external_wait_uses_progress_timeout_after_collector_responds(monkeypatch) -> None:
+    start = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        report_start_at=start - timedelta(hours=2),
+        report_end_at=start,
+    )
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        coverage_start=None,
+        coverage_end=None,
+        next_sync_at=start,
+        updated_at=start,
+        last_error=None,
+        ingest_mode=TelegramIngestMode.external_push,
+    )
+
+    class Clock:
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    class Session:
+        refresh_count = 0
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, value):
+            self.refresh_count += 1
+            if self.refresh_count == 1:
+                Clock.current += timedelta(seconds=1)
+                value.updated_at = Clock.current
 
     async def advance_time(seconds):
         Clock.current += timedelta(

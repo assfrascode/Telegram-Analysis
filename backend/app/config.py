@@ -37,6 +37,7 @@ class Settings(BaseSettings):
             "TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS",
         ),
     )
+    telegram_external_initial_response_timeout_seconds: int = 60
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
 

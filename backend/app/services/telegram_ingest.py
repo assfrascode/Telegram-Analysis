@@ -309,9 +309,19 @@ async def report_job_needing_coverage(
         .scalars()
         .all()
     )
-    for job in jobs:
-        if job_still_needs_report_coverage(job, chat):
-            return job
+    # Reports that are actively waiting for their immutable snapshot must not be
+    # starved by older, already-completed partial reports that only need a
+    # background coverage backfill. Preserve FIFO order within each priority.
+    for statuses in (
+        {JobStatus.queued, JobStatus.running},
+        {JobStatus.completed},
+    ):
+        for job in jobs:
+            if (
+                getattr(job, "status", JobStatus.queued) in statuses
+                and job_still_needs_report_coverage(job, chat)
+            ):
+                return job
     return None
 
 
@@ -574,10 +584,10 @@ async def complete_external_run(
                 getattr(chat, "last_collected_message_id", None) or highest_message_id,
                 highest_message_id,
             )
-        report_job = await session.get(Job, run.job_id) if run.job_id else None
+        waiting_report_job = await report_job_needing_coverage(session, chat)
         chat.next_sync_at = (
             now
-            if report_job is not None and job_still_needs_report_coverage(report_job, chat)
+            if waiting_report_job is not None
             else now + timedelta(minutes=chat.sync_interval_minutes)
         )
     else:

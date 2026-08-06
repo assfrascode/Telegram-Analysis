@@ -438,12 +438,13 @@ class TelegramSnapshotWorker(Worker):
         if self._chat_covers_report(chat, job):
             return await self._latest_completed_external_run(session, job, chat)
 
-        now = datetime.now(timezone.utc)
-        chat.next_sync_at = now
-        chat.updated_at = now
+        sync_requested_at = datetime.now(timezone.utc)
+        chat.next_sync_at = sync_requested_at
+        chat.updated_at = sync_requested_at
         await session.commit()
 
-        last_activity_at = now
+        last_activity_at = sync_requested_at
+        collector_responded = False
         waiting_event_emitted = False
         while True:
             await session.refresh(chat)
@@ -457,7 +458,21 @@ class TelegramSnapshotWorker(Worker):
             else:
                 chat_activity_at = chat_activity_at.astimezone(timezone.utc)
             last_activity_at = max(last_activity_at, chat_activity_at)
-            if (
+            collector_responded = collector_responded or chat_activity_at > sync_requested_at
+            if not collector_responded and (
+                current_time - sync_requested_at
+                >= timedelta(
+                    seconds=settings.telegram_external_initial_response_timeout_seconds
+                )
+            ):
+                detail = (
+                    "External Telegram collector did not respond within "
+                    f"{settings.telegram_external_initial_response_timeout_seconds} seconds"
+                )
+                if chat.last_error:
+                    detail = f"{detail}: {chat.last_error}"
+                raise TelegramSyncError(detail)
+            if collector_responded and (
                 current_time - last_activity_at
                 >= timedelta(seconds=settings.telegram_external_inactivity_timeout_seconds)
             ):
@@ -487,6 +502,9 @@ class TelegramSnapshotWorker(Worker):
                         else None,
                         "inactivity_timeout_seconds": (
                             settings.telegram_external_inactivity_timeout_seconds
+                        ),
+                        "initial_response_timeout_seconds": (
+                            settings.telegram_external_initial_response_timeout_seconds
                         ),
                     },
                 )
