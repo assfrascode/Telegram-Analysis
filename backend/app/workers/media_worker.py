@@ -302,8 +302,8 @@ class MediaWorker(Worker):
                     status=StepStatus.completed,
                     description=(
                         f"[MOCK_{normalized.upper()}_DESCRIPTION] "
-                        f"Neutrale Platzhalterbeschreibung für {row.original_path}. "
-                        "Es wurde kein vLLM-Request ausgeführt."
+                        f"Neutral placeholder description for {row.original_path}. "
+                        "No vLLM request was made."
                     ),
                     raw_response={
                         "mock": True,

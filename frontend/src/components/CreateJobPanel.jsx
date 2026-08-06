@@ -261,7 +261,7 @@ export function CreateJobPanel({
                   checked={Boolean(options.translate)}
                   onChange={(event) => setOption("translate", event.target.checked)}
                 />
-                <span>Translate</span>
+                <span>Translate evidence to English</span>
               </label>
             </div>
           </section>

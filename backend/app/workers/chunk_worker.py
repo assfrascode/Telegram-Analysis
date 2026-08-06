@@ -10,6 +10,7 @@ from app.models import (
     Job,
     MediaAnalysis,
     MediaTranscript,
+    MediaTranscriptTranslation,
     MessageChunk,
     MessageTranslation,
     TelegramMedia,
@@ -76,6 +77,7 @@ class ChunkWorker(Worker):
                 message,
                 attachments_by_message.get(message.id, []),
                 translation=translations_by_message.get(message.id),
+                english_only=bool((job.options or {}).get("translate", False)),
             )
             for message in messages
         ]
@@ -172,7 +174,12 @@ class ChunkWorker(Worker):
     ) -> dict[uuid.UUID, list[MediaAttachment]]:
         rows = (
             await session.execute(
-                select(TelegramMedia, MediaAnalysis, MediaTranscript)
+                select(
+                    TelegramMedia,
+                    MediaAnalysis,
+                    MediaTranscript,
+                    MediaTranscriptTranslation,
+                )
                 .outerjoin(
                     MediaAnalysis,
                     (MediaAnalysis.media_id == TelegramMedia.id)
@@ -186,17 +193,28 @@ class ChunkWorker(Worker):
                     & (MediaTranscript.model_name == settings.openai_transcription_model)
                     & (MediaTranscript.response_format == "text"),
                 )
+                .outerjoin(
+                    MediaTranscriptTranslation,
+                    (MediaTranscriptTranslation.transcript_id == MediaTranscript.id)
+                    & (MediaTranscriptTranslation.provider == "libretranslate")
+                    & (MediaTranscriptTranslation.target_language == "en"),
+                )
                 .where(TelegramMedia.job_id == job_id, TelegramMedia.message_id.is_not(None))
                 .order_by(TelegramMedia.original_path)
             )
         ).all()
 
         grouped: dict[uuid.UUID, list[MediaAttachment]] = defaultdict(list)
-        for media, analysis, transcript in rows:
+        for media, analysis, transcript, transcript_translation in rows:
             if media.message_id is None:
                 continue
             grouped[media.message_id].append(
-                MediaAttachment(media=media, analysis=analysis, transcript=transcript)
+                MediaAttachment(
+                    media=media,
+                    analysis=analysis,
+                    transcript=transcript,
+                    transcript_translation=transcript_translation,
+                )
             )
         return grouped
 
@@ -205,14 +223,13 @@ class ChunkWorker(Worker):
         session: AsyncSession,
         job_id: uuid.UUID,
     ) -> dict[uuid.UUID, MessageTranslation]:
-        target_language = (settings.libretranslate_target_language or "en").strip() or "en"
         rows = list(
             (
                 await session.execute(
                     select(MessageTranslation).where(
                         MessageTranslation.job_id == job_id,
                         MessageTranslation.provider == "libretranslate",
-                        MessageTranslation.target_language == target_language,
+                        MessageTranslation.target_language == "en",
                     )
                 )
             )

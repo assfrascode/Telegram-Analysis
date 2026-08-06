@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from app.models import (
     MediaAnalysis,
     MediaTranscript,
+    MediaTranscriptTranslation,
     MessageChunk,
     MessageTranslation,
     RetrievalHit,
@@ -165,6 +166,9 @@ class ReportMedia:
     transcript_error: str | None
     transcript_model: str | None
     transcript_provider: str | None
+    transcript_translation_source_language: str | None = None
+    transcript_translation_source_confidence: float | None = None
+    transcript_translation_provider: str | None = None
 
 
 @dataclass(slots=True)
@@ -188,6 +192,7 @@ class ReportMessage:
     translation_source_language: str | None = None
     translation_source_confidence: float | None = None
     translation_provider: str | None = None
+    translation_applied: bool = False
     media: list[ReportMedia] = field(default_factory=list)
 
 
@@ -315,8 +320,20 @@ def build_report_media(
     media: TelegramMedia,
     analysis: MediaAnalysis | None,
     transcript: MediaTranscript | None = None,
+    transcript_translation: MediaTranscriptTranslation | None = None,
+    *,
+    english_only: bool = False,
 ) -> ReportMedia:
-    transcript_text = transcript.transcript_text.strip() if transcript else ""
+    source_transcript_text = transcript.transcript_text.strip() if transcript else ""
+    translated_transcript_text = (
+        transcript_translation.translated_text.strip() if transcript_translation else ""
+    )
+    transcript_text = (
+        translated_transcript_text if english_only and source_transcript_text else source_transcript_text
+    )
+    transcript_error = transcript.error_message if transcript else None
+    if english_only and source_transcript_text and not translated_transcript_text:
+        transcript_error = "English translation unavailable"
     return ReportMedia(
         id=str(media.id),
         media_type=media.media_type,
@@ -336,18 +353,43 @@ def build_report_media(
         analyzed_at=isoformat_or_empty(media.analyzed_at),
         transcript_text=transcript_text or None,
         transcript_status=(status_label(transcript.status) if transcript else None),
-        transcript_error=(transcript.error_message if transcript else None),
+        transcript_error=transcript_error,
         transcript_model=(transcript.model_name if transcript else None),
         transcript_provider=(transcript.provider if transcript else None),
+        transcript_translation_source_language=(
+            transcript_translation.detected_source_language if transcript_translation else None
+        ),
+        transcript_translation_source_confidence=(
+            transcript_translation.detected_source_confidence if transcript_translation else None
+        ),
+        transcript_translation_provider=(
+            transcript_translation.provider if transcript_translation else None
+        ),
     )
 
 
 def build_report_message(
     message: TelegramMessage,
-    media_items: list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]] | None = None,
+    media_items: list[
+        tuple[
+            TelegramMedia,
+            MediaAnalysis | None,
+            MediaTranscript | None,
+            MediaTranscriptTranslation | None,
+        ]
+    ] | None = None,
     translation: MessageTranslation | None = None,
+    *,
+    english_only: bool = False,
 ) -> ReportMessage:
+    source_text = normalize_message_text(message.text)
     translation_text = translation.translated_text.strip() if translation else ""
+    translation_applied = bool(
+        english_only and source_text != "[NO_TEXT]" and translation_text
+    )
+    display_text = source_text
+    if english_only and source_text != "[NO_TEXT]":
+        display_text = translation_text or "[ENGLISH_TRANSLATION_UNAVAILABLE]"
     return ReportMessage(
         id=str(message.id),
         telegram_message_id=message.telegram_message_id,
@@ -362,17 +404,24 @@ def build_report_message(
         forwarded_from=message.forwarded_from,
         reactions=list(message.reactions or []),
         reaction_chips=format_reaction_chips(message.reactions or []),
-        text=normalize_message_text(message.text),
-        translation_text=translation_text or None,
+        text=display_text,
+        translation_text=(translation_text or None) if not english_only else None,
         translation_target_language=(translation.target_language if translation else None),
         translation_source_language=(translation.detected_source_language if translation else None),
         translation_source_confidence=(
             translation.detected_source_confidence if translation else None
         ),
         translation_provider=(translation.provider if translation else None),
+        translation_applied=translation_applied,
         media=[
-            build_report_media(media, analysis, transcript)
-            for media, analysis, transcript in (media_items or [])
+            build_report_media(
+                media,
+                analysis,
+                transcript,
+                transcript_translation,
+                english_only=english_only,
+            )
+            for media, analysis, transcript, transcript_translation in (media_items or [])
         ],
     )
 

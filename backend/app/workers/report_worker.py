@@ -18,6 +18,7 @@ from app.models import (
     JobStatus,
     MediaAnalysis,
     MediaTranscript,
+    MediaTranscriptTranslation,
     MessageChunk,
     MessageTranslation,
     Question,
@@ -444,7 +445,15 @@ class ReportWorker(Worker):
                 )
             ).scalar_one_or_none()
 
-            evidence = await self._hydrate_evidence(session, run) if run else []
+            evidence = (
+                await self._hydrate_evidence(
+                    session,
+                    run,
+                    english_only=bool((job.options or {}).get("translate", False)),
+                )
+                if run
+                else []
+            )
             rendered.append(
                 ReportQuestion(
                     index=question.question_index,
@@ -464,6 +473,8 @@ class ReportWorker(Worker):
         self,
         session: AsyncSession,
         question_run: QuestionRun,
+        *,
+        english_only: bool,
     ) -> list[Any]:
         hit_rows = list(
             (
@@ -520,6 +531,7 @@ class ReportWorker(Worker):
                         message,
                         media_by_message.get(message.id, []),
                         translation=translations_by_message.get(message.id),
+                        english_only=english_only,
                     )
                 )
 
@@ -531,14 +543,29 @@ class ReportWorker(Worker):
         session: AsyncSession,
         job_id: uuid.UUID,
         message_ids: list[uuid.UUID],
-    ) -> dict[uuid.UUID, list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]]]:
+    ) -> dict[
+        uuid.UUID,
+        list[
+            tuple[
+                TelegramMedia,
+                MediaAnalysis | None,
+                MediaTranscript | None,
+                MediaTranscriptTranslation | None,
+            ]
+        ],
+    ]:
         if not message_ids:
             return {}
 
         rows = list(
             (
                 await session.execute(
-                    select(TelegramMedia, MediaAnalysis, MediaTranscript)
+                    select(
+                        TelegramMedia,
+                        MediaAnalysis,
+                        MediaTranscript,
+                        MediaTranscriptTranslation,
+                    )
                     .outerjoin(
                         MediaAnalysis,
                         (MediaAnalysis.media_id == TelegramMedia.id)
@@ -552,6 +579,12 @@ class ReportWorker(Worker):
                         & (MediaTranscript.model_name == settings.openai_transcription_model)
                         & (MediaTranscript.response_format == "text"),
                     )
+                    .outerjoin(
+                        MediaTranscriptTranslation,
+                        (MediaTranscriptTranslation.transcript_id == MediaTranscript.id)
+                        & (MediaTranscriptTranslation.provider == "libretranslate")
+                        & (MediaTranscriptTranslation.target_language == "en"),
+                    )
                     .where(
                         TelegramMedia.job_id == job_id,
                         TelegramMedia.message_id.in_(message_ids),
@@ -563,11 +596,20 @@ class ReportWorker(Worker):
 
         grouped: dict[
             uuid.UUID,
-            list[tuple[TelegramMedia, MediaAnalysis | None, MediaTranscript | None]],
+            list[
+                tuple[
+                    TelegramMedia,
+                    MediaAnalysis | None,
+                    MediaTranscript | None,
+                    MediaTranscriptTranslation | None,
+                ]
+            ],
         ] = defaultdict(list)
-        for media, analysis, transcript in rows:
+        for media, analysis, transcript, transcript_translation in rows:
             if media.message_id is not None:
-                grouped[media.message_id].append((media, analysis, transcript))
+                grouped[media.message_id].append(
+                    (media, analysis, transcript, transcript_translation)
+                )
         return grouped
 
     async def _load_translations_for_messages(
@@ -579,7 +621,6 @@ class ReportWorker(Worker):
         if not message_ids:
             return {}
 
-        target_language = (settings.libretranslate_target_language or "en").strip() or "en"
         rows = list(
             (
                 await session.execute(
@@ -587,7 +628,7 @@ class ReportWorker(Worker):
                         MessageTranslation.job_id == job_id,
                         MessageTranslation.message_id.in_(message_ids),
                         MessageTranslation.provider == "libretranslate",
-                        MessageTranslation.target_language == target_language,
+                        MessageTranslation.target_language == "en",
                     )
                 )
             )

@@ -43,16 +43,6 @@ const STAGES = [
   {key: "validate", label: "ZIP-Prüfung", events: ["zip.scan.started", "zip.scan.completed"]},
   {key: "extract", label: "Extraktion", events: ["zip.extract.started", "zip.extract.completed"]},
   {key: "parse", label: "Telegram-Parsing", events: ["telegram.parse.started", "telegram.parse.progress", "telegram.parse.completed"]},
-  {
-    key: "translation",
-    label: "Übersetzung",
-    events: [
-      "translation.started",
-      "translation.progress",
-      "translation.completed",
-      "translation.failed",
-    ],
-  },
   {key: "media", label: "Medienanalyse", events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"]},
   {
     key: "transcription",
@@ -61,6 +51,16 @@ const STAGES = [
       "media.transcription.started",
       "media.transcription.progress",
       "media.transcription.completed",
+    ],
+  },
+  {
+    key: "translation",
+    label: "Inhalte ins Englische übersetzen",
+    events: [
+      "translation.started",
+      "translation.progress",
+      "translation.completed",
+      "translation.failed",
     ],
   },
   {key: "chunk", label: "Chunking", events: ["chunking.started", "chunking.progress", "chunking.completed"]},

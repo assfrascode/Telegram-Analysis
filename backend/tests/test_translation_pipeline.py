@@ -14,6 +14,7 @@ from app.workers.pipeline import (
     _mark_step_completed,
     complete_media_branch,
     next_task_for_completed_media_steps,
+    next_tasks_after_media,
     next_tasks_after_messages,
     next_tasks_after_translation,
 )
@@ -23,13 +24,14 @@ def _job(options: dict) -> Job:
     return Job(id=uuid.uuid4(), owner_user_id=uuid.uuid4(), options=options)
 
 
-def test_messages_route_to_translation_when_enabled() -> None:
-    assert next_tasks_after_messages(_job({"translate": True})) == (
-        (subjects.MESSAGES_TRANSLATE, "translate"),
+def test_messages_fan_out_to_media_before_translation() -> None:
+    assert next_tasks_after_messages(_job({"translate": True, "analyze_media": True})) == (
+        (subjects.MEDIA_DESCRIBE, MEDIA_DESCRIPTION_STEP),
+        (subjects.MEDIA_TRANSCRIBE, MEDIA_TRANSCRIPTION_STEP),
     )
 
 
-def test_messages_fan_out_to_media_tasks_when_translation_disabled() -> None:
+def test_messages_route_for_remaining_option_combinations() -> None:
     assert next_tasks_after_messages(_job({"translate": False, "analyze_media": True})) == (
         (subjects.MEDIA_DESCRIBE, MEDIA_DESCRIPTION_STEP),
         (subjects.MEDIA_TRANSCRIBE, MEDIA_TRANSCRIPTION_STEP),
@@ -37,16 +39,22 @@ def test_messages_fan_out_to_media_tasks_when_translation_disabled() -> None:
     assert next_tasks_after_messages(_job({"translate": False, "analyze_media": False})) == (
         (subjects.CHUNK_CREATE, "chunk"),
     )
-
-
-def test_translation_fans_out_to_media_tasks_or_routes_to_chunk() -> None:
-    assert next_tasks_after_translation(_job({"analyze_media": True})) == (
-        (subjects.MEDIA_DESCRIBE, MEDIA_DESCRIPTION_STEP),
-        (subjects.MEDIA_TRANSCRIBE, MEDIA_TRANSCRIPTION_STEP),
+    assert next_tasks_after_messages(_job({"translate": True, "analyze_media": False})) == (
+        (subjects.MESSAGES_TRANSLATE, "translate"),
     )
-    assert next_tasks_after_translation(_job({"analyze_media": False})) == (
+
+
+def test_media_routes_to_translation_or_chunk() -> None:
+    assert next_tasks_after_media(_job({"translate": True})) == (
+        (subjects.MESSAGES_TRANSLATE, "translate"),
+    )
+    assert next_tasks_after_media(_job({"translate": False})) == (
         (subjects.CHUNK_CREATE, "chunk"),
     )
+
+
+def test_translation_always_routes_to_chunk() -> None:
+    assert next_tasks_after_translation() == ((subjects.CHUNK_CREATE, "chunk"),)
 
 
 def test_media_barrier_waits_for_both_branches() -> None:
@@ -55,6 +63,10 @@ def test_media_barrier_waits_for_both_branches() -> None:
     assert next_task_for_completed_media_steps(
         {MEDIA_DESCRIPTION_STEP, MEDIA_TRANSCRIPTION_STEP}
     ) == (subjects.CHUNK_CREATE, "chunk")
+    assert next_task_for_completed_media_steps(
+        {MEDIA_DESCRIPTION_STEP, MEDIA_TRANSCRIPTION_STEP},
+        translate=True,
+    ) == (subjects.MESSAGES_TRANSLATE, "translate")
 
 
 def test_media_barrier_join_marker_makes_transition_idempotent() -> None:
@@ -146,7 +158,7 @@ def _completed_step(job_id: uuid.UUID, step_name: str) -> JobStep:
 def test_complete_media_branch_opens_barrier_for_second_branch() -> None:
     job_id = uuid.uuid4()
     session = _BarrierSession(
-        SimpleNamespace(status=JobStatus.running),
+        SimpleNamespace(status=JobStatus.running, options={"translate": True}),
         [_completed_step(job_id, MEDIA_DESCRIPTION_STEP)],
     )
 
@@ -158,7 +170,7 @@ def test_complete_media_branch_opens_barrier_for_second_branch() -> None:
         )
     )
 
-    assert next_task == (subjects.CHUNK_CREATE, "chunk")
+    assert next_task == (subjects.MESSAGES_TRANSLATE, "translate")
     assert [step.step_name for step in session.added] == [
         MEDIA_TRANSCRIPTION_STEP,
         MEDIA_JOIN_STEP,
@@ -169,7 +181,7 @@ def test_complete_media_branch_opens_barrier_for_second_branch() -> None:
 def test_complete_media_branch_does_not_reopen_completed_join() -> None:
     job_id = uuid.uuid4()
     session = _BarrierSession(
-        SimpleNamespace(status=JobStatus.running),
+        SimpleNamespace(status=JobStatus.running, options={"translate": True}),
         [
             _completed_step(job_id, MEDIA_DESCRIPTION_STEP),
             _completed_step(job_id, MEDIA_TRANSCRIPTION_STEP),
@@ -197,7 +209,7 @@ def test_complete_media_branch_does_not_open_terminal_job() -> None:
         JobStatus.failed,
         JobStatus.completed,
     ):
-        session = _BarrierSession(SimpleNamespace(status=status))
+        session = _BarrierSession(SimpleNamespace(status=status, options={"translate": True}))
 
         next_task = asyncio.run(
             complete_media_branch(

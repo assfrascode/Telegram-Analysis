@@ -17,24 +17,34 @@ MEDIA_BARRIER_STEPS = (*MEDIA_BRANCH_STEPS, MEDIA_JOIN_STEP)
 
 
 def next_tasks_after_messages(job: Job) -> tuple[PipelineTask, ...]:
-    if (job.options or {}).get("translate", False):
-        return ((subjects.MESSAGES_TRANSLATE, "translate"),)
-    return next_tasks_after_translation(job)
-
-
-def next_tasks_after_translation(job: Job) -> tuple[PipelineTask, ...]:
     if (job.options or {}).get("analyze_media", True):
         return (
             (subjects.MEDIA_DESCRIBE, MEDIA_DESCRIPTION_STEP),
             (subjects.MEDIA_TRANSCRIBE, MEDIA_TRANSCRIPTION_STEP),
         )
+    return next_tasks_after_media(job)
+
+
+def next_tasks_after_media(job: Job) -> tuple[PipelineTask, ...]:
+    if (job.options or {}).get("translate", False):
+        return ((subjects.MESSAGES_TRANSLATE, "translate"),)
     return ((subjects.CHUNK_CREATE, "chunk"),)
 
 
-def next_task_for_completed_media_steps(completed_steps: Collection[str]) -> PipelineTask | None:
+def next_tasks_after_translation() -> tuple[PipelineTask, ...]:
+    return ((subjects.CHUNK_CREATE, "chunk"),)
+
+
+def next_task_for_completed_media_steps(
+    completed_steps: Collection[str],
+    *,
+    translate: bool = False,
+) -> PipelineTask | None:
     completed = set(completed_steps)
     if MEDIA_JOIN_STEP in completed or not MEDIA_BRANCH_STEPS.issubset(completed):
         return None
+    if translate:
+        return subjects.MESSAGES_TRANSLATE, "translate"
     return subjects.CHUNK_CREATE, "chunk"
 
 
@@ -106,7 +116,10 @@ async def complete_media_branch(
     completed_steps = {
         name for name, step in steps.items() if step.status == StepStatus.completed
     }
-    next_task = next_task_for_completed_media_steps(completed_steps)
+    next_task = next_task_for_completed_media_steps(
+        completed_steps,
+        translate=bool((job.options or {}).get("translate", False)),
+    )
     if next_task is not None:
         _mark_step_completed(session, steps, job_id=job_id, step_name=MEDIA_JOIN_STEP)
 

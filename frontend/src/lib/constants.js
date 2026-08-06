@@ -20,19 +20,28 @@ export const STAGES = [
     events: ["telegram.parse.started", "telegram.parse.progress", "telegram.parse.completed"],
   },
   {
+    key: "media",
+    label: "Analyse media",
+    events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"],
+  },
+  {
+    key: "transcription",
+    label: "Transcribe media",
+    events: [
+      "media.transcription.started",
+      "media.transcription.progress",
+      "media.transcription.completed",
+    ],
+  },
+  {
     key: "translation",
-    label: "Translate messages",
+    label: "Translate content to English",
     events: [
       "translation.started",
       "translation.progress",
       "translation.completed",
       "translation.failed",
     ],
-  },
-  {
-    key: "media",
-    label: "Analyse media",
-    events: ["media.analysis.started", "media.analysis.progress", "media.analysis.completed"],
   },
   { key: "chunk", label: "Structure content", events: ["chunking.started", "chunking.progress", "chunking.completed"] },
   {

@@ -84,7 +84,16 @@
 
                   <pre class="telegram-text">{{ msg.text }}</pre>
 
-                  {% if msg.translation_text %}
+                  {% if msg.translation_applied %}
+                  <div class="translation-panel">
+                    <span>
+                      EN translation
+                      {% if msg.translation_source_language %}
+                      · detected {{ msg.translation_source_language }}
+                      {% endif %}
+                    </span>
+                  </div>
+                  {% elif msg.translation_text %}
                   <div class="translation-panel">
                     <span>
                       {% if msg.translation_target_language %}
@@ -134,6 +143,14 @@
                       <div class="media-description">
                         <span>{{ "VIDEO_TRANSCRIPT" if media.media_type == "video" else "AUDIO_TRANSCRIPT" }}</span>
                         <p>{{ media.transcript_text }}</p>
+                        {% if media.transcript_translation_provider %}
+                        <small>
+                          EN translation
+                          {% if media.transcript_translation_source_language %}
+                          · detected {{ media.transcript_translation_source_language }}
+                          {% endif %}
+                        </small>
+                        {% endif %}
                       </div>
                       {% elif media.transcript_error %}
                       <p class="warning">Transkript nicht verfügbar: {{ media.transcript_error }}</p>

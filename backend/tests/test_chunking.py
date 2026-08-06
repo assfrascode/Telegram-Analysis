@@ -7,6 +7,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 from app.models import (
     MediaAnalysis,
     MediaTranscript,
+    MediaTranscriptTranslation,
     MessageTranslation,
     StepStatus,
     TelegramMedia,
@@ -160,6 +161,75 @@ def test_render_message_block_appends_saved_translation() -> None:
     assert "Guten Morgen" in block.text
     assert "ENGLISH_TRANSLATION:" in block.text
     assert "Good morning" in block.text
+
+
+def test_render_message_block_uses_only_english_message_and_transcript() -> None:
+    message = _message(12, "Guten Morgen")
+    message_translation = MessageTranslation(
+        job_id=message.job_id,
+        message_id=message.id,
+        provider="libretranslate",
+        source_text_hash="message-hash",
+        detected_source_language="de",
+        target_language="en",
+        translated_text="Good morning",
+        raw_response={},
+    )
+    media = TelegramMedia(
+        id=uuid.uuid4(),
+        job_id=message.job_id,
+        message_id=message.id,
+        media_type="audio",
+        original_path="files/audio_english.mp3",
+        status=StepStatus.completed,
+    )
+    transcript = MediaTranscript(
+        id=uuid.uuid4(),
+        job_id=message.job_id,
+        media_id=media.id,
+        provider="openai",
+        model_name="whisper-1",
+        response_format="text",
+        status=StepStatus.completed,
+        transcript_text="Gesprochener Inhalt.",
+        raw_response={},
+    )
+    transcript_translation = MediaTranscriptTranslation(
+        job_id=message.job_id,
+        transcript_id=transcript.id,
+        provider="libretranslate",
+        source_text_hash="transcript-hash",
+        detected_source_language="de",
+        target_language="en",
+        translated_text="Spoken content.",
+        raw_response={},
+    )
+
+    block = render_message_block(
+        message,
+        attachments=[
+            MediaAttachment(
+                media=media,
+                transcript=transcript,
+                transcript_translation=transcript_translation,
+            )
+        ],
+        translation=message_translation,
+        english_only=True,
+    )
+
+    assert "Good morning" in block.text
+    assert "Spoken content." in block.text
+    assert "Guten Morgen" not in block.text
+    assert "Gesprochener Inhalt." not in block.text
+    assert "ENGLISH_TRANSLATION:" not in block.text
+
+
+def test_render_message_block_never_falls_back_to_source_in_english_mode() -> None:
+    block = render_message_block(_message(13, "Nicht übersetzt"), english_only=True)
+
+    assert "[ENGLISH_TRANSLATION_UNAVAILABLE]" in block.text
+    assert "Nicht übersetzt" not in block.text
 
 
 def test_build_chunks_preserves_order_and_overlap() -> None:

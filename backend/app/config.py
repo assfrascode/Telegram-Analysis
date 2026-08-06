@@ -65,7 +65,6 @@ class Settings(BaseSettings):
 
     libretranslate_base_url: str = ""
     libretranslate_api_key: str = ""
-    libretranslate_target_language: str = "en"
     libretranslate_batch_size: int = 20
     libretranslate_timeout_seconds: float = 60.0
 
@@ -143,7 +142,7 @@ class Settings(BaseSettings):
 
     media_analysis_concurrency: int = 4
     media_analysis_batch_size: int = 100
-    media_analysis_prompt_version: str = "neutral-v1"
+    media_analysis_prompt_version: str = "neutral-en-v2"
     media_analysis_transport: str = "data_url"  # data_url | internal_presigned_url
     max_inline_media_analysis_bytes: int = 256 * 1024 * 1024
     vllm_media_request_timeout_seconds: float = 300.0

@@ -17,10 +17,10 @@ MediaKind = Literal["image", "video"]
 
 
 DEFAULT_MEDIA_DESCRIPTION_PROMPT = (
-    "Beschreibe den Medieninhalt neutral, präzise und ohne Interpretation. "
-    "Nenne sichtbare Texte nur, wenn sie klar lesbar sind. "
-    "Erfinde keine Identitäten, keine Absichten und keine nicht sichtbaren Kontexte. "
-    "Wenn der Inhalt nicht eindeutig erkennbar ist, sage das explizit."
+    "Describe the media content neutrally, precisely, and without interpretation. "
+    "Mention visible text only when it is clearly legible. "
+    "Do not invent identities, intentions, or context that is not visible. "
+    "If the content is ambiguous, state that explicitly. Respond only in English."
 )
 
 ANSWER_SYSTEM_PROMPT = (
@@ -163,8 +163,8 @@ class VLLMGateway:
             normalized = (media_type or "media").lower()
             description = (
                 f"[MOCK_{normalized.upper()}_DESCRIPTION] "
-                f"Neutrale Platzhalterbeschreibung für ein {normalized}-Medium. "
-                "Es wurde kein vLLM-Request ausgeführt."
+                f"Neutral placeholder description for a {normalized} item. "
+                "No vLLM request was made."
             )
             return MediaDescriptionResult(
                 description=description,

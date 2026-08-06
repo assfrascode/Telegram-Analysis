@@ -54,9 +54,9 @@ Collected Telegram source:
   -> snapshot messages/media for the requested report window
 
 Shared analysis:
-  optional translation
-  -> media inventory / optional media description
-  -> optional audio/video transcription
+  media inventory / optional English media description
+  + optional audio/video transcription
+  -> optional English translation of messages and transcripts
   -> chunking
   -> embedding
   -> Qdrant upsert
@@ -178,13 +178,14 @@ PROMPT_LIMIT_MAX_MODEL_LEN_OVERRIDES={"Qwen/Qwen3-Embedding-0.6B":32768}
 
 ### Translation
 
-Message translation runs only when the per-job `Translate` option is enabled. Configure LibreTranslate before enabling it:
+English evidence translation runs only when the per-job `Translate` option is enabled. Media processing runs first, then LibreTranslate converts both message bodies and completed audio/video transcripts to English before chunking. Configure LibreTranslate before enabling it:
 
 ```env
 LIBRETRANSLATE_BASE_URL=http://libretranslate:5000
 LIBRETRANSLATE_API_KEY=
-LIBRETRANSLATE_TARGET_LANGUAGE=en
 ```
+
+The translation target is fixed to English. Source-language messages and transcripts remain stored internally, while translated jobs use only English content in retrieval chunks and report evidence. New image/video descriptions are also requested directly in English and use the `neutral-en-v2` prompt cache version.
 
 ### Transcription
 

@@ -6,6 +6,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 import pytest
 
 from app.llm.vllm_gateway import (
+    DEFAULT_MEDIA_DESCRIPTION_PROMPT,
     VLLMGateway,
     PromptLimitError,
     build_multimodal_content,
@@ -13,6 +14,10 @@ from app.llm.vllm_gateway import (
     multimodal_content_type,
     settings,
 )
+
+
+def test_default_media_description_prompt_requires_english() -> None:
+    assert "Respond only in English" in DEFAULT_MEDIA_DESCRIPTION_PROMPT
 
 
 def test_multimodal_content_type_maps_images_and_videos() -> None:

@@ -7,6 +7,7 @@ from typing import Any
 from app.models import (
     MediaAnalysis,
     MediaTranscript,
+    MediaTranscriptTranslation,
     MessageTranslation,
     StepStatus,
     TelegramMedia,
@@ -19,6 +20,7 @@ class MediaAttachment:
     media: TelegramMedia
     analysis: MediaAnalysis | None = None
     transcript: MediaTranscript | None = None
+    transcript_translation: MediaTranscriptTranslation | None = None
 
 
 @dataclass(slots=True)
@@ -99,6 +101,8 @@ def render_message_block(
     message: TelegramMessage,
     attachments: list[MediaAttachment] | None = None,
     translation: MessageTranslation | None = None,
+    *,
+    english_only: bool = False,
 ) -> MessageBlock:
     """Render one Telegram message into a retrieval-ready text block.
 
@@ -127,8 +131,15 @@ def render_message_block(
     if message.reactions:
         lines.append(f"Reactions: {message.reactions}")
 
-    lines.append(_clean_text(message.text))
-    if translation and translation.translated_text.strip():
+    source_message_text = _clean_text(message.text)
+    if english_only and source_message_text != "[NO_TEXT]":
+        if translation and translation.translated_text.strip():
+            lines.append(translation.translated_text.strip())
+        else:
+            lines.append("[ENGLISH_TRANSLATION_UNAVAILABLE]")
+    else:
+        lines.append(source_message_text)
+    if not english_only and translation and translation.translated_text.strip():
         lines.append("")
         lines.append(f"{_translation_label(translation.target_language)}:")
         lines.append(translation.translated_text.strip())
@@ -152,13 +163,13 @@ def render_message_block(
         elif description_label and media.status == StepStatus.failed_permanent:
             lines.append("")
             lines.append(f"[{description_label}_MISSING]")
-            lines.append("Datei konnte nicht analysiert werden.")
-            lines.append(f"Grund: {media.missing_reason or 'unknown'}")
+            lines.append("The file could not be analyzed.")
+            lines.append(f"Reason: {media.missing_reason or 'unknown'}")
             lines.append(f"MEDIA_PATH: {media.original_path}")
         elif description_label:
             lines.append("")
             lines.append(f"[{description_label}_UNANALYZED]")
-            lines.append("Datei hat keine gespeicherte Medienbeschreibung.")
+            lines.append("The file has no stored media description.")
             lines.append(f"MEDIA_PATH: {media.original_path}")
 
         transcript_label = _media_transcript_label(media.media_type)
@@ -168,19 +179,31 @@ def render_message_block(
         transcript = attachment.transcript
         if transcript and transcript.status == StepStatus.completed and transcript.transcript_text.strip():
             lines.append("")
-            lines.append(f"{transcript_label}:")
-            lines.append(transcript.transcript_text.strip())
+            if english_only:
+                translated_text = (
+                    attachment.transcript_translation.translated_text.strip()
+                    if attachment.transcript_translation
+                    else ""
+                )
+                if translated_text:
+                    lines.append(f"{transcript_label}:")
+                    lines.append(translated_text)
+                else:
+                    lines.append(f"[{transcript_label}_ENGLISH_TRANSLATION_UNAVAILABLE]")
+            else:
+                lines.append(f"{transcript_label}:")
+                lines.append(transcript.transcript_text.strip())
             lines.append(f"MEDIA_PATH: {media.original_path}")
         elif transcript and transcript.status == StepStatus.failed_permanent:
             lines.append("")
             lines.append(f"[{transcript_label}_MISSING]")
-            lines.append("Datei konnte nicht transkribiert werden.")
-            lines.append(f"Grund: {transcript.error_message or 'unknown'}")
+            lines.append("The file could not be transcribed.")
+            lines.append(f"Reason: {transcript.error_message or 'unknown'}")
             lines.append(f"MEDIA_PATH: {media.original_path}")
         else:
             lines.append("")
             lines.append(f"[{transcript_label}_UNANALYZED]")
-            lines.append("Datei hat kein gespeichertes Transkript.")
+            lines.append("The file has no stored transcript.")
             lines.append(f"MEDIA_PATH: {media.original_path}")
 
     return MessageBlock(

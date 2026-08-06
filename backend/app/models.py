@@ -496,7 +496,7 @@ class MediaAnalysis(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     media_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_media.id"), index=True)
     model_name: Mapped[str] = mapped_column(String(512))
-    prompt_version: Mapped[str] = mapped_column(String(128), default="neutral-v1")
+    prompt_version: Mapped[str] = mapped_column(String(128), default="neutral-en-v2")
     description: Mapped[str] = mapped_column(Text)
     raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -516,6 +516,28 @@ class MediaTranscript(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     transcript_text: Mapped[str] = mapped_column(Text, default="")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class MediaTranscriptTranslation(Base):
+    __tablename__ = "media_transcript_translations"
+    __table_args__ = (UniqueConstraint("transcript_id", "provider", "target_language"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), index=True
+    )
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_transcripts.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), default="libretranslate", index=True)
+    source_text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    detected_source_language: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    detected_source_confidence: Mapped[float | None] = mapped_column(nullable=True)
+    target_language: Mapped[str] = mapped_column(String(16), default="en", index=True)
+    translated_text: Mapped[str] = mapped_column(Text)
     raw_response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
