@@ -40,6 +40,11 @@ SYNC_INTERVAL_MINUTES=60
 POLL_SECONDS=15
 MESSAGE_BATCH_SIZE=100
 MESSAGE_PROGRESS_EVERY=250
+
+# Local collector web interface. Enabled by default.
+COLLECTOR_WEB_ENABLED=true
+COLLECTOR_WEB_HOST=127.0.0.1
+COLLECTOR_WEB_PORT=8787
 ```
 
 For a collector running on a separate laptop, set `BACKEND_URL` to the backend
@@ -72,5 +77,40 @@ pip install -r requirements.txt
 python collector.py
 ```
 
-On the first run Telethon may ask for a login code. Persist
-`TELEGRAM_SESSION_PATH` so later restarts reuse the same Telegram session.
+Open `http://127.0.0.1:8787`. On the first run, the page asks for the code sent
+by Telegram and, when enabled for the account, the two-step verification
+password. The same page shows connection state, chat registration, current sync
+counters, the last sync result, retries, and recent collector events. Existing
+authorized sessions skip the login form.
+
+Persist `TELEGRAM_SESSION_PATH` so later restarts reuse the same Telegram
+session. Codes, passwords, API hashes, session data, and ingest tokens are never
+included in the status response or event list.
+
+To retain the original terminal login prompts instead of running the web server,
+set:
+
+```env
+COLLECTOR_WEB_ENABLED=false
+```
+
+## Docker Run
+
+Build the collector image and publish its web interface only on the host's
+loopback address:
+
+```bash
+docker build -t telegram-external-collector external_telegram_collector
+docker run --rm \
+  --env-file external-telegram-collector.env \
+  -e COLLECTOR_WEB_HOST=0.0.0.0 \
+  -p 127.0.0.1:8787:8787 \
+  -v "$(pwd)/collector-data:/data" \
+  telegram-external-collector
+```
+
+The server has no application-level authentication. Keep it bound to
+`127.0.0.1`; listening on `0.0.0.0` is intended only inside a container whose
+published host port is still restricted to loopback. If configuration is
+invalid, the page stays available with the error and asks for a process restart
+after the environment has been corrected.

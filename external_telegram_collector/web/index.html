@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telegram Collector</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <span class="eyebrow">External Telegram Collector</span>
+          <h1>Collector status</h1>
+          <p>Authenticate Telegram and follow collection progress from this machine.</p>
+        </div>
+        <div class="phase-pill" id="phase-pill">
+          <span class="phase-dot" id="phase-dot"></span>
+          <span id="phase-label">Starting</span>
+        </div>
+      </header>
+
+      <div class="notice is-hidden" id="request-error" role="alert"></div>
+
+      <section class="card login-card is-hidden" id="login-card" aria-live="polite">
+        <div class="card-heading">
+          <div>
+            <span class="section-label">Telegram login</span>
+            <h2 id="login-title">Enter verification code</h2>
+            <p id="login-copy"></p>
+          </div>
+        </div>
+
+        <form id="code-form" class="login-form is-hidden">
+          <label>
+            <span>Verification code</span>
+            <input
+              id="code-input"
+              name="code"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              minlength="3"
+              maxlength="32"
+              required
+            />
+          </label>
+          <div class="button-row">
+            <button class="button button-primary" type="submit">Verify code</button>
+            <button class="button button-secondary" id="resend-button" type="button">Send new code</button>
+          </div>
+        </form>
+
+        <form id="password-form" class="login-form is-hidden">
+          <label>
+            <span>Two-step verification password</span>
+            <input
+              id="password-input"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              maxlength="512"
+              required
+            />
+          </label>
+          <button class="button button-primary" type="submit">Verify password</button>
+        </form>
+      </section>
+
+      <section class="status-grid">
+        <article class="card summary-card">
+          <span class="section-label">Current state</span>
+          <h2 id="status-message">Collector is starting</h2>
+          <dl class="details">
+            <div>
+              <dt>Telegram account</dt>
+              <dd id="account-name">Not connected</dd>
+            </div>
+            <div>
+              <dt>Last update</dt>
+              <dd id="updated-at">—</dd>
+            </div>
+          </dl>
+          <p class="retry-copy is-hidden" id="retry-copy"></p>
+        </article>
+
+        <article class="card registration-card">
+          <span class="section-label">Chat registration</span>
+          <h2 id="registration-title">Waiting to register</h2>
+          <dl class="metrics metrics-compact">
+            <div><dt>Visible</dt><dd id="registration-supported">—</dd></div>
+            <div><dt>Matched</dt><dd id="registration-matched">—</dd></div>
+            <div><dt>Registered</dt><dd id="registration-count">—</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="card run-card is-hidden" id="current-run-card">
+        <div class="card-heading">
+          <div>
+            <span class="section-label">Active synchronization</span>
+            <h2 id="current-chat">—</h2>
+            <p id="current-range">—</p>
+          </div>
+          <span class="activity">In progress</span>
+        </div>
+        <dl class="metrics">
+          <div><dt>Messages</dt><dd id="current-messages">0</dd></div>
+          <div><dt>Attachments</dt><dd id="current-attachments">0</dd></div>
+          <div><dt>Failed media</dt><dd id="current-failures">0</dd></div>
+        </dl>
+      </section>
+
+      <section class="card run-card is-hidden" id="last-run-card">
+        <div class="card-heading">
+          <div>
+            <span class="section-label">Last synchronization</span>
+            <h2 id="last-chat">—</h2>
+            <p id="last-completed">—</p>
+          </div>
+          <span class="result-pill" id="last-result">—</span>
+        </div>
+        <dl class="metrics">
+          <div><dt>Messages</dt><dd id="last-messages">0</dd></div>
+          <div><dt>Attachments</dt><dd id="last-attachments">0</dd></div>
+          <div><dt>Failed media</dt><dd id="last-failures">0</dd></div>
+        </dl>
+        <p class="run-error is-hidden" id="last-error"></p>
+      </section>
+
+      <section class="card events-card">
+        <div class="card-heading">
+          <div>
+            <span class="section-label">Recent events</span>
+            <h2>Collector activity</h2>
+          </div>
+          <span class="event-count" id="event-count">0 events</span>
+        </div>
+        <ol class="event-list" id="event-list" aria-live="polite">
+          <li class="empty-event">Waiting for collector activity…</li>
+        </ol>
+      </section>
+    </main>
+  </body>
+</html>
