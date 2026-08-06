@@ -1,6 +1,45 @@
 import { EventLogPanel } from "./EventLogPanel";
 import { formatDate, statusLabel } from "../lib/format";
 
+function SidebarIcon({ name }) {
+  if (name === "analysis") {
+    return (
+      <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 4v16M4 12h16" />
+      </svg>
+    );
+  }
+  if (name === "telegram") {
+    return (
+      <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m3.5 11.2 16.4-6.3c.75-.28 1.42.45 1.14 1.2l-5.35 14.05c-.26.7-1.14.93-1.71.45l-3.45-2.87-1.72 1.65c-.4.38-1.06.1-1.06-.46v-3.2l8.25-7.3-10.1 5.9-2.47-1.79c-.53-.38-.49-1.1.07-1.33Z" />
+      </svg>
+    );
+  }
+  if (name === "upload") {
+    return (
+      <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6.5 3.25h7l4 4v13.5h-11a2 2 0 0 1-2-2V5.25a2 2 0 0 1 2-2Z" />
+        <path d="M13.5 3.25v4h4M8 12h6M8 15.5h4" />
+      </svg>
+    );
+  }
+  if (name === "history") {
+    return (
+      <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 8.9" />
+        <path d="M4.5 4.75V8.9h4.15M12 7.75v4.5l3 1.75" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 5.75h14v10.5H9l-4 3z" />
+      <path d="M8 9.25h8M8 12.75h5" />
+    </svg>
+  );
+}
+
 function jobTitle(job, chats) {
   if (job.source_type !== "telegram_chat") {
     return job.source_name ? `Uploaded: ${job.source_name}` : "Uploaded export";
@@ -34,11 +73,14 @@ function AnalysisList({ jobs, chats, currentJobId, onSelectJob }) {
             aria-label={`${jobTitle(job, chats)}, ${formatDate(job.created_at)}, ${label}`}
             title={label}
           >
-            <span className={`status-dot status-dot-${job.status}`} aria-hidden="true" />
+            <span className="analysis-source-icon" aria-hidden="true">
+              <SidebarIcon name={job.source_type === "telegram_chat" ? "chat" : "upload"} />
+            </span>
             <span className="analysis-list-copy">
               <strong>{jobTitle(job, chats)}</strong>
               <span>{jobSubtitle(job)}</span>
             </span>
+            <span className={`status-dot status-dot-${job.status}`} aria-hidden="true" />
           </button>
         );
       })}
@@ -64,10 +106,15 @@ export function AppSidebar({
   return (
     <aside className="app-sidebar">
       <div className="sidebar-brand">
-        <span className="app-mark">CA</span>
+        <span className="app-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M5 5.75h14v10.5H9l-4 3z" />
+            <path d="M8 9.25h8M8 12.75h5" />
+          </svg>
+        </span>
         <div>
           <strong>Chat Analysis</strong>
-          <span>Telegram intelligence workspace</span>
+          <span>Intelligence workspace</span>
         </div>
       </div>
 
@@ -75,25 +122,27 @@ export function AppSidebar({
         <button
           className={`nav-item${activeView === "analysis" ? " is-active" : ""}`}
           type="button"
+          aria-current={activeView === "analysis" ? "page" : undefined}
           onClick={() => onNavigate("analysis")}
         >
-          <span className="nav-icon">+</span>
-          New Analysis
+          <span className="nav-icon"><SidebarIcon name="analysis" /></span>
+          <span className="nav-copy"><strong>New Analysis</strong><small>Start from a chat or export</small></span>
         </button>
         <button
           className={`nav-item${activeView === "telegram" ? " is-active" : ""}`}
           type="button"
+          aria-current={activeView === "telegram" ? "page" : undefined}
           onClick={() => onNavigate("telegram")}
         >
-          <span className="nav-icon">T</span>
-          Telegram Setup
+          <span className="nav-icon"><SidebarIcon name="telegram" /></span>
+          <span className="nav-copy"><strong>Telegram Setup</strong><small>Sources, chats, and schedules</small></span>
         </button>
       </nav>
 
       <section className="sidebar-history">
         <div className="sidebar-section-heading">
-          <span>Recent analyses</span>
-          <span>{jobs.length}</span>
+          <span><SidebarIcon name="history" /> Recent analyses</span>
+          <span className="sidebar-count">{jobs.length}</span>
         </div>
         <AnalysisList jobs={jobs} chats={chats} currentJobId={currentJobId} onSelectJob={onSelectJob} />
       </section>
