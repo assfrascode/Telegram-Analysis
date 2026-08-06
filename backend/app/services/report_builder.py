@@ -112,9 +112,9 @@ def parse_uuid_list(values: Iterable[str] | None) -> list[uuid.UUID]:
 def relative_media_href_from_subreport(original_path: str | None) -> str | None:
     """Return a media href from ``report/questions/q_XXX.html`` to the Telegram root.
 
-    Users explicitly want to download only the ``report/`` folder and then place it
-    manually inside the original Telegram export directory. From a subreport at
-    ``report/questions/q_001.html`` the export root is two levels up, hence
+    The ``report/`` folder is placed inside the original Telegram export either
+    automatically by Download All or manually after a report-only download. From a
+    subreport at ``report/questions/q_001.html`` the export root is two levels up, hence
     ``../../photos/example.jpg``.
     """
     if not original_path:

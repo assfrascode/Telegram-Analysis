@@ -41,6 +41,16 @@ def build_report_filename(source_name: str | None, report_date: date) -> str:
     return f"chat-analyse-{source_component}-{report_date.isoformat()}.zip"
 
 
+def build_download_all_filename(upload_filename: str | None) -> str:
+    safe_name = Path(str(upload_filename or "").replace("\\", "/")).name.strip()
+    stem = (
+        safe_name[:-4].strip()
+        if safe_name.lower().endswith(".zip")
+        else Path(safe_name).stem.strip()
+    )
+    return f"{stem or 'telegram-export'}-with-report.zip"
+
+
 def report_date_for_job(job: Job, fallback: datetime) -> date:
     value = fallback
     if job.source_type == JobSourceType.telegram_chat and job.report_end_at is not None:

@@ -22,7 +22,7 @@ The project is still an MVP, but it includes a functional backend, worker pipeli
 - Scheduled Telegram reports from collected chats and saved question sets. A selected 1, 7, 14, or 30-day interval controls both the recurrence and rolling report window while preserving the configured local run time and timezone.
 - Live job monitoring through WebSocket events with polling fallback.
 - Job history, pipeline stage view, event log filtering, cancellation, capacity checks, retry tracking, and dead-letter visibility.
-- Report-only ZIP download containing the static `report/` folder without original Telegram media.
+- Report-only ZIP downloads plus a combined download that adds the static `report/` folder to the original uploaded Telegram export.
 - Mock LLM mode for local development without GPU-backed model services.
 
 ## Architecture
@@ -225,6 +225,8 @@ report.zip
 ```
 
 Original Telegram media is not included in the report ZIP. Media links are relative, so the `report/` folder is intended to be extracted next to the original Telegram export files when media references should resolve locally.
+
+For completed upload jobs, **Download all** creates a second archive named `<original-stem>-with-report.zip`. It preserves the original export contents and adds `report/` beside the selected `result.json` or `messages.html`, so the report and its relative media links work after one extraction. Direct Telegram jobs continue to offer the report-only download because they have no original uploaded ZIP.
 
 ## Operational Notes
 

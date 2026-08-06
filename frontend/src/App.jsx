@@ -29,6 +29,17 @@ function requestErrorMessage(reason) {
   return reason?.message || String(reason);
 }
 
+function saveDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function getStageState(events, currentJob) {
   const latestRetryIndex = events.findLastIndex((event) => event.event_type === "job.retry.started");
   const applicableStages = STAGES.filter((stage) => {
@@ -122,6 +133,7 @@ export default function App() {
   const [selectedQuestionSetId, setSelectedQuestionSetId] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadInProgress, setUploadInProgress] = useState(false);
+  const [downloadInProgress, setDownloadInProgress] = useState(null);
   const [sourceMode, setSourceMode] = useState("upload");
   const [telegramConnection, setTelegramConnection] = useState(null);
   const [telegramChats, setTelegramChats] = useState([]);
@@ -574,20 +586,31 @@ export default function App() {
 
   const downloadReport = async () => {
     if (!token || !currentJobId) return;
+    setDownloadInProgress("report");
     try {
       const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/download`, { token });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      saveDownload(blob, filename);
       addLocalLog("Report download started");
     } catch (error) {
       showToast(`Could not download report: ${error.message}`, "error");
       addLocalLog(`Could not download report: ${error.message}`, "error");
+    } finally {
+      setDownloadInProgress(null);
+    }
+  };
+
+  const downloadAll = async () => {
+    if (!token || !currentJobId) return;
+    setDownloadInProgress("all");
+    try {
+      const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/download-all`, { token });
+      saveDownload(blob, filename);
+      addLocalLog("Combined download started");
+    } catch (error) {
+      showToast(`Could not download all files: ${error.message}`, "error");
+      addLocalLog(`Could not download all files: ${error.message}`, "error");
+    } finally {
+      setDownloadInProgress(null);
     }
   };
 
@@ -631,7 +654,9 @@ export default function App() {
               onRefresh={pollLatest}
               onCancel={cancelJob}
               onRetry={retryJob}
-              onDownload={downloadReport}
+              onDownloadReport={downloadReport}
+              onDownloadAll={downloadAll}
+              downloadInProgress={downloadInProgress}
             />
         ) : activeView === "telegram" ? (
             <TelegramSourcesPanel

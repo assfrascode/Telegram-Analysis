@@ -3,14 +3,24 @@ import logging
 import uuid
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_session
 from app.dependencies import get_current_user
-from app.models import Job, JobEvent, JobStatus, User, WorkerDeadLetter
+from app.models import (
+    Job,
+    JobEvent,
+    JobSourceType,
+    JobStatus,
+    Report,
+    Upload,
+    User,
+    WorkerDeadLetter,
+)
 from app.nats_client import nats_context
 from app.schemas import (
     EventResponse,
@@ -33,9 +43,16 @@ from app.services.jobs import (
 )
 from app.services.events import record_event
 from app.services.worker_control import mark_job_cancelled
-from app.services.minio_store import get_bytes
+from app.services.minio_store import get_bytes, minio_client
+from app.services.report_bundle import (
+    ReportBundleConflictError,
+    ReportBundleError,
+    build_report_bundle,
+    remove_temp_file,
+)
 from app.services.report_naming import (
     attachment_content_disposition,
+    build_download_all_filename,
     build_report_filename,
     report_date_for_job,
     resolve_report_source_name,
@@ -43,6 +60,7 @@ from app.services.report_naming import (
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 def _scheduled_report_metadata(job: Job) -> ScheduledReportJobMetadata | None:
@@ -289,3 +307,60 @@ async def download_report(
     )
     headers = {"Content-Disposition": attachment_content_disposition(filename)}
     return StreamingResponse(BytesIO(data), media_type="application/zip", headers=headers)
+
+
+@router.get("/{job_id}/report/download-all")
+async def download_all(
+    job_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    if job.status != JobStatus.completed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
+    if job.source_type != JobSourceType.upload or job.upload_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Download all is only available for uploaded ZIP jobs",
+        )
+
+    report = (
+        await session.execute(select(Report).where(Report.job_id == job.id))
+    ).scalar_one_or_none()
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not available")
+
+    upload = (
+        await session.execute(
+            select(Upload).where(
+                Upload.id == job.upload_id,
+                Upload.owner_user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if upload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original upload not available")
+
+    try:
+        bundle_path = await asyncio.to_thread(
+            build_report_bundle,
+            client=minio_client(),
+            bucket=settings.minio_bucket,
+            upload_object_key=upload.object_key,
+            report_object_key=report.object_key,
+        )
+    except ReportBundleConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ReportBundleError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    background_tasks.add_task(remove_temp_file, bundle_path)
+    filename = build_download_all_filename(upload.filename)
+    headers = {"Content-Disposition": attachment_content_disposition(filename)}
+    return FileResponse(
+        bundle_path,
+        media_type="application/zip",
+        headers=headers,
+        background=background_tasks,
+    )

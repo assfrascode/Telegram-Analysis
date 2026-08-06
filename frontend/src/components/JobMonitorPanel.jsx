@@ -41,7 +41,9 @@ export function JobMonitorPanel({
   onRefresh,
   onCancel,
   onRetry,
-  onDownload,
+  onDownloadReport,
+  onDownloadAll,
+  downloadInProgress,
 }) {
   const completed = stageStates.filter((item) => item.status === "completed").length;
   const running = stageStates.find((item) => item.status === "running");
@@ -123,9 +125,26 @@ export function JobMonitorPanel({
 
           <div className="actions-row sticky-actions">
             {currentJob.status === "completed" && (
-              <button className="button button-primary button-large" type="button" onClick={onDownload}>
-                Download report
-              </button>
+              <>
+                {currentJob.source_type === "upload" && (
+                  <button
+                    className="button button-primary button-large"
+                    type="button"
+                    onClick={onDownloadAll}
+                    disabled={Boolean(downloadInProgress)}
+                  >
+                    {downloadInProgress === "all" ? "Preparing download…" : "Download all"}
+                  </button>
+                )}
+                <button
+                  className="button button-secondary button-large"
+                  type="button"
+                  onClick={onDownloadReport}
+                  disabled={Boolean(downloadInProgress)}
+                >
+                  {downloadInProgress === "report" ? "Preparing report…" : "Download report"}
+                </button>
+              </>
             )}
           </div>
         </div>

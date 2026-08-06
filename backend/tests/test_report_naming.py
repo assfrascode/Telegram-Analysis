@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.models import JobSourceType
 from app.services.report_naming import (
     attachment_content_disposition,
+    build_download_all_filename,
     build_report_filename,
     report_date_for_job,
     sanitize_report_source_name,
@@ -43,3 +44,9 @@ def test_content_disposition_has_ascii_fallback_and_unicode_filename() -> None:
 
     assert header.startswith('attachment; filename="chat-analyse-gruppe-grun-2026-08-01.zip"')
     assert "filename*=UTF-8''chat-analyse-gruppe-gr%C3%BCn-2026-08-01.zip" in header
+
+
+def test_download_all_filename_uses_original_upload_stem() -> None:
+    assert build_download_all_filename("Telegram Export.zip") == "Telegram Export-with-report.zip"
+    assert build_download_all_filename("nested/path/chat.ZIP") == "chat-with-report.zip"
+    assert build_download_all_filename(None) == "telegram-export-with-report.zip"
