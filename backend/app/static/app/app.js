@@ -33,7 +33,7 @@ const state = {
   currentJob: null,
   deadLetters: [],
   uploadInProgress: false,
-  downloadInProgress: null,
+  downloadInProgress: false,
   mainMode: sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "create",
   authMode: "login",
 };
@@ -1055,7 +1055,6 @@ function renderActiveJob() {
     panel.hidden = true;
     $("cancel").hidden = true;
     $("retry").hidden = true;
-    $("downloadAll").hidden = true;
     $("download").hidden = true;
     renderJobDashboard([]);
     return;
@@ -1070,15 +1069,12 @@ function renderActiveJob() {
   $("cancel").hidden = TERMINAL_STATUSES.has(job.status);
   $("retry").hidden = job.status !== "failed";
   $("download").hidden = job.status !== "completed";
-  $("downloadAll").hidden = job.status !== "completed" || job.source_type !== "upload";
   $("download").disabled = Boolean(state.downloadInProgress);
-  $("downloadAll").disabled = Boolean(state.downloadInProgress);
-  $("download").textContent = state.downloadInProgress === "report"
-    ? "Report wird vorbereitet…"
-    : "Report herunterladen";
-  $("downloadAll").textContent = state.downloadInProgress === "all"
+  $("download").textContent = state.downloadInProgress
     ? "Download wird vorbereitet…"
-    : "Alles herunterladen";
+    : job.source_type === "upload"
+      ? "Alles herunterladen"
+      : "Report herunterladen";
 
   const error = $("jobError");
   if (job.error_message) {
@@ -1323,14 +1319,18 @@ async function retryJob() {
   }
 }
 
-async function downloadArtifact(path, kind, successMessage, failureMessage) {
+async function downloadResult() {
   if (!state.token || !state.currentJobId) return;
-  state.downloadInProgress = kind;
+  const includeOriginal = state.currentJob?.source_type === "upload";
+  const downloadPath = includeOriginal ? "download-all" : "download";
+  const successMessage = includeOriginal ? "Gesamt-Download gestartet" : "Report-Download gestartet";
+  const failureMessage = includeOriginal ? "Gesamt-Download fehlgeschlagen" : "Report-Download fehlgeschlagen";
+  state.downloadInProgress = true;
   renderActiveJob();
   try {
     const token = state.token;
     const currentJobId = state.currentJobId;
-    const res = await fetch(`/jobs/${currentJobId}/report/${path}`, {headers: {"Authorization": `Bearer ${token}`}});
+    const res = await fetch(`/jobs/${currentJobId}/report/${downloadPath}`, {headers: {"Authorization": `Bearer ${token}`}});
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -1346,17 +1346,9 @@ async function downloadArtifact(path, kind, successMessage, failureMessage) {
     showToast(`${failureMessage}: ${err.message}`, "error");
     addLocalLog(`${failureMessage}: ${err.message}`, "error");
   } finally {
-    state.downloadInProgress = null;
+    state.downloadInProgress = false;
     renderActiveJob();
   }
-}
-
-async function downloadReport() {
-  await downloadArtifact("download", "report", "Report-Download gestartet", "Report-Download fehlgeschlagen");
-}
-
-async function downloadAll() {
-  await downloadArtifact("download-all", "all", "Gesamt-Download gestartet", "Gesamt-Download fehlgeschlagen");
 }
 
 function resetForm() {
@@ -1421,8 +1413,7 @@ function bindEvents() {
   $("start").addEventListener("click", startJob);
   $("cancel").addEventListener("click", cancelJob);
   $("retry").addEventListener("click", retryJob);
-  $("downloadAll").addEventListener("click", downloadAll);
-  $("download").addEventListener("click", downloadReport);
+  $("download").addEventListener("click", downloadResult);
   $("refreshJobs").addEventListener("click", refreshJobs);
   $("refreshJob").addEventListener("click", () => Promise.allSettled([refreshJobStatus(), loadEventBacklog()]));
   $("clearLog").addEventListener("click", () => {

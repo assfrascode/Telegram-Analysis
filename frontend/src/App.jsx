@@ -133,7 +133,7 @@ export default function App() {
   const [selectedQuestionSetId, setSelectedQuestionSetId] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadInProgress, setUploadInProgress] = useState(false);
-  const [downloadInProgress, setDownloadInProgress] = useState(null);
+  const [downloadInProgress, setDownloadInProgress] = useState(false);
   const [sourceMode, setSourceMode] = useState("upload");
   const [telegramConnection, setTelegramConnection] = useState(null);
   const [telegramChats, setTelegramChats] = useState([]);
@@ -584,33 +584,21 @@ export default function App() {
     }
   };
 
-  const downloadReport = async () => {
+  const downloadResult = async () => {
     if (!token || !currentJobId) return;
-    setDownloadInProgress("report");
+    const includeOriginal = currentJob?.source_type === "upload";
+    const downloadPath = includeOriginal ? "download-all" : "download";
+    setDownloadInProgress(true);
     try {
-      const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/download`, { token });
+      const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/${downloadPath}`, { token });
       saveDownload(blob, filename);
-      addLocalLog("Report download started");
+      addLocalLog(includeOriginal ? "Combined download started" : "Report download started");
     } catch (error) {
-      showToast(`Could not download report: ${error.message}`, "error");
-      addLocalLog(`Could not download report: ${error.message}`, "error");
+      const message = includeOriginal ? "Could not download all files" : "Could not download report";
+      showToast(`${message}: ${error.message}`, "error");
+      addLocalLog(`${message}: ${error.message}`, "error");
     } finally {
-      setDownloadInProgress(null);
-    }
-  };
-
-  const downloadAll = async () => {
-    if (!token || !currentJobId) return;
-    setDownloadInProgress("all");
-    try {
-      const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/download-all`, { token });
-      saveDownload(blob, filename);
-      addLocalLog("Combined download started");
-    } catch (error) {
-      showToast(`Could not download all files: ${error.message}`, "error");
-      addLocalLog(`Could not download all files: ${error.message}`, "error");
-    } finally {
-      setDownloadInProgress(null);
+      setDownloadInProgress(false);
     }
   };
 
@@ -654,8 +642,7 @@ export default function App() {
               onRefresh={pollLatest}
               onCancel={cancelJob}
               onRetry={retryJob}
-              onDownloadReport={downloadReport}
-              onDownloadAll={downloadAll}
+              onDownload={downloadResult}
               downloadInProgress={downloadInProgress}
             />
         ) : activeView === "telegram" ? (

@@ -74,8 +74,7 @@ export function JobMonitorPanel({
   onRefresh,
   onCancel,
   onRetry,
-  onDownloadReport,
-  onDownloadAll,
+  onDownload,
   downloadInProgress,
 }) {
   const completed = stageStates.filter((item) => item.status === "completed").length;
@@ -178,16 +177,11 @@ export function JobMonitorPanel({
               <div className="report-ready-copy">
                 <span className="section-kicker">Downloads</span>
                 <h3>Your report is ready</h3>
-                <p>{currentJob.source_type === "upload" ? "Download the report alone or together with the original export." : "Download the finished analysis report."}</p>
+                <p>{currentJob.source_type === "upload" ? "Download the report together with the original export." : "Download the finished analysis report."}</p>
               </div>
               <div className="actions-row report-ready-actions">
-                {currentJob.source_type === "upload" && (
-                  <button className="button button-primary button-large" type="button" onClick={onDownloadAll} disabled={Boolean(downloadInProgress)}>
-                    {downloadInProgress === "all" ? "Preparing download…" : "Download all"}
-                  </button>
-                )}
-                <button className={`button ${currentJob.source_type === "upload" ? "button-secondary" : "button-primary"} button-large`} type="button" onClick={onDownloadReport} disabled={Boolean(downloadInProgress)}>
-                  {downloadInProgress === "report" ? "Preparing report…" : "Download report"}
+                <button className="button button-primary button-large" type="button" onClick={onDownload} disabled={downloadInProgress}>
+                  {downloadInProgress ? "Preparing download…" : currentJob.source_type === "upload" ? "Download all" : "Download report"}
                 </button>
               </div>
             </section>
