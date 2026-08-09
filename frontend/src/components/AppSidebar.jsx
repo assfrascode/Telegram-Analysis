@@ -32,6 +32,14 @@ function SidebarIcon({ name }) {
       </svg>
     );
   }
+  if (name === "help") {
+    return (
+      <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.75" />
+        <path d="M9.75 9.25a2.4 2.4 0 0 1 4.65.85c0 1.9-2.4 2.05-2.4 3.8M12 17.2v.1" />
+      </svg>
+    );
+  }
   return (
     <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M5 5.75h14v10.5H9l-4 3z" />
@@ -106,16 +114,30 @@ export function AppSidebar({
   return (
     <aside className="app-sidebar">
       <div className="sidebar-brand">
-        <span className="app-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24">
-            <path d="M5 5.75h14v10.5H9l-4 3z" />
-            <path d="M8 9.25h8M8 12.75h5" />
-          </svg>
-        </span>
-        <div>
-          <strong>Chat Analysis</strong>
-          <span>Intelligence workspace</span>
+        <div className="sidebar-brand-identity">
+          <span className="app-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M5 5.75h14v10.5H9l-4 3z" />
+              <path d="M8 9.25h8M8 12.75h5" />
+            </svg>
+          </span>
+          <div>
+            <strong>Chat Analysis</strong>
+            <span>Intelligence workspace</span>
+          </div>
         </div>
+        <button
+          className={`sidebar-help${activeView === "tutorial" ? " is-active" : ""}`}
+          type="button"
+          aria-label="Open report tutorial"
+          aria-describedby="report-tutorial-tooltip"
+          aria-current={activeView === "tutorial" ? "page" : undefined}
+          title="How to create a report"
+          onClick={() => onNavigate("tutorial")}
+        >
+          <SidebarIcon name="help" />
+          <span className="sidebar-help-tooltip" id="report-tutorial-tooltip" role="tooltip">Report tutorial</span>
+        </button>
       </div>
 
       <nav className="primary-nav" aria-label="Main navigation">

@@ -72,6 +72,30 @@ def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> No
     assert "min-width: 1180px" in styles
 
 
+def test_react_frontend_exposes_static_beginner_report_tutorial() -> None:
+    root = Path("frontend/src")
+    app = (root / "App.jsx").read_text()
+    sidebar = (root / "components/AppSidebar.jsx").read_text()
+    tutorial = (root / "components/TutorialPage.jsx").read_text()
+    styles = (root / "styles.css").read_text()
+
+    assert 'activeView === "tutorial"' in app
+    assert 'onNavigate("tutorial")' in sidebar
+    assert 'aria-label="Open report tutorial"' in sidebar
+    assert 'aria-current={activeView === "tutorial" ? "page" : undefined}' in sidebar
+    assert 'role="tooltip"' in sidebar
+    assert "How to create a report" in tutorial
+    assert "Export chat history" in tutorial
+    assert "Choose your .zip file" in tutorial
+    assert "Each question becomes one section" in tutorial
+    assert "Download all" in tutorial
+    assert "Use a collected chat instead" in tutorial
+    assert "Common problems" in tutorial
+    assert "<button" not in tutorial
+    assert ".tutorial-page" in styles
+    assert ".sidebar-help.is-active" in styles
+
+
 def test_frontends_expose_failed_job_retry_action() -> None:
     root = Path("frontend/src")
     app = (root / "App.jsx").read_text()
