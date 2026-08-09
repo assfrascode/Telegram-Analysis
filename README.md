@@ -185,7 +185,7 @@ LIBRETRANSLATE_BASE_URL=http://libretranslate:5000
 LIBRETRANSLATE_API_KEY=
 ```
 
-The translation target is fixed to English. Source-language messages and transcripts remain stored internally, while translated jobs use only English content in retrieval chunks and report evidence. New image/video descriptions are also requested directly in English and use the `neutral-en-v2` prompt cache version.
+The translation target is fixed to English. Translated jobs use only English content for chunking, retrieval, and answer generation. The final report shows English message text by default and keeps the original source text in a collapsed `Show original text` section so readers can verify a questionable translation. New image/video descriptions are also requested directly in English and use the `neutral-en-v2` prompt cache version.
 
 ### Transcription
 

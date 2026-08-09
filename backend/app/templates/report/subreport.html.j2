@@ -109,6 +109,13 @@
                   </div>
                   {% endif %}
 
+                  {% if msg.original_text %}
+                  <details class="original-text-details">
+                    <summary>Show original text</summary>
+                    <pre>{{ msg.original_text }}</pre>
+                  </details>
+                  {% endif %}
+
                   {% if msg.media %}
                   <div class="attachment-stack">
                     {% for media in msg.media %}

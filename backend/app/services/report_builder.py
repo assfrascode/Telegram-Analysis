@@ -220,6 +220,7 @@ class ReportMessage:
     reactions: list[dict[str, Any]]
     reaction_chips: list[str]
     text: str
+    original_text: str | None = None
     translation_text: str | None = None
     translation_target_language: str | None = None
     translation_source_language: str | None = None
@@ -418,6 +419,7 @@ def build_report_message(
     translation_applied = bool(
         english_only and source_text != "[NO_TEXT]" and translation_text
     )
+    original_text = source_text if english_only and source_text != "[NO_TEXT]" else None
     display_text = source_text
     if english_only and source_text != "[NO_TEXT]":
         display_text = translation_text or "[ENGLISH_TRANSLATION_UNAVAILABLE]"
@@ -436,6 +438,7 @@ def build_report_message(
         reactions=list(message.reactions or []),
         reaction_chips=format_reaction_chips(message.reactions or []),
         text=display_text,
+        original_text=original_text,
         translation_text=(translation_text or None) if not english_only else None,
         translation_target_language=(translation.target_language if translation else None),
         translation_source_language=(translation.detected_source_language if translation else None),
