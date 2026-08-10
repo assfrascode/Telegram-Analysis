@@ -28,14 +28,21 @@
         </div>
       </div>
       <div class="report-hero__actions">
-        <a class="button button--secondary" href="media_gallery.html">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4.75 6.75A2 2 0 0 1 6.75 4.75h10.5a2 2 0 0 1 2 2v10.5a2 2 0 0 1-2 2H6.75a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6"/>
-            <path d="m7.5 16 3.2-3.4 2.15 2.15 1.65-1.65 2.25 2.9M15.75 9.1h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Media
-          <span class="button-count">{{ media_gallery|length }}</span>
-        </a>
+        <div class="report-hero__buttons">
+          <a class="button button--secondary" href="media_gallery.html">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4.75 6.75A2 2 0 0 1 6.75 4.75h10.5a2 2 0 0 1 2 2v10.5a2 2 0 0 1-2 2H6.75a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6"/>
+              <path d="m7.5 16 3.2-3.4 2.15 2.15 1.65-1.65 2.25 2.9M15.75 9.1h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Media
+            <span class="button-count">{{ media_gallery|length }}</span>
+          </a>
+          <button class="button button--secondary theme-toggle" type="button" data-theme-toggle aria-label="Switch to light mode" title="Switch to light mode">
+            <svg class="theme-toggle__sun" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <svg class="theme-toggle__moon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 15.3A7.7 7.7 0 0 1 8.7 5a7.7 7.7 0 1 0 10.3 10.3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            <span data-theme-label>Light mode</span>
+          </button>
+        </div>
         <time class="generated-at" datetime="{{ generated_at.isoformat() }}">Generated {{ generated_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
       </div>
     </header>
@@ -71,7 +78,7 @@
           <svg viewBox="0 0 24 24" fill="none"><path d="m8.5 12 2.25 2.25 4.75-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/></svg>
         </span>
       </div>
-      <pre class="summary-text">{{ bluf }}</pre>
+      <div class="summary-text markdown-body">{{ bluf|report_markdown }}</div>
     </section>
 
     <section class="report-card">
@@ -93,7 +100,7 @@
             <span class="evidence-pill">{{ q.evidence|length }} evidence section{% if q.evidence|length != 1 %}s{% endif %}</span>
           </div>
           <h3>{{ q.question }}</h3>
-          <p>{{ q.short_answer }}</p>
+          <div class="question-card__answer markdown-body">{{ q.short_answer|report_markdown(allow_links=false) }}</div>
           <span class="open-link">Open question report <span aria-hidden="true">→</span></span>
         </a>
         {% endfor %}

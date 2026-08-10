@@ -1,9 +1,121 @@
 (() => {
-  const params = new URLSearchParams(window.location.search);
-  const highlight = params.get("msg");
-  if (!highlight) return;
+  const themeKey = "chat-analysis-report-theme";
+  const themeParams = new URLSearchParams(window.location.search);
 
-  const target = document.getElementById(`msg-${highlight}`);
+  const storedTheme = () => {
+    try {
+      return window.localStorage.getItem(themeKey);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const rememberTheme = (theme) => {
+    try {
+      window.localStorage.setItem(themeKey, theme);
+    } catch (_) {
+      // Local file privacy settings can disable storage. Theme links still carry the choice.
+    }
+  };
+
+  const updateThemeLinks = (theme) => {
+    const selector = [
+      "a.question-card",
+      "a.back-link",
+      ".report-footer > a",
+      '.report-hero__buttons > a[href$=".html"]',
+    ].join(",");
+
+    document.querySelectorAll(selector).forEach((link) => {
+      try {
+        const destination = new URL(link.getAttribute("href"), window.location.href);
+        destination.searchParams.set("theme", theme);
+        link.href = destination.href;
+      } catch (_) {
+        // Leave malformed or unsupported links untouched.
+      }
+    });
+  };
+
+  const applyTheme = (theme, { updateUrl = false } = {}) => {
+    const nextTheme = theme === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = nextTheme;
+    document.documentElement.style.colorScheme = nextTheme;
+
+    document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
+      const switchTo = nextTheme === "light" ? "dark" : "light";
+      const action = `Switch to ${switchTo} mode`;
+      const label = button.querySelector("[data-theme-label]");
+      button.setAttribute("aria-label", action);
+      button.title = action;
+      if (label) label.textContent = `${switchTo[0].toUpperCase()}${switchTo.slice(1)} mode`;
+    });
+
+    updateThemeLinks(nextTheme);
+    rememberTheme(nextTheme);
+
+    if (updateUrl) {
+      try {
+        const current = new URL(window.location.href);
+        current.searchParams.set("theme", nextTheme);
+        window.history.replaceState(null, "", current.href);
+      } catch (_) {
+        // The visual theme still works when a browser blocks file URL history updates.
+      }
+    }
+  };
+
+  const requestedTheme = themeParams.get("theme");
+  const initialTheme = ["dark", "light"].includes(requestedTheme)
+    ? requestedTheme
+    : storedTheme();
+  applyTheme(initialTheme);
+
+  document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextTheme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      applyTheme(nextTheme, { updateUrl: true });
+    });
+  });
+
+  document.querySelectorAll("[data-message-text-toggle]").forEach((button) => {
+    const container = button.closest("[data-message-text-switch]");
+    const translated = container?.querySelector('[data-message-text-version="translated"]');
+    const original = container?.querySelector('[data-message-text-version="original"]');
+    const label = button.querySelector("[data-message-text-toggle-label]");
+    if (!translated || !original || !label) return;
+
+    button.addEventListener("click", () => {
+      const showOriginal = button.getAttribute("aria-pressed") !== "true";
+      translated.hidden = showOriginal;
+      original.hidden = !showOriginal;
+      button.setAttribute("aria-pressed", String(showOriginal));
+      label.textContent = showOriginal
+        ? button.dataset.translatedLabel || "Show English translation"
+        : "Show original message";
+    });
+  });
+
+  document.querySelectorAll("[data-media-enrichment-toggle]").forEach((button) => {
+    const panelId = button.getAttribute("aria-controls");
+    const panel = panelId ? document.getElementById(panelId) : null;
+    if (!panel) return;
+
+    button.addEventListener("click", () => {
+      const expand = button.getAttribute("aria-expanded") !== "true";
+      const nextLabel = expand
+        ? "Hide description and transcription"
+        : "Show description and transcription";
+      panel.hidden = !expand;
+      button.setAttribute("aria-expanded", String(expand));
+      button.title = nextLabel;
+      const assistiveLabel = button.querySelector(".visually-hidden");
+      if (assistiveLabel) assistiveLabel.textContent = nextLabel;
+    });
+  });
+
+  const highlight = themeParams.get("msg");
+  const target = highlight ? document.getElementById(`msg-${highlight}`) : null;
   if (!target) return;
 
   target.scrollIntoView({ behavior: "smooth", block: "center" });

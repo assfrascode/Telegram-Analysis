@@ -13,7 +13,14 @@
       <a class="back-link" href="../index.html">
         <span aria-hidden="true">←</span> Back to overview
       </a>
-      <span class="quiet-meta">Question {{ "%02d"|format(question.index) }}</span>
+      <div class="top-nav__actions">
+        <span class="quiet-meta">Question {{ "%02d"|format(question.index) }}</span>
+        <button class="theme-toggle theme-toggle--compact" type="button" data-theme-toggle aria-label="Switch to light mode" title="Switch to light mode">
+          <svg class="theme-toggle__sun" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <svg class="theme-toggle__moon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 15.3A7.7 7.7 0 0 1 8.7 5a7.7 7.7 0 1 0 10.3 10.3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span data-theme-label>Light mode</span>
+        </button>
+      </div>
     </nav>
 
     <header class="report-hero report-hero--question">
@@ -47,7 +54,7 @@
           <svg viewBox="0 0 24 24" fill="none"><path d="M7.5 7.5h9M7.5 11.5h9M7.5 15.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 3.75h14v16.5H5z" stroke="currentColor" stroke-width="1.6"/></svg>
         </span>
       </div>
-      <article class="answer-body">{{ question.answer }}</article>
+      <article class="answer-body markdown-body">{{ question.answer|report_markdown }}</article>
     </section>
 
     <section class="report-card evidence-section">
@@ -92,50 +99,109 @@
                   </div>
                   {% endif %}
 
-                  {% if msg.text == "[NO_TEXT]" %}
-                  <p class="empty-message">This message has no text.</p>
-                  {% elif msg.text == "[ENGLISH_TRANSLATION_UNAVAILABLE]" %}
-                  <p class="empty-message">English translation unavailable.</p>
-                  {% else %}
-                  <pre class="telegram-text">{{ msg.text }}</pre>
-                  {% endif %}
+                  <div{% if msg.original_text %} class="message-text-switch" data-message-text-switch{% endif %}>
+                    <div{% if msg.original_text %} data-message-text-version="translated"{% endif %}>
+                      {% if msg.text == "[NO_TEXT]" %}
+                      <p class="empty-message">This message has no text.</p>
+                      {% elif msg.text == "[ENGLISH_TRANSLATION_UNAVAILABLE]" %}
+                      <p class="empty-message">English translation unavailable.</p>
+                      {% else %}
+                      <pre class="telegram-text">{{ msg.text }}</pre>
+                      {% endif %}
+                    </div>
 
-                  {% if msg.translation_applied %}
-                  <span class="translation-badge">Translated to English</span>
-                  {% elif msg.translation_text %}
+                    {% if msg.original_text %}
+                    <pre class="telegram-text telegram-text--original" data-message-text-version="original" hidden>{{ msg.original_text }}</pre>
+                    <div class="translation-controls">
+                      {% if msg.translation_applied %}<span class="translation-badge">Translated to English</span>{% endif %}
+                      <button class="translation-toggle" type="button" data-message-text-toggle data-translated-label="{% if msg.translation_applied %}Show English translation{% else %}Show translation status{% endif %}" aria-pressed="false">
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h11M11 4l4 3-4 3M20 17H9M13 14l-4 3 4 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span data-message-text-toggle-label>Show original message</span>
+                      </button>
+                    </div>
+                    {% elif msg.translation_applied %}
+                    <span class="translation-badge">Translated to English</span>
+                    {% endif %}
+                  </div>
+
+                  {% if not msg.translation_applied and msg.translation_text %}
                   <div class="translation-panel">
                     <span>English translation</span>
                     <pre>{{ msg.translation_text }}</pre>
                   </div>
                   {% endif %}
 
-                  {% if msg.original_text %}
-                  <details class="original-text-details">
-                    <summary>Show original text</summary>
-                    <pre>{{ msg.original_text }}</pre>
-                  </details>
-                  {% endif %}
-
                   {% if msg.media %}
                   <div class="attachment-stack">
                     {% for media in msg.media %}
-                      {% if media.relative_href %}
-                      <a class="attachment-row" href="{{ media.relative_href }}">
-                        <span class="attachment-icon" aria-hidden="true">
-                          <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m8.1 15.4 6.7-6.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                        </span>
-                        <span class="attachment-copy"><strong>{{ media.media_type|replace("_", " ")|title }} attachment</strong><small>Original file</small></span>
-                        <span class="attachment-action">Open <span aria-hidden="true">↗</span></span>
-                      </a>
-                      {% else %}
-                      <div class="attachment-row attachment-row--unavailable">
-                        <span class="attachment-icon" aria-hidden="true">
-                          <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                        </span>
-                        <span class="attachment-copy"><strong>{{ media.media_type|replace("_", " ")|title }} attachment</strong><small>Original unavailable</small></span>
-                        <span class="reason-tag">{{ media.unavailable_reason or "File unavailable" }}</span>
+                      {% set is_image = media.preview_kind == "image" %}
+                      {% set is_video = media.preview_kind == "video" %}
+                      {% set is_audio = media.preview_kind == "audio" %}
+                      <article class="attachment-item{% if not media.relative_href %} attachment-item--unavailable{% endif %}">
+                        {% if media.relative_href and (is_image or is_video or is_audio) %}
+                        <div class="attachment-preview attachment-preview--{{ "image" if is_image else "video" if is_video else "audio" }}">
+                          {% if is_image %}
+                          <a class="attachment-preview__link" href="{{ media.relative_href }}" aria-label="Open original {{ media.media_type|replace('_', ' ') }} attachment">
+                            <img src="{{ media.relative_href }}" alt="{{ media.media_type|replace('_', ' ')|title }} attachment" loading="lazy" decoding="async">
+                          </a>
+                          {% elif is_video %}
+                          <video controls preload="metadata">
+                            <source src="{{ media.relative_href }}">
+                            Your browser cannot play this video. <a href="{{ media.relative_href }}">Open the original file</a>.
+                          </video>
+                          {% else %}
+                          <audio controls preload="metadata" src="{{ media.relative_href }}">
+                            Your browser cannot play this audio. <a href="{{ media.relative_href }}">Open the original file</a>.
+                          </audio>
+                          {% endif %}
+                          <button class="media-enrichment-toggle" type="button" data-media-enrichment-toggle aria-expanded="false" aria-controls="media-enrichment-{{ item.id }}-{{ msg.id }}-{{ loop.index }}" title="Show description and transcription">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 10.7v5M12 7.7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                            <span class="visually-hidden">Show description and transcription</span>
+                          </button>
+                        </div>
+                        {% endif %}
+
+                        <div class="attachment-row{% if not media.relative_href %} attachment-row--unavailable{% endif %}">
+                          <span class="attachment-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none"><path d="m9 12.5 5.3-5.3a3 3 0 0 1 4.25 4.25l-7.1 7.1a4.5 4.5 0 0 1-6.36-6.36l7.1-7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>{% if media.relative_href %}<path d="m8.1 15.4 6.7-6.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>{% else %}<path d="M5 5l14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>{% endif %}</svg>
+                          </span>
+                          <span class="attachment-copy"><strong>{{ media.media_type|replace("_", " ")|title }} attachment</strong><small>{% if media.relative_href %}Original file{% else %}Original unavailable{% endif %}</small></span>
+                          {% if media.relative_href %}
+                          <a class="attachment-action" href="{{ media.relative_href }}">Open <span aria-hidden="true">↗</span></a>
+                          {% else %}
+                          <span class="reason-tag">{{ media.unavailable_reason or "File unavailable" }}</span>
+                          {% endif %}
+                          {% if not (media.relative_href and (is_image or is_video or is_audio)) %}
+                          <button class="media-enrichment-toggle" type="button" data-media-enrichment-toggle aria-expanded="false" aria-controls="media-enrichment-{{ item.id }}-{{ msg.id }}-{{ loop.index }}" title="Show description and transcription">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 10.7v5M12 7.7h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                            <span class="visually-hidden">Show description and transcription</span>
+                          </button>
+                          {% endif %}
+                        </div>
+
+                        <div class="media-enrichment-panel" id="media-enrichment-{{ item.id }}-{{ msg.id }}-{{ loop.index }}" hidden>
+                          {% if media.description %}
+                          <section>
+                            <h4>Description</h4>
+                            <p>{{ media.description }}</p>
+                          </section>
+                          {% endif %}
+                          {% if media.transcript_text %}
+                          <section>
+                            <h4>Transcription</h4>
+                            <pre>{{ media.transcript_text }}</pre>
+                          </section>
+                          {% elif media.transcript_error %}
+                          <section>
+                            <h4>Transcription</h4>
+                            <p class="media-enrichment-panel__notice">{{ media.transcript_error }}</p>
+                          </section>
+                          {% endif %}
+                          {% if not media.description and not media.transcript_text and not media.transcript_error %}
+                          <p class="media-enrichment-panel__notice">No generated description or transcription is available for this file.</p>
+                          {% endif %}
                       </div>
-                      {% endif %}
+                      </article>
                     {% endfor %}
                   </div>
                   {% endif %}
@@ -160,11 +226,6 @@
             </div>
             {% endif %}
           </div>
-
-          <details class="source-details">
-            <summary>Technical source text</summary>
-            <pre class="chunk-text">{{ item.text }}</pre>
-          </details>
         </article>
         {% endfor %}
       </div>

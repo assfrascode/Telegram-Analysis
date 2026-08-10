@@ -43,6 +43,7 @@ from app.services.report_builder import (
     build_report_message,
     make_bluf,
     parse_uuid_list,
+    render_report_markdown,
     sort_report_gallery_items,
 )
 from app.services.report_naming import (
@@ -369,6 +370,7 @@ class ReportWorker(Worker):
         bluf: str,
         media_gallery: list[ReportGalleryItem] | None = None,
     ) -> bytes:
+        env.filters["report_markdown"] = render_report_markdown
         gallery_items = media_gallery or []
         index_html = env.get_template("index.html.j2").render(
             job=job,

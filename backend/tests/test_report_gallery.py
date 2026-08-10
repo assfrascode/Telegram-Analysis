@@ -13,6 +13,8 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 from app.models import StepStatus, TelegramMedia, TelegramMessage
 from app.services.report_builder import (
     build_report_gallery_item,
+    format_file_size,
+    media_preview_kind,
     sort_report_gallery_items,
 )
 from app.workers.report_worker import ReportWorker
@@ -132,7 +134,29 @@ def test_gallery_items_sort_by_timestamp_message_id_and_path_with_unknowns_last(
     ]
 
 
-def test_report_zip_contains_link_only_gallery_and_no_media_binaries() -> None:
+def test_gallery_chooses_browser_preview_from_type_and_extension() -> None:
+    assert media_preview_kind("image", "files/blob") == "image"
+    assert media_preview_kind("video", "files/blob") == "video"
+    assert media_preview_kind("voice", "files/blob") == "audio"
+    assert media_preview_kind("animation", "files/loop.GIF") == "image"
+    assert media_preview_kind("animation", "files/loop.mp4") == "video"
+    assert media_preview_kind("sticker", "stickers/reaction.webp") == "image"
+    assert media_preview_kind("sticker", "stickers/reaction.tgs") == "file"
+    assert media_preview_kind("unknown", "files/recording.ogg") == "audio"
+    assert media_preview_kind("document", "files/brief.pdf") == "file"
+
+
+def test_gallery_formats_file_sizes_for_compact_metadata() -> None:
+    assert format_file_size(None) is None
+    assert format_file_size(-1) is None
+    assert format_file_size(0) == "0 B"
+    assert format_file_size(1023) == "1023 B"
+    assert format_file_size(1024) == "1 KB"
+    assert format_file_size(1536) == "1.5 KB"
+    assert format_file_size(1024 * 1024) == "1 MB"
+
+
+def test_report_zip_contains_preview_gallery_and_no_media_binaries() -> None:
     template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
     env = Environment(
         loader=FileSystemLoader(template_dir),
@@ -177,9 +201,49 @@ def test_report_zip_contains_link_only_gallery_and_no_media_binaries() -> None:
     assert "Open original" in gallery_html
     assert "Collector file not included" in gallery_html
     assert "telegram/source/video.mp4" not in gallery_html
-    assert "<img" not in gallery_html
+    assert '<img src="../photos/&lt;script&gt;.jpg"' in gallery_html
+    assert "1.2 KB" in gallery_html
     assert "<video" not in gallery_html
     assert "<audio" not in gallery_html
+
+
+def test_gallery_template_renders_native_media_previews_and_file_fallback() -> None:
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
+    env = Environment(
+        loader=FileSystemLoader(template_dir),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
+    )
+    message = _message(7, datetime(2026, 1, 2, tzinfo=timezone.utc))
+    media_gallery = [
+        build_report_gallery_item(_media("photos/still.jpg"), message),
+        build_report_gallery_item(_media("videos/clip.mp4", media_type="video"), message),
+        build_report_gallery_item(_media("files/song.mp3", media_type="audio"), message),
+        build_report_gallery_item(_media("voice/voice.ogg", media_type="voice"), message),
+        build_report_gallery_item(_media("stickers/wave.webp", media_type="sticker"), message),
+        build_report_gallery_item(_media("files/notes.pdf", media_type="document"), message),
+        build_report_gallery_item(
+            _media("videos/missing.mp4", media_type="video", minio_object_key=None),
+            message,
+        ),
+    ]
+
+    html = env.get_template("media_gallery.html.j2").render(
+        job=SimpleNamespace(source_name="Media Chat"),
+        generated_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        media_gallery=media_gallery,
+    )
+
+    assert '<img src="../photos/still.jpg"' in html
+    assert '<img src="../stickers/wave.webp"' in html
+    assert '<video controls preload="metadata" playsinline' in html
+    assert '<source src="../videos/clip.mp4">' in html
+    assert html.count('<audio controls preload="metadata"') == 2
+    assert 'src="../files/song.mp3"' in html
+    assert 'src="../voice/voice.ogg"' in html
+    assert 'class="media-file-preview" href="../files/notes.pdf"' in html
+    assert 'class="media-file-preview media-file-preview--unavailable"' in html
+    assert "Media mix" in html
+    assert "Document <strong>1</strong>" in html
 
 
 def test_gallery_template_renders_empty_state() -> None:

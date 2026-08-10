@@ -1,8 +1,13 @@
 
+import html
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
+
+import bleach
+import markdown
+from markupsafe import Markup
 
 from app.models import (
     MediaAnalysis,
@@ -19,6 +24,72 @@ from app.models import (
 
 NO_ANSWER_BLUF = "No answered questions were available for this report."
 MISSING_SHORT_ANSWER = "No summary has been saved yet."
+REPORT_MARKDOWN_TAGS = frozenset(
+    {
+        "a",
+        "blockquote",
+        "br",
+        "code",
+        "del",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+
+
+def render_report_markdown(value: str | None, *, allow_links: bool = True) -> Markup:
+    """Render model-authored Markdown without trusting model-authored HTML.
+
+    Raw HTML is escaped before Markdown parsing so malformed closing tags cannot
+    escape their report card. Bleach then limits the generated fragment and its
+    link protocols. Card previews disable links because the entire card is already
+    an anchor; nested anchors would make browsers split the card DOM.
+    """
+    source = html.escape((value or "").strip(), quote=False)
+    if not source:
+        return Markup("")
+
+    rendered = markdown.markdown(
+        source,
+        extensions=["extra", "sane_lists"],
+        output_format="html",
+    )
+    allowed_tags = REPORT_MARKDOWN_TAGS if allow_links else REPORT_MARKDOWN_TAGS - {"a"}
+    cleaned = bleach.clean(
+        rendered,
+        tags=allowed_tags,
+        attributes={"a": ["href", "title"]} if allow_links else {},
+        protocols={"http", "https", "mailto"},
+        strip=True,
+        strip_comments=True,
+    )
+    return Markup(cleaned)
+
+IMAGE_PREVIEW_EXTENSIONS = frozenset(
+    {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+)
+VIDEO_PREVIEW_EXTENSIONS = frozenset({".m4v", ".mov", ".mp4", ".ogv", ".webm"})
+AUDIO_PREVIEW_EXTENSIONS = frozenset(
+    {".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba"}
+)
 
 
 def isoformat_or_empty(value: datetime | None) -> str:
@@ -40,6 +111,56 @@ def display_timestamp(value: datetime | None) -> str:
 def normalize_message_text(value: str | None) -> str:
     text = (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return text if text else "[NO_TEXT]"
+
+
+def media_preview_kind(media_type: str | None, original_path: str | None) -> str:
+    """Return the native HTML preview suitable for a report attachment.
+
+    Telegram's normalized image/video/audio types are authoritative. Less specific
+    types (animations, stickers, documents, and unknown files) use their extension
+    so browser-previewable files still appear directly in the offline report.
+    """
+    normalized_type = str(media_type or "").strip().lower()
+    normalized_path = str(original_path or "").replace("\\", "/").lower()
+    filename = normalized_path.rsplit("/", 1)[-1]
+    suffix = f".{filename.rsplit('.', 1)[-1]}" if "." in filename else ""
+
+    if normalized_type in {"image", "photo"}:
+        return "image"
+    if normalized_type == "video":
+        return "video"
+    if normalized_type in {"audio", "voice"}:
+        return "audio"
+
+    if suffix in IMAGE_PREVIEW_EXTENSIONS:
+        return "image"
+    if suffix in VIDEO_PREVIEW_EXTENSIONS:
+        return "video"
+    if suffix in AUDIO_PREVIEW_EXTENSIONS:
+        return "audio"
+
+    if normalized_type == "animation":
+        return "video"
+    return "file"
+
+
+def format_file_size(size_bytes: int | None) -> str | None:
+    """Format byte counts compactly for report metadata."""
+    if size_bytes is None or size_bytes < 0:
+        return None
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+
+    value = float(size_bytes)
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024:
+            number = f"{value:.1f}".rstrip("0").rstrip(".")
+            return f"{number} {unit}"
+
+    value /= 1024
+    number = f"{value:.1f}".rstrip("0").rstrip(".")
+    return f"{number} TB"
 
 
 def format_reaction_chip(value: dict[str, Any]) -> str | None:
@@ -184,6 +305,7 @@ class ReportMedia:
     id: str
     media_type: str
     original_path: str
+    preview_kind: str
     relative_href: str | None
     unavailable_reason: str | None
     status: str
@@ -241,6 +363,8 @@ class ReportGalleryItem:
     status: str
     missing_reason: str | None
     size_bytes: int | None
+    size_label: str | None
+    preview_kind: str
     telegram_message_id: int | None
     timestamp: str
     timestamp_iso: str
@@ -373,6 +497,7 @@ def build_report_media(
         id=str(media.id),
         media_type=media.media_type,
         original_path=media.original_path,
+        preview_kind=media_preview_kind(media.media_type, media.original_path),
         relative_href=relative_href,
         unavailable_reason=unavailable_reason,
         status=status_label(media.status),
@@ -478,6 +603,8 @@ def build_report_gallery_item(
         status=status_label(media.status),
         missing_reason=media.missing_reason,
         size_bytes=media.size_bytes,
+        size_label=format_file_size(media.size_bytes),
+        preview_kind=media_preview_kind(media.media_type, media.original_path),
         telegram_message_id=(message.telegram_message_id if message else None),
         timestamp=(display_timestamp(message.timestamp) if message else "Unknown time"),
         timestamp_iso=(isoformat_or_empty(message.timestamp) if message else ""),

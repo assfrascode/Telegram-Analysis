@@ -185,7 +185,7 @@ LIBRETRANSLATE_BASE_URL=http://libretranslate:5000
 LIBRETRANSLATE_API_KEY=
 ```
 
-The translation target is fixed to English. Translated jobs use only English content for chunking, retrieval, and answer generation. The final report shows English message text by default and keeps the original source text in a collapsed `Show original text` section so readers can verify a questionable translation. New image/video descriptions are also requested directly in English and use the `neutral-en-v2` prompt cache version.
+The translation target is fixed to English. Translated jobs use only English content for chunking, retrieval, and answer generation. The final report shows English message text by default and provides an in-place original/English toggle so readers can verify a questionable translation. New image/video descriptions are also requested directly in English and use the `neutral-en-v2` prompt cache version.
 
 ### Transcription
 
@@ -221,11 +221,14 @@ Completed jobs produce a ZIP containing only the static report:
 report.zip
   report/
     index.html
+    media_gallery.html
     assets/
     questions/
 ```
 
-Original Telegram media is not included in the report ZIP. Media links are relative, so the `report/` folder is intended to be extracted next to the original Telegram export files when media references should resolve locally.
+Answers and summaries render sanitized Markdown; model-authored HTML is displayed as text so it cannot break the surrounding report. Every page includes a persistent dark/light theme switch, with a Telegram-inspired pale chat canvas and white message bubbles in light mode. Question pages show media inline and expose generated descriptions/transcriptions from a compact info control. Repeated raw chunk text is not included in the rendered pages. The media gallery provides an inline image/video/audio library with fallback cards for files the browser cannot preview.
+
+Original Telegram media is not duplicated in the report ZIP. Previews and links are relative, so the `report/` folder is intended to be extracted next to the original Telegram export files when media references should resolve locally.
 
 For completed upload jobs, **Download all** creates a second archive named `<original-stem>-with-report.zip`. It preserves the original export contents and adds `report/` beside the selected `result.json` or `messages.html`, so the report and its relative media links work after one extraction. Direct Telegram jobs continue to offer the report-only download because they have no original uploaded ZIP.
 

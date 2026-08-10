@@ -3,11 +3,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from app.models import (
+    MediaAnalysis,
     MediaTranscript,
     MediaTranscriptTranslation,
     MessageTranslation,
@@ -19,7 +21,23 @@ from app.services.report_builder import (
     ReportEvidenceChunk,
     ReportQuestion,
     build_report_message,
+    render_report_markdown,
 )
+
+
+def _render_subreport(question: ReportQuestion) -> str:
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
+    env = Environment(
+        loader=FileSystemLoader(template_dir),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
+    )
+    env.filters["report_markdown"] = render_report_markdown
+    return env.get_template("subreport.html.j2").render(
+        job=object(),
+        question=question,
+        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        stats={},
+    )
 
 
 def test_report_message_and_subreport_render_saved_translation() -> None:
@@ -75,18 +93,7 @@ def test_report_message_and_subreport_render_saved_translation() -> None:
             )
         ],
     )
-    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
-    env = Environment(
-        loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml", "html.j2"]),
-    )
-
-    html = env.get_template("subreport.html.j2").render(
-        job=object(),
-        question=question,
-        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        stats={},
-    )
+    html = _render_subreport(question)
 
     assert "translation-panel" in html
     assert "English translation" in html
@@ -125,8 +132,22 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
         transcript_text="Transkribierter Inhalt.",
         raw_response={},
     )
+    analysis = MediaAnalysis(
+        media_id=media.id,
+        model_name="vision-model",
+        prompt_version="neutral-en-v2",
+        description="An audio clip containing a short spoken greeting.",
+        raw_response={},
+    )
 
-    report_message = build_report_message(message, media_items=[(media, None, transcript, None)])
+    report_message = build_report_message(
+        message,
+        media_items=[(media, analysis, transcript, None)],
+    )
+    assert report_message.media[0].preview_kind == "audio"
+    assert report_message.media[0].description == (
+        "An audio clip containing a short spoken greeting."
+    )
     assert report_message.media[0].transcript_text == "Transkribierter Inhalt."
     assert report_message.media[0].transcript_model == "whisper-1"
 
@@ -155,24 +176,83 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
             )
         ],
     )
-    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
-    env = Environment(
-        loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml", "html.j2"]),
-    )
-
-    html = env.get_template("subreport.html.j2").render(
-        job=object(),
-        question=question,
-        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        stats={},
-    )
+    html = _render_subreport(question)
 
     assert "Audio attachment" in html
     assert 'href="../../files/audio.mp3"' in html
-    assert "Transkribierter Inhalt." not in html
+    assert '<audio controls preload="metadata" src="../../files/audio.mp3">' in html
+    assert "data-media-enrichment-toggle" in html
+    assert "An audio clip containing a short spoken greeting." in html
+    assert "Transkribierter Inhalt." in html
     assert "whisper-1" not in html
     assert "AUDIO_TRANSCRIPT" not in html
+    assert "Technical source text" not in html
+    assert "chunk text" not in html
+
+
+@pytest.mark.parametrize(
+    ("media_type", "original_path", "preview_markup"),
+    [
+        ("image", "photos/example.jpg", '<img src="../../photos/example.jpg"'),
+        ("video", "video_files/example.mp4", "<video controls"),
+    ],
+)
+def test_subreport_previews_visual_media_inline(
+    media_type: str,
+    original_path: str,
+    preview_markup: str,
+) -> None:
+    message = TelegramMessage(
+        id=uuid.uuid4(),
+        job_id=uuid.uuid4(),
+        telegram_message_id=45,
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sender_name="Alice",
+        text="Visual attachment",
+        raw={},
+    )
+    media = TelegramMedia(
+        id=uuid.uuid4(),
+        job_id=message.job_id,
+        message_id=message.id,
+        media_type=media_type,
+        original_path=original_path,
+        minio_object_key=f"jobs/test/{original_path}",
+        status=StepStatus.completed,
+    )
+    report_message = build_report_message(message, media_items=[(media, None, None, None)])
+    question = ReportQuestion(
+        index=1,
+        filename="questions/q_001.html",
+        question="What happened?",
+        answer="Answer",
+        short_answer="Answer",
+        status="completed",
+        retrieval_k=50,
+        rerank_k=15,
+        evidence=[
+            ReportEvidenceChunk(
+                id=str(uuid.uuid4()),
+                chunk_index=0,
+                chunk_hash="hash",
+                retrieval_rank=1,
+                retrieval_score=None,
+                rerank_rank=1,
+                rerank_score=None,
+                start_timestamp="2026-01-01 00:00:00 UTC",
+                end_timestamp="2026-01-01 00:00:00 UTC",
+                text="raw chunk that must not be emitted",
+                messages=[report_message],
+            )
+        ],
+    )
+
+    html = _render_subreport(question)
+
+    assert preview_markup in html
+    assert f'../../{original_path}' in html
+    assert "data-media-enrichment-toggle" in html
+    assert "raw chunk that must not be emitted" not in html
 
 
 def test_report_uses_only_english_evidence_when_requested() -> None:
@@ -267,20 +347,12 @@ def test_report_uses_only_english_evidence_when_requested() -> None:
             )
         ],
     )
-    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
-    env = Environment(
-        loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "xml", "html.j2"]),
-    )
-
-    html = env.get_template("subreport.html.j2").render(
-        job=object(),
-        question=question,
-        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        stats={},
-    )
+    html = _render_subreport(question)
 
     assert "Good morning" in html
-    assert '<details class="original-text-details">' in html
-    assert "Show original text" in html
+    assert "data-message-text-switch" in html
+    assert "data-message-text-toggle" in html
+    assert 'data-message-text-version="original" hidden' in html
+    assert "Show original message" in html
+    assert "original-text-details" not in html
     assert "Guten Morgen" in html
