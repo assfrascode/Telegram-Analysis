@@ -1,26 +1,32 @@
 
+import json
+import logging
+import os
 import posixpath
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import PurePosixPath
 
 from minio import Minio
+from minio.deleteobjects import DeleteObject
 
 from app.config import Settings
 from app.services.telegram_export import read_result_name
 from app.services.telegram_html_export import (
     TelegramHtmlExportError,
     TelegramHtmlPage,
-    convert_html_export_pages,
     find_html_export_pages,
-    html_conversion_result_to_json_bytes,
+    parse_html_export_page,
 )
+from app.services.telegram_export import normalize_export_name
 
 
 class ZipSecurityError(ValueError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,7 @@ def validate_zip_infos(infos: list[zipfile.ZipInfo], settings: Settings) -> tupl
     if len(infos) > settings.max_zip_files:
         raise ZipSecurityError(f"ZIP contains too many entries: {len(infos)}")
 
+    seen_paths: set[str] = set()
     for info in infos:
         if info.is_dir():
             continue
@@ -72,7 +79,14 @@ def validate_zip_infos(infos: list[zipfile.ZipInfo], settings: Settings) -> tupl
         if unix_mode in {0o120000, 0o060000, 0o020000, 0o010000}:
             raise ZipSecurityError(f"unsupported special file in ZIP: {info.filename}")
 
-        normalize_zip_member_path(info.filename)
+        normalized_path = normalize_zip_member_path(info.filename)
+        if normalized_path in seen_paths:
+            raise ZipSecurityError(f"duplicate ZIP member path: {normalized_path}")
+        seen_paths.add(normalized_path)
+        if info.flag_bits & 0x1:
+            raise ZipSecurityError(f"encrypted ZIP members are not supported: {info.filename}")
+        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+            raise ZipSecurityError(f"unsupported ZIP compression method: {info.filename}")
         files_total += 1
         bytes_total += info.file_size
 
@@ -80,17 +94,69 @@ def validate_zip_infos(infos: list[zipfile.ZipInfo], settings: Settings) -> tupl
             raise ZipSecurityError(f"ZIP member exceeds max file size: {info.filename}")
         if bytes_total > settings.max_extracted_bytes:
             raise ZipSecurityError("ZIP exceeds configured max extracted size")
+        if info.file_size > 0 and info.compress_size == 0:
+            raise ZipSecurityError(f"invalid compressed size for {info.filename}")
         if info.compress_size > 0 and info.file_size / info.compress_size > 200:
             raise ZipSecurityError(f"suspicious compression ratio for {info.filename}")
 
     return files_total, bytes_total
 
 
-def download_object_to_tempfile(client: Minio, bucket: str, object_key: str) -> str:
+def download_object_to_tempfile(
+    client: Minio,
+    bucket: str,
+    object_key: str,
+    *,
+    max_bytes: int,
+) -> str:
     temp = tempfile.NamedTemporaryFile(prefix="chat-analyse-upload-", suffix=".zip", delete=False)
-    temp.close()
-    client.fget_object(bucket, object_key, temp.name)
-    return temp.name
+    response = None
+    received = 0
+    try:
+        response = client.get_object(bucket, object_key)
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > max_bytes:
+                raise ZipSecurityError("uploaded ZIP exceeds configured max size")
+            temp.write(chunk)
+        temp.close()
+        return temp.name
+    except Exception:
+        temp.close()
+        try:
+            os.unlink(temp.name)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            finally:
+                response.release_conn()
+
+
+def _cleanup_extracted_prefix(client: Minio, bucket: str, prefix: str) -> None:
+    """Best-effort removal of objects written by a failed extraction attempt."""
+
+    try:
+        objects = (
+            DeleteObject(item.object_name)
+            for item in client.list_objects(bucket, prefix=prefix, recursive=True)
+        )
+        errors = list(client.remove_objects(bucket, objects))
+        if errors:
+            logger.warning(
+                "Could not remove %d objects after failed ZIP extraction",
+                len(errors),
+            )
+    except Exception:
+        # Preserve the original validation/extraction error. Operators should
+        # still configure a lifecycle policy as a final orphan-data backstop.
+        logger.exception("Could not clean failed ZIP extraction prefix")
 
 
 def _convert_html_export_to_result_json(
@@ -101,40 +167,89 @@ def _convert_html_export_to_result_json(
     client: Minio,
     bucket: str,
     extracted_prefix: str,
+    settings: Settings,
 ) -> tuple[str | None, int, int, str | None]:
     if not html_page_paths:
         return None, 0, 0, None
 
     first_page = PurePosixPath(html_page_paths[0])
     export_root = "" if str(first_page.parent) == "." else f"{first_page.parent}/"
-    pages: list[TelegramHtmlPage] = []
+    message_spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    pages_total = 0
+    messages_total = 0
+    source_name: str | None = None
+    first_message = True
     for relative_path in html_page_paths:
         info = infos_by_path.get(relative_path)
         if info is None:
             continue
         page_path_in_export = relative_path[len(export_root) :] if relative_path.startswith(export_root) else relative_path
+        if info.file_size > settings.max_html_page_bytes:
+            raise TelegramHtmlExportError(f"HTML message page exceeds configured size limit: {relative_path}")
         with archive.open(info, mode="r") as source:
-            pages.append(TelegramHtmlPage(relative_path=page_path_in_export, html=source.read()))
+            html = source.read(settings.max_html_page_bytes + 1)
+        if len(html) > settings.max_html_page_bytes:
+            raise TelegramHtmlExportError(f"HTML message page exceeds configured size limit: {relative_path}")
+        page_name, messages = parse_html_export_page(
+            TelegramHtmlPage(relative_path=page_path_in_export, html=html),
+            max_messages=settings.max_telegram_messages_per_export,
+            max_message_bytes=settings.max_telegram_message_chars,
+        )
+        source_name = source_name or normalize_export_name(page_name)
+        pages_total += 1
+        messages_total += len(messages)
+        if messages_total > settings.max_telegram_messages_per_export:
+            raise TelegramHtmlExportError("HTML export contains too many messages")
+        for message in messages:
+            encoded = json.dumps(
+                message,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if not first_message:
+                message_spool.write(b",")
+            message_spool.write(encoded)
+            if message_spool.tell() > settings.max_file_bytes:
+                raise TelegramHtmlExportError("Converted HTML export exceeds configured file size limit")
+            first_message = False
 
-    conversion = convert_html_export_pages(pages)
-    if conversion.messages_total == 0:
-        return None, conversion.pages_total, 0, conversion.source_name
+    if messages_total == 0:
+        message_spool.close()
+        return None, pages_total, 0, source_name
 
-    result_json_object_key = f"{extracted_prefix}{export_root}result.json"
-    result_json = html_conversion_result_to_json_bytes(conversion)
-    client.put_object(
-        bucket,
-        result_json_object_key,
-        BytesIO(result_json),
-        length=len(result_json),
-        content_type="application/json",
-    )
-    return (
-        result_json_object_key,
-        conversion.pages_total,
-        conversion.messages_total,
-        conversion.source_name,
-    )
+    output = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    try:
+        header = json.dumps(
+            {
+                "name": source_name or "Telegram HTML export",
+                "type": "telegram_html_export",
+                "exported_from": "telegram_desktop_html",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        output.write(header[:-1])
+        output.write(b',"messages":[')
+        message_spool.seek(0)
+        while chunk := message_spool.read(1024 * 1024):
+            output.write(chunk)
+        output.write(b"]}")
+        length = output.tell()
+        if length > settings.max_file_bytes:
+            raise TelegramHtmlExportError("Converted HTML export exceeds configured file size limit")
+        output.seek(0)
+        result_json_object_key = f"{extracted_prefix}{export_root}result.json"
+        client.put_object(
+            bucket,
+            result_json_object_key,
+            output,
+            length=length,
+            content_type="application/json",
+        )
+        return result_json_object_key, pages_total, messages_total, source_name
+    finally:
+        output.close()
+        message_spool.close()
 
 
 def extract_zip_to_minio(
@@ -151,7 +266,12 @@ def extract_zip_to_minio(
     random access to the central directory. Individual members are streamed from
     ZipExtFile to MinIO and are not loaded into process memory.
     """
-    temp_path = download_object_to_tempfile(client, bucket, upload_object_key)
+    temp_path = download_object_to_tempfile(
+        client,
+        bucket,
+        upload_object_key,
+        max_bytes=settings.max_upload_bytes,
+    )
     files_total = 0
     bytes_total = 0
     result_json_object_key: str | None = None
@@ -207,6 +327,7 @@ def extract_zip_to_minio(
                         client=client,
                         bucket=bucket,
                         extracted_prefix=extracted_prefix,
+                        settings=settings,
                     )
                 except TelegramHtmlExportError as exc:
                     raise ZipSecurityError(f"Telegram HTML export could not be converted: {exc}") from exc
@@ -216,7 +337,10 @@ def extract_zip_to_minio(
                 result_info = infos_by_path.get(result_json_relative_path)
                 if result_info is not None:
                     with archive.open(result_info, mode="r") as source:
-                        source_name = read_result_name(source)
+                        source_name = read_result_name(
+                            source,
+                            max_string_bytes=settings.max_telegram_message_chars,
+                        )
 
         return ExtractionResult(
             extracted_prefix=extracted_prefix,
@@ -228,10 +352,11 @@ def extract_zip_to_minio(
             html_messages_total=html_messages_total,
             source_name=source_name,
         )
+    except Exception:
+        _cleanup_extracted_prefix(client, bucket, extracted_prefix)
+        raise
     finally:
         try:
-            import os
-
             os.unlink(temp_path)
         except FileNotFoundError:
             pass

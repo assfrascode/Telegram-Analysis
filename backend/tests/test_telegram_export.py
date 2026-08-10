@@ -1,6 +1,7 @@
 import json
 from decimal import Decimal
 from datetime import timezone
+from io import BytesIO
 
 import pytest
 
@@ -8,6 +9,7 @@ from app.services.telegram_export import (
     TelegramExportError,
     classify_media,
     extract_media_references,
+    iter_result_messages,
     normalize_export_path,
     parse_message,
     parse_text,
@@ -208,3 +210,17 @@ def test_convert_telegram_html_unsafe_media_path_does_not_break_import() -> None
     assert parsed is not None
     assert parsed.media[0].original_path == "../photos/escape.jpg"
     assert parsed.media[0].missing_reason == "unsafe_path"
+
+
+def test_streaming_json_parser_rejects_oversized_single_message() -> None:
+    payload = json.dumps({"messages": [{"id": 1, "text": "x" * 500}]}).encode()
+
+    with pytest.raises(TelegramExportError, match="size limit|per-message limit"):
+        list(iter_result_messages(BytesIO(payload), max_messages=10, max_message_bytes=100))
+
+
+def test_streaming_json_parser_rejects_excess_message_count() -> None:
+    payload = json.dumps({"messages": [{"id": 1}, {"id": 2}]}).encode()
+
+    with pytest.raises(TelegramExportError, match="too many messages"):
+        list(iter_result_messages(BytesIO(payload), max_messages=1, max_message_bytes=1000))

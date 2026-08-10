@@ -8,7 +8,7 @@ The project is still an MVP, but it includes a functional backend, worker pipeli
 
 - Authenticated React web interface for creating and monitoring analysis jobs.
 - Two analysis sources:
-  - Telegram Desktop ZIP exports uploaded through MinIO presigned PUTs or backend streaming.
+  - Telegram Desktop ZIP exports streamed through the authenticated backend.
   - Collected Telegram groups/channels synchronized by the backend or by an external collector.
 - Secure ZIP validation, extraction, Telegram JSON/HTML export parsing, and media inventory creation.
 - Telegram account connection with API ID/hash login, code verification, optional two-step password verification, encrypted sessions, and disconnect support.
@@ -74,31 +74,84 @@ Each job is owned by a user. Uploads, jobs, events, reports, Telegram resources,
 
 ```bash
 cp .env.example .env
+chmod 600 .env
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Fill every blank required value in `.env`. Use unique URL-safe random values for
+`SECRET_KEY`, `POSTGRES_PASSWORD`, `NATS_PASSWORD`, `MINIO_ACCESS_KEY`,
+`MINIO_SECRET_KEY`, `QDRANT_API_KEY`, and `VLLM_API_KEY`; use the Fernet command's
+output only for `TELEGRAM_CREDENTIALS_ENCRYPTION_KEY`. Set a non-default
+`POSTGRES_USER`, a unique initial account email/password, `APP_BASE_URL` to the
+externally visible HTTPS origin, and `TRUSTED_HOSTS` to a JSON array containing
+that origin's hostname (for example `["chat.example.com"]`). Set both
+`SERVER_NAME` and `HEALTHCHECK_HOST` to that same hostname; the latter lets the
+private health probe pass the API's host allowlist. Compose fails closed while
+any required value is empty. Prefix NATS credentials with an ASCII letter because
+the broker reads them through its configuration parser.
+
+```bash
 docker compose up --build
 ```
 
-After startup:
+This Compose file is a clean-install layout. In particular, current PostgreSQL
+images persist the versioned data directory below `/var/lib/postgresql`. Do not
+attach an older PostgreSQL 17-or-earlier volume at the new mount point; perform a
+documented `pg_upgrade`/backup-and-restore migration before changing major image
+versions.
 
-- Frontend: http://localhost:3000
-- Backend API and legacy static UI: http://localhost:8000
-- API documentation: http://localhost:8000/docs
-- MinIO Console: http://localhost:9001
-- Qdrant: http://localhost:6333
-- NATS client URL: `nats://localhost:4222`
-- NATS monitoring: http://localhost:8222
+After startup, the only host-published service is the frontend and same-origin API
+proxy at `http://127.0.0.1:3000`. PostgreSQL, NATS, MinIO, Qdrant, the backend, and
+optional model servers remain on private container networks. Put a TLS reverse
+proxy in front of the loopback listener for any non-local deployment; do not bind
+it publicly as plain HTTP. The TLS terminator must preserve the public `Host` and
+send `X-Forwarded-Proto: https` (and normally `X-Forwarded-Port: 443`); the
+loopback-only Nginx hop preserves those trusted values when proxying to FastAPI.
 
-The initial admin user is created from `.env`:
+The initial account is created only for a clean database from the required
+`BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`. Treat it as an ordinary
+data-owning user. Public registration is disabled by default. After the first
+successful login, set `BOOTSTRAP_ADMIN_ENABLED=false`, clear the two bootstrap
+values from `.env`, and recreate the backend container.
 
-```env
-BOOTSTRAP_ADMIN_EMAIL=admin@example.local
-BOOTSTRAP_ADMIN_PASSWORD=change-me
-```
+The default object-store image follows the supported current MinIO AIStor image,
+which will not start without a free-tier or commercial license. Store that file
+outside Git and set `MINIO_LICENSE_FILE` to its host path; Compose mounts it
+read-only. Confirm the product's licensing and support requirements before use.
+
+The named PostgreSQL, NATS, AIStor, and Qdrant volumes contain application data
+in plaintext at the container-storage layer. Put Docker's data root and backups
+on encrypted storage, restrict Docker-daemon and backup access, and test encrypted
+restore procedures. The supplied request, extraction, media, connection, and
+temporary-filesystem limits bound the main untrusted inputs; also set host-level
+CPU, memory, PID, and persistent-volume/bucket quotas for the size of your
+deployment.
+
+Compose follows the deployment's latest-image policy for PostgreSQL, NATS,
+MinIO AIStor, Qdrant, vLLM, Python, Node, and Nginx. The Python and Node `slim`
+aliases likewise track the current language image while reducing the runtime
+surface. Every image remains overrideable by environment variable. Resolve and
+record the deployed image digests in each release manifest before promotion; a
+floating current tag is not reproducible and can introduce breaking major
+upgrades.
+
+Compose assigns an explicit runtime role to each backend process. JWT/bootstrap
+secrets remain API-only; the internal Telegram collector receives only its
+database, object-store, and Telegram-encryption credentials; NATS, Qdrant, model,
+and transcription credentials are supplied only to consumers that use them.
+
+Direct Python dependencies are exact-pinned to the versions exercised by this
+workspace. Before producing a release image, generate and review a transitive
+lock with hashes (for example with `pip-compile --generate-hashes`), install it
+with `pip --require-hashes`, scan the resulting image/SBOM, and commit the lock.
+Exact direct pins alone do not make transitive resolution reproducible.
 
 ## Analysis Sources
 
 ### ZIP Exports
 
-Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export in JSON or HTML format. The browser uses a direct MinIO upload when possible and falls back to backend streaming for larger files.
+Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export in JSON or HTML format. Uploads pass through the authenticated backend so request and extraction limits are enforced before objects become available to workers.
 
 ### Backend Telegram Collection
 
@@ -117,7 +170,7 @@ The former `TELEGRAM_SYNC_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS` names remain accepted as deprecated
 fallbacks.
 
-Set a dedicated Fernet key in production:
+Set the required dedicated Fernet key before first startup:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -127,13 +180,19 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 TELEGRAM_CREDENTIALS_ENCRYPTION_KEY=replace-with-generated-key
 ```
 
-When omitted in local development, a stable key is derived from `SECRET_KEY`.
+Back up this key securely. Losing it makes stored Telegram credentials unreadable;
+changing it requires an explicit credential-rotation procedure.
 
 ### External Telegram Collector
 
 Use `external_telegram_collector/` when Telegram credentials should remain outside the backend. Create an ingest token from the backend, run the collector with its own Telethon session, and register chat IDs through `TELEGRAM_CHAT_IDS`. Its local web page at `http://127.0.0.1:8787` accepts the Telegram verification code and two-step password and shows live collector status; set `COLLECTOR_WEB_ENABLED=false` to retain terminal prompts.
 
-For a collector on another machine, point it at the backend API, for example `BACKEND_URL=http://192.168.0.151:8000`. Open the React frontend in the browser at `http://192.168.0.151:3000`; `http://192.168.0.151:8000` is the backend API and legacy static UI. The ingest token must be created by the same backend user account that signs in to the React frontend, otherwise registered collector chats belong to a different user and will not appear there.
+For a collector on another machine, point it at the same TLS-protected public
+origin used by the browser, for example `BACKEND_URL=https://chat.example.com`.
+The direct backend port is intentionally not published. The ingest token must be
+created by the same backend user account that signs in to the React frontend,
+otherwise registered collector chats belong to a different user and will not
+appear there.
 
 See [external_telegram_collector/README.md](external_telegram_collector/README.md) for the collector environment and local run commands.
 
@@ -154,7 +213,7 @@ VLLM_TEXT_BASE_URL=http://vllm-text:8000/v1
 VLLM_VISION_BASE_URL=http://vllm-vision:8000/v1
 VLLM_EMBEDDING_BASE_URL=http://vllm-embedding:8000/v1
 VLLM_RERANKER_BASE_URL=http://vllm-reranker:8000/v1
-VLLM_API_KEY=local-key
+VLLM_API_KEY=<unique-random-value>
 
 TEXT_MODEL=google/gemma-4-E2B-it
 VISION_MODEL=google/gemma-4-E2B-it
@@ -167,6 +226,12 @@ Optional local embedding and reranking containers can be started with:
 ```bash
 docker compose --profile models up --build
 ```
+
+The model servers have no host ports, require the configured API key, do not share
+the host IPC namespace, do not enable model-repository remote code or usage
+tracking, and run on a separate internal network without Internet egress. Pin
+`VLLM_IMAGE` by digest and pre-populate the `hf-cache` volume for controlled
+deployments before starting the model profile.
 
 The application asks `/v1/models` for `max_model_len` and uses `tiktoken` to split or reject prompts before sending model requests. If an endpoint does not expose context length, provide a JSON override:
 
@@ -238,11 +303,11 @@ For completed upload jobs, **Download all** creates a second archive named `<ori
 - Workers record task attempts and dead letters for permanent failures.
 - Stale queued jobs are recovered on backend/worker startup when `RECOVER_STALE_QUEUED_JOBS=true`.
 - Media row failures are not job-fatal by default; set `MEDIA_FAIL_JOB_ON_ERROR=true` when any permanent media failure should fail the job.
-- vLLM health checks are optional; enable them with `CAPACITY_CHECK_VLLM=true` and require them with `CAPACITY_REQUIRE_VLLM=true`.
+- Compose keeps vLLM credentials and network access on the worker role; API and scheduler capacity checks therefore cover the data plane but intentionally skip model endpoints.
 
 ## Current Limitations
 
-- Resumable browser uploads are not implemented yet; uploads still run as one browser request, using backend streaming above the direct PUT size range.
+- Resumable browser uploads are not implemented yet; uploads run as one size-capped, authenticated backend streaming request.
 - The static report does not yet include full in-report search.
 - The Compose `models` profile currently provides embedding and reranking containers only; text and vision generation endpoints must be supplied separately unless mock mode is used.
 - GPU placement and memory limits for optional model containers should be configured explicitly before production use.

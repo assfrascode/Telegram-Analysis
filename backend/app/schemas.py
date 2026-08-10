@@ -18,8 +18,16 @@ class TokenResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=512)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not EMAIL_PATTERN.fullmatch(normalized):
+            raise ValueError("email must be a valid email address")
+        return normalized
 
 
 class RegisterRequest(BaseModel):
@@ -36,20 +44,18 @@ class RegisterRequest(BaseModel):
 
 
 class UploadCreateRequest(BaseModel):
-    filename: str
+    filename: str = Field(min_length=1, max_length=512)
     size_bytes: int = Field(gt=0)
 
 
 class UploadCreateResponse(BaseModel):
     upload_id: uuid.UUID
-    object_key: str
-    presigned_put_url: str
     backend_upload_url: str
 
 
 class QuestionInput(BaseModel):
     id: str | None = None
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=10_000)
 
 
 class JobOptions(BaseModel):
@@ -68,7 +74,7 @@ class JobOptions(BaseModel):
 
 class JobCreateRequest(BaseModel):
     upload_id: uuid.UUID
-    questions: list[QuestionInput] | None = None
+    questions: list[QuestionInput] | None = Field(default=None, min_length=1, max_length=100)
     question_set_id: uuid.UUID | None = None
     options: JobOptions = Field(default_factory=JobOptions)
 
@@ -83,7 +89,7 @@ class TelegramReportCreateRequest(BaseModel):
     telegram_chat_id: uuid.UUID
     start_at: datetime
     end_at: datetime
-    questions: list[QuestionInput] | None = None
+    questions: list[QuestionInput] | None = Field(default=None, min_length=1, max_length=100)
     question_set_id: uuid.UUID | None = None
     options: JobOptions = Field(default_factory=JobOptions)
 
@@ -133,9 +139,14 @@ class EventResponse(BaseModel):
     created_at: datetime
 
 
+class WebSocketTicketResponse(BaseModel):
+    ticket: str
+    expires_at: datetime
+
+
 class QuestionSetItemInput(BaseModel):
     id: str | None = None
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=10_000)
 
 
 class QuestionSetOptions(BaseModel):
@@ -333,12 +344,14 @@ class TelegramReportScheduleResponse(BaseModel):
 
 class TelegramIngestTokenCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    expires_in_days: int = Field(default=30, ge=1, le=365)
 
 
 class TelegramIngestTokenResponse(BaseModel):
     id: uuid.UUID
     name: str
     created_at: datetime
+    expires_at: datetime
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
 
@@ -348,7 +361,7 @@ class TelegramIngestTokenCreateResponse(TelegramIngestTokenResponse):
 
 
 class TelegramIngestChatUpsertRequest(BaseModel):
-    telegram_chat_id: int
+    telegram_chat_id: int = Field(lt=0)
     access_hash: str | None = None
     title: str = Field(min_length=1, max_length=512)
     username: str | None = Field(default=None, max_length=255)
@@ -367,6 +380,10 @@ class TelegramIngestChatUpsertResponse(BaseModel):
     chat: TelegramChatResponse
 
 
+class TelegramIngestChatTokenAssignRequest(BaseModel):
+    token_id: uuid.UUID
+
+
 class TelegramIngestClaimResponse(BaseModel):
     run_id: uuid.UUID
     chat: TelegramChatResponse
@@ -376,17 +393,26 @@ class TelegramIngestClaimResponse(BaseModel):
 
 
 class TelegramIngestMessageInput(BaseModel):
-    telegram_message_id: int
+    telegram_message_id: int = Field(gt=0)
     timestamp: datetime
     edited_timestamp: datetime | None = None
     sender_id: str | None = Field(default=None, max_length=255)
     sender_name: str | None = Field(default=None, max_length=512)
     message_type: str | None = Field(default=None, max_length=128)
-    reply_to_message_id: int | None = None
+    reply_to_message_id: int | None = Field(default=None, gt=0)
     forwarded_from: str | None = Field(default=None, max_length=512)
-    reactions: list[dict] = Field(default_factory=list)
+    reactions: list[dict] = Field(default_factory=list, max_length=1000)
     text: str = ""
-    raw: dict = Field(default_factory=dict)
+    raw: dict = Field(default_factory=dict, max_length=10_000)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text_size(cls, value: str) -> str:
+        from app.config import get_settings
+
+        if len(value) > get_settings().max_telegram_message_chars:
+            raise ValueError("message text exceeds configured character limit")
+        return value
 
 
 class TelegramIngestMessagesRequest(BaseModel):

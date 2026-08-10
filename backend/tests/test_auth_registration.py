@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
+from starlette.requests import Request
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
@@ -52,11 +53,15 @@ class FakeSession:
         self.refreshed = value
 
 
+def fake_request() -> Request:
+    return Request({"type": "http", "method": "POST", "path": "/auth/register", "headers": [], "client": ("127.0.0.1", 1234)})
+
+
 def test_register_creates_user_and_returns_token():
     session = FakeSession(execute_values=[None])
 
     response = asyncio.run(
-        register(RegisterRequest(email=" New.User@Example.COM ", password="correct horse"), session)
+        register(RegisterRequest(email=" New.User@Example.COM ", password="correct horse"), fake_request(), session)
     )
 
     assert response.token_type == "bearer"
@@ -72,7 +77,7 @@ def test_register_rejects_duplicate_email():
     session = FakeSession(execute_values=[uuid.uuid4()])
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(register(RegisterRequest(email="taken@example.com", password="correct horse"), session))
+        asyncio.run(register(RegisterRequest(email="taken@example.com", password="correct horse"), fake_request(), session))
 
     assert exc_info.value.status_code == 409
     assert session.added is None
@@ -81,7 +86,7 @@ def test_register_rejects_duplicate_email():
 
 def test_registered_credentials_authenticate():
     session = FakeSession(execute_values=[None])
-    asyncio.run(register(RegisterRequest(email="auth@example.com", password="correct horse"), session))
+    asyncio.run(register(RegisterRequest(email="auth@example.com", password="correct horse"), fake_request(), session))
 
     lookup_session = FakeSession(execute_values=[session.added])
     user = asyncio.run(authenticate_user(lookup_session, " AUTH@EXAMPLE.COM ", "correct horse"))
@@ -106,7 +111,7 @@ def test_register_rolls_back_unique_constraint_race():
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(register(RegisterRequest(email="race@example.com", password="correct horse"), session))
+        asyncio.run(register(RegisterRequest(email="race@example.com", password="correct horse"), fake_request(), session))
 
     assert exc_info.value.status_code == 409
     assert session.rolled_back is True

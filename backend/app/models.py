@@ -45,6 +45,7 @@ class StepStatus(str, enum.Enum):
 
 class UploadStatus(str, enum.Enum):
     created = "created"
+    uploading = "uploading"
     uploaded = "uploaded"
     rejected = "rejected"
 
@@ -135,6 +136,9 @@ class TelegramChat(Base):
     connection_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("telegram_connections.id"), nullable=True, index=True
     )
+    ingest_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("telegram_ingest_tokens.id"), nullable=True, index=True
+    )
     ingest_mode: Mapped[TelegramIngestMode] = mapped_column(
         Enum(TelegramIngestMode), default=TelegramIngestMode.backend_pull, index=True
     )
@@ -168,6 +172,7 @@ class TelegramIngestToken(Base):
     name: Mapped[str] = mapped_column(String(200))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -178,6 +183,9 @@ class TelegramSyncRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_chats.id"), index=True)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    ingest_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("telegram_ingest_tokens.id"), nullable=True, index=True
+    )
     job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=True, index=True)
     status: Mapped[TelegramSyncStatus] = mapped_column(
         Enum(TelegramSyncStatus), default=TelegramSyncStatus.running, index=True
@@ -394,6 +402,18 @@ class JobEvent(Base):
     level: Mapped[str] = mapped_column(String(32), default="info")
     message: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class WebSocketTicket(Base):
+    __tablename__ = "websocket_tickets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 

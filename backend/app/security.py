@@ -1,16 +1,25 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerificationError, VerifyMismatchError
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.models import User
 
 settings = get_settings()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+password_hasher = PasswordHasher(
+    time_cost=3,
+    memory_cost=64 * 1024,
+    parallelism=4,
+    hash_len=32,
+    salt_len=16,
+)
+_DUMMY_PASSWORD_HASH = password_hasher.hash("not-a-real-account-password")
 ALGORITHM = "HS256"
 TOKEN_TYPE_ACCESS = "access"
 
@@ -20,11 +29,14 @@ def normalize_email(email: str) -> str:
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return password_hasher.hash(password)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    try:
+        return password_hasher.verify(password_hash, password)
+    except (InvalidHash, VerificationError, VerifyMismatchError):
+        return False
 
 
 def create_access_token(user_id: UUID) -> str:
@@ -43,7 +55,12 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
     normalized_email = normalize_email(email)
     result = await session.execute(select(User).where(User.email == normalized_email, User.is_active.is_(True)))
     user = result.scalar_one_or_none()
-    if user and verify_password(password, user.password_hash):
+    password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    password_valid = await run_in_threadpool(verify_password, password, password_hash)
+    if user and password_valid:
+        if password_hasher.check_needs_rehash(user.password_hash):
+            user.password_hash = await run_in_threadpool(hash_password, password)
+            await session.commit()
         return user
     return None
 
@@ -51,7 +68,7 @@ async def authenticate_user(session: AsyncSession, email: str, password: str) ->
 async def get_user_from_token(session: AsyncSession, token: str) -> User | None:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        if payload.get("typ") not in {None, TOKEN_TYPE_ACCESS}:
+        if payload.get("typ") != TOKEN_TYPE_ACCESS:
             return None
         raw_user_id = payload.get("sub")
         if not raw_user_id:

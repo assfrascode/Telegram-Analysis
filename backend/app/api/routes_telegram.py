@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,7 @@ from app.services.telegram_accounts import (
     verify_login_password,
 )
 from app.services.telegram_chat_access import ensure_chat_sync_source_available
+from app.services.auth_rate_limit import enforce_auth_rate_limit
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
@@ -111,9 +112,15 @@ async def connection_status(
 @router.post("/connection/start")
 async def connection_start(
     payload: TelegramLoginStartRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    enforce_auth_rate_limit(
+        action="telegram_start",
+        client_ip=request.client.host if request.client else "unknown",
+        identity=str(user.id),
+    )
     challenge = await start_login(
         session,
         owner_user_id=user.id,
@@ -127,9 +134,15 @@ async def connection_start(
 @router.post("/connection/code")
 async def connection_code(
     payload: TelegramLoginCodeRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    enforce_auth_rate_limit(
+        action="telegram_code",
+        client_ip=request.client.host if request.client else "unknown",
+        identity=str(user.id),
+    )
     connection, requires_password = await verify_login_code(
         session,
         owner_user_id=user.id,
@@ -145,9 +158,15 @@ async def connection_code(
 @router.post("/connection/password", response_model=TelegramConnectionResponse)
 async def connection_password(
     payload: TelegramLoginPasswordRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> TelegramConnectionResponse:
+    enforce_auth_rate_limit(
+        action="telegram_password",
+        client_ip=request.client.host if request.client else "unknown",
+        identity=str(user.id),
+    )
     connection = await verify_login_password(
         session,
         owner_user_id=user.id,

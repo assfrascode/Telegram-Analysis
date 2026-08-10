@@ -268,6 +268,8 @@ async def collect_safely(chat_id: uuid.UUID) -> None:
 
 
 async def main() -> None:
+    if settings.app_role not in {"telegram_collector", "all"}:
+        raise RuntimeError("Telegram collector requires APP_ROLE=telegram_collector (or all)")
     await init_db()
     released = await release_orphaned_collector_leases()
     print(

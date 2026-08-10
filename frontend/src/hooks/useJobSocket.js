@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { buildWsUrl } from "../api/client";
+import { apiJson, buildWsUrl } from "../api/client";
 import { TERMINAL_STATUSES } from "../lib/constants";
 
 export function useJobSocket({ token, currentJobId, currentJobStatus, appendEvent, onTerminalEvent, pollLatest, setWsStatus }) {
@@ -27,10 +27,28 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
       pollTimer = window.setInterval(() => callbacks.current.pollLatest?.(), 5000);
     };
 
-    const connect = () => {
+    const connect = async () => {
       if (stopped) return;
-      socket = new WebSocket(buildWsUrl(`/ws/jobs/${currentJobId}`, token));
       callbacks.current.setWsStatus("connecting");
+
+      try {
+        const { ticket } = await apiJson(`/jobs/${currentJobId}/ws-ticket`, {
+          token,
+          method: "POST",
+        });
+        if (stopped) return;
+        socket = new WebSocket(buildWsUrl(`/ws/jobs/${currentJobId}`, ticket));
+      } catch (error) {
+        callbacks.current.setWsStatus("error");
+        callbacks.current.appendEvent?.({
+          event_type: "frontend",
+          level: "warning",
+          message: `Live-update ticket failed: ${error.message}`,
+        });
+        startPolling();
+        if (!stopped) reconnectTimer = window.setTimeout(connect, 3000);
+        return;
+      }
 
       socket.onopen = () => {
         stopPolling();

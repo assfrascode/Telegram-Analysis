@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from app.models import MessageChunk
 from app.services.qdrant_index import QdrantIndex, chunk_payload
+from app.services import qdrant_index
 
 
 def test_extract_vector_size_from_unnamed_collection() -> None:
@@ -60,3 +61,11 @@ def test_chunk_payload_contains_retrieval_metadata() -> None:
     assert payload["media_types"] == ["image"]
     assert payload["embedding_model"] == "test-model"
     assert payload["text_preview"] == "subchunk text"
+
+
+def test_qdrant_client_configures_api_key_header(monkeypatch) -> None:
+    monkeypatch.setattr(qdrant_index.settings, "qdrant_api_key", "secret-qdrant-key")
+
+    client = QdrantIndex(base_url="http://example", collection="test")
+
+    assert client._headers == {"api-key": "secret-qdrant-key"}

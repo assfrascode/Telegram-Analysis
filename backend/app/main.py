@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.routes_auth import router as auth_router
 from app.api.routes_capacity import router as capacity_router
@@ -17,9 +18,12 @@ from app.bootstrap import bootstrap_services
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.nats_client import nats_context
+from app.middleware import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
 from app.services.job_recovery import recover_stale_queued_jobs
 
 settings = get_settings()
+if settings.app_role not in {"api", "all"}:
+    raise RuntimeError("The ASGI API requires APP_ROLE=api (or all)")
 static_dir = Path(__file__).parent / "static" / "app"
 
 
@@ -34,7 +38,36 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+    docs_url=None if settings.app_env == "production" else "/docs",
+    redoc_url=None if settings.app_env == "production" else "/redoc",
+    openapi_url=None if settings.app_env == "production" else "/openapi.json",
+)
+app.add_middleware(SecurityHeadersMiddleware, production=settings.app_env == "production")
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_bytes=settings.max_request_body_bytes,
+    path_limits=[
+        (
+            "/uploads/",
+            "/content",
+            settings.max_upload_bytes,
+        ),
+        (
+            "/telegram/ingest/runs/",
+            "/media",
+            settings.max_ingest_media_bytes + 1024 * 1024,
+        ),
+        (
+            "/telegram/ingest/runs/",
+            "/messages",
+            settings.max_ingest_messages_body_bytes,
+        ),
+    ],
+)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
 app.include_router(auth_router)
 app.include_router(capacity_router)

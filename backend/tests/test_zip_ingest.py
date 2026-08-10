@@ -3,18 +3,23 @@ import json
 import uuid
 import zipfile
 from io import BytesIO
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app.services.zip_ingest import ExtractionResult, extract_zip_to_minio
+import pytest
+
+from app.services.zip_ingest import ExtractionResult, ZipSecurityError, extract_zip_to_minio
 from app.workers import ingest_worker
 
 
 SETTINGS = SimpleNamespace(
+    max_upload_bytes=2 * 1024 * 1024,
     max_zip_files=100,
     max_file_bytes=1024 * 1024,
     max_extracted_bytes=10 * 1024 * 1024,
+    max_html_page_bytes=1024 * 1024,
+    max_telegram_message_chars=100_000,
+    max_telegram_messages_per_export=10_000,
 )
 
 
@@ -23,8 +28,12 @@ class FakeMinio:
         self.archive_bytes = archive_bytes
         self.objects: dict[str, dict] = {}
 
-    def fget_object(self, bucket: str, object_key: str, path: str) -> None:
-        Path(path).write_bytes(self.archive_bytes)
+    class Response(BytesIO):
+        def release_conn(self) -> None:
+            return None
+
+    def get_object(self, bucket: str, object_key: str):
+        return self.Response(self.archive_bytes)
 
     def put_object(
         self,
@@ -38,6 +47,18 @@ class FakeMinio:
         data = stream.read()
         assert len(data) == length
         self.objects[object_key] = {"data": data, "content_type": content_type}
+
+    def list_objects(self, bucket: str, *, prefix: str, recursive: bool):
+        return (
+            SimpleNamespace(object_name=object_key)
+            for object_key in list(self.objects)
+            if object_key.startswith(prefix)
+        )
+
+    def remove_objects(self, bucket: str, delete_objects):
+        for item in delete_objects:
+            self.objects.pop(item.name, None)
+        return iter(())
 
 
 def _zip_bytes(files: dict[str, bytes | str]) -> bytes:
@@ -152,6 +173,28 @@ def test_extract_zip_ignores_invalid_chat_name() -> None:
 
     assert result.result_json_object_key is not None
     assert result.source_name is None
+
+
+def test_extract_zip_rejects_html_page_before_unbounded_read() -> None:
+    client = FakeMinio(
+        _zip_bytes(
+            {
+                "Chat/messages.html": '<div id="message1">' + "x" * 200 + "</div>",
+            }
+        )
+    )
+    limited = SimpleNamespace(**{**SETTINGS.__dict__, "max_html_page_bytes": 100})
+
+    with pytest.raises(ZipSecurityError, match="HTML message page exceeds"):
+        extract_zip_to_minio(
+            client=client,
+            bucket="bucket",
+            upload_object_key="upload.zip",
+            extracted_prefix="users/u/jobs/j/extract/",
+            settings=limited,
+        )
+
+    assert client.objects == {}
 
 
 def test_extract_worker_persists_source_name(monkeypatch) -> None:

@@ -1,20 +1,28 @@
 import asyncio
+import base64
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
+import secrets
+import stat
 import tempfile
+import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NamedTuple
+from urllib.parse import urlsplit
+from uuid import UUID
 
 import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status as http_status
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from telethon import TelegramClient
 from telethon.errors import (
     ApiIdInvalidError,
@@ -35,6 +43,9 @@ from telethon.tl.types import (
     DocumentAttributeSticker,
 )
 from telethon.utils import get_display_name, get_peer_id
+
+
+_TELEGRAM_CLIENT_CLASS = TelegramClient
 
 
 def env(name: str, default: str = "") -> str:
@@ -97,23 +108,56 @@ def env_chat_ids() -> set[int]:
         if not value:
             continue
         try:
-            result.add(int(value))
+            chat_id = int(value)
         except ValueError:
             CONFIG_ERRORS.append(
                 "TELEGRAM_CHAT_IDS must contain comma-separated integers"
             )
             return set()
+        if chat_id >= 0:
+            CONFIG_ERRORS.append(
+                "TELEGRAM_CHAT_IDS must use canonical marked Telegram peer IDs "
+                "(negative -... or -100... values)"
+            )
+            return set()
+        result.add(chat_id)
     return result
 
 
-BACKEND_URL = env("BACKEND_URL", "http://localhost:8000").rstrip("/")
+def env_csv(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(
+        value.strip() for value in env(name, default).split(",") if value.strip()
+    )
+
+
+def default_session_path() -> str:
+    state_root = env("XDG_STATE_HOME")
+    if state_root:
+        root = Path(state_root).expanduser()
+    else:
+        root = Path.home() / ".local" / "state"
+    return str(root / "telegram-external-collector" / "telegram-external.session")
+
+
+def normalized_session_path(value: str) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        CONFIG_ERRORS.append("TELEGRAM_SESSION_PATH must be an absolute path")
+    if not str(path).endswith(".session"):
+        path = Path(f"{path}.session")
+    return str(path)
+
+
+BACKEND_URL = env("BACKEND_URL", "https://localhost:8000").rstrip("/")
+ALLOW_INSECURE_LOOPBACK_BACKEND_HTTP = env_bool(
+    "TELEGRAM_ALLOW_INSECURE_LOOPBACK_BACKEND_HTTP"
+)
 INGEST_TOKEN = env("TELEGRAM_INGEST_TOKEN")
 API_ID = env_int("TELEGRAM_API_ID", 0, minimum=1)
 API_HASH = env("TELEGRAM_API_HASH")
 PHONE = env("TELEGRAM_PHONE")
-SESSION_PATH = (
-    env("TELEGRAM_SESSION_PATH", "telegram-external.session")
-    or "telegram-external.session"
+SESSION_PATH = normalized_session_path(
+    env("TELEGRAM_SESSION_PATH", default_session_path()) or default_session_path()
 )
 USE_TAKEOUT = env_bool("TELEGRAM_USE_TAKEOUT")
 TAKEOUT_WAIT_TIME = env_float("TELEGRAM_TAKEOUT_WAIT_TIME", 0, minimum=0)
@@ -122,13 +166,56 @@ BATCH_SIZE = env_int("MESSAGE_BATCH_SIZE", 100, minimum=1)
 IDLE_LOG_EVERY = env_int("IDLE_LOG_EVERY", 20, minimum=0)
 MESSAGE_PROGRESS_EVERY = env_int("MESSAGE_PROGRESS_EVERY", 250, minimum=0)
 REGISTER_CHAT_IDS = env_chat_ids()
+ALL_CHATS = env_bool("TELEGRAM_ALL_CHATS")
+INCLUDE_RAW_METADATA = env_bool("TELEGRAM_INCLUDE_RAW_METADATA")
 WEB_ENABLED = env_bool("COLLECTOR_WEB_ENABLED", True)
 WEB_HOST = env("COLLECTOR_WEB_HOST", "127.0.0.1") or "127.0.0.1"
 WEB_PORT = env_int("COLLECTOR_WEB_PORT", 8787, minimum=1, maximum=65535)
+WEB_ALLOW_REMOTE = env_bool("COLLECTOR_WEB_ALLOW_REMOTE")
+WEB_TLS_CERT_FILE = env("COLLECTOR_WEB_TLS_CERT_FILE")
+WEB_TLS_KEY_FILE = env("COLLECTOR_WEB_TLS_KEY_FILE")
+WEB_AUTH_TOKEN = env("COLLECTOR_WEB_AUTH_TOKEN") or secrets.token_urlsafe(32)
+WEB_AUTH_TOKEN_GENERATED = not bool(env("COLLECTOR_WEB_AUTH_TOKEN"))
+WEB_ALLOWED_HOSTS = env_csv("COLLECTOR_WEB_ALLOWED_HOSTS", "127.0.0.1,localhost,[::1]")
+WEB_ALLOWED_ORIGINS = env_csv(
+    "COLLECTOR_WEB_ALLOWED_ORIGINS",
+    f"{'https' if WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE else 'http'}://127.0.0.1:{WEB_PORT},"
+    f"{'https' if WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE else 'http'}://localhost:{WEB_PORT}",
+)
+WEB_MAX_BODY_BYTES = env_int(
+    "COLLECTOR_WEB_MAX_BODY_BYTES", 4096, minimum=256, maximum=1024 * 1024
+)
+WEB_API_REQUESTS_PER_MINUTE = env_int(
+    "COLLECTOR_WEB_API_REQUESTS_PER_MINUTE", 120, minimum=1, maximum=10_000
+)
+WEB_LOGIN_ATTEMPTS_PER_MINUTE = env_int(
+    "COLLECTOR_WEB_LOGIN_ATTEMPTS_PER_MINUTE", 6, minimum=1, maximum=1_000
+)
 WEB_ASSET_DIR = Path(__file__).resolve().parent / "web"
 EVENT_LIMIT = 200
 RETRY_INITIAL_SECONDS = 5
 RETRY_MAX_SECONDS = 60
+MAX_SYNC_RANGE_DAYS = env_int(
+    "TELEGRAM_MAX_SYNC_RANGE_DAYS", 31, minimum=1, maximum=366
+)
+MAX_MEDIA_FILE_BYTES = env_int(
+    "TELEGRAM_MAX_MEDIA_FILE_BYTES",
+    256 * 1024 * 1024,
+    minimum=1,
+    maximum=4 * 1024 * 1024 * 1024,
+)
+MAX_MEDIA_BYTES_PER_RUN = env_int(
+    "TELEGRAM_MAX_MEDIA_BYTES_PER_RUN",
+    1024 * 1024 * 1024,
+    minimum=1,
+    maximum=16 * 1024 * 1024 * 1024,
+)
+MAX_MEDIA_FILES_PER_RUN = env_int(
+    "TELEGRAM_MAX_MEDIA_FILES_PER_RUN", 200, minimum=1, maximum=10_000
+)
+MEDIA_DOWNLOAD_TIMEOUT_SECONDS = env_float(
+    "TELEGRAM_MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 300, minimum=1
+)
 
 
 def default_initial_sync_from() -> str:
@@ -145,6 +232,212 @@ SYNC_INTERVAL_MINUTES = env_int("SYNC_INTERVAL_MINUTES", 60, minimum=1)
 
 def utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class ConfigurationError(RuntimeError):
+    pass
+
+
+class LoginRejected(ValueError):
+    pass
+
+
+class LoginPhaseError(RuntimeError):
+    pass
+
+
+def is_loopback_hostname(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    hostname = hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_backend_transport() -> None:
+    parsed = urlsplit(BACKEND_URL)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigurationError("BACKEND_URL must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigurationError(
+            "BACKEND_URL must not contain credentials, a query string, or a fragment"
+        )
+    if parsed.scheme == "http" and not (
+        is_loopback_hostname(parsed.hostname) and ALLOW_INSECURE_LOOPBACK_BACKEND_HTTP
+    ):
+        raise ConfigurationError(
+            "BACKEND_URL must use HTTPS. Plain HTTP is permitted only for a loopback "
+            "host when TELEGRAM_ALLOW_INSECURE_LOOPBACK_BACKEND_HTTP=true"
+        )
+
+
+def validate_web_binding() -> None:
+    if len(WEB_AUTH_TOKEN) < 32:
+        raise ConfigurationError(
+            "COLLECTOR_WEB_AUTH_TOKEN must contain at least 32 characters"
+        )
+    if is_loopback_hostname(WEB_HOST):
+        return
+    if not WEB_ALLOW_REMOTE:
+        raise ConfigurationError(
+            "A non-loopback COLLECTOR_WEB_HOST requires COLLECTOR_WEB_ALLOW_REMOTE=true"
+        )
+    if not env("COLLECTOR_WEB_AUTH_TOKEN"):
+        raise ConfigurationError(
+            "Remote collector web access requires an explicit COLLECTOR_WEB_AUTH_TOKEN"
+        )
+    if not env("COLLECTOR_WEB_ALLOWED_HOSTS") or not env(
+        "COLLECTOR_WEB_ALLOWED_ORIGINS"
+    ):
+        raise ConfigurationError(
+            "Remote collector web access requires explicit COLLECTOR_WEB_ALLOWED_HOSTS "
+            "and COLLECTOR_WEB_ALLOWED_ORIGINS"
+        )
+    if "*" in WEB_ALLOWED_HOSTS or "*" in WEB_ALLOWED_ORIGINS:
+        raise ConfigurationError(
+            "Remote collector web host/origin allowlists cannot use *"
+        )
+    if not WEB_TLS_CERT_FILE or not WEB_TLS_KEY_FILE:
+        raise ConfigurationError(
+            "Remote collector web access requires COLLECTOR_WEB_TLS_CERT_FILE and "
+            "COLLECTOR_WEB_TLS_KEY_FILE"
+        )
+    for label, value in (
+        ("COLLECTOR_WEB_TLS_CERT_FILE", WEB_TLS_CERT_FILE),
+        ("COLLECTOR_WEB_TLS_KEY_FILE", WEB_TLS_KEY_FILE),
+    ):
+        path = Path(value)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file():
+            raise ConfigurationError(
+                f"{label} must be an absolute, regular, non-symlink file"
+            )
+
+
+def harden_session_files(session_path: str) -> None:
+    effective_uid = os.geteuid() if hasattr(os, "geteuid") else None
+    for candidate in (
+        Path(session_path),
+        Path(f"{session_path}-journal"),
+        Path(f"{session_path}-wal"),
+        Path(f"{session_path}-shm"),
+    ):
+        if not os.path.lexists(candidate):
+            continue
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ConfigurationError(
+                f"Refusing symlinked Telegram session state: {candidate}"
+            )
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigurationError(
+                f"Telegram session state is not a regular file: {candidate}"
+            )
+        if effective_uid is not None and info.st_uid != effective_uid:
+            raise ConfigurationError(
+                f"Telegram session state must be owned by the collector user: {candidate}"
+            )
+        candidate.chmod(0o600)
+
+
+def prepare_session_path(session_path: str) -> None:
+    path = Path(session_path)
+    if not path.is_absolute():
+        raise ConfigurationError("TELEGRAM_SESSION_PATH must be an absolute path")
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = parent.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ConfigurationError(f"Telegram session directory is unsafe: {parent}")
+    effective_uid = os.geteuid() if hasattr(os, "geteuid") else None
+    if effective_uid is not None and info.st_uid != effective_uid:
+        raise ConfigurationError(
+            f"Telegram session directory must be owned by the collector user: {parent}"
+        )
+    parent.chmod(0o700)
+    os.umask(0o077)
+    harden_session_files(session_path)
+
+
+def secure_telegram_client_factory(
+    session_path: str, api_id: int, api_hash: str
+) -> TelegramClient:
+    secure_state = TelegramClient is _TELEGRAM_CLIENT_CLASS
+    if secure_state:
+        prepare_session_path(session_path)
+    client = TelegramClient(session_path, api_id, api_hash)
+    if secure_state:
+        harden_session_files(session_path)
+    return client
+
+
+class ClaimChatInput(BaseModel):
+    id: UUID
+    telegram_chat_id: int
+    title: str = Field(min_length=1, max_length=512)
+    chat_type: Literal["group", "megagroup", "channel"]
+
+
+class ClaimInput(BaseModel):
+    run_id: UUID
+    chat: ClaimChatInput
+    requested_start: datetime
+    requested_end: datetime
+    after_message_id: int | None = Field(default=None, ge=0)
+
+
+def configured_initial_sync_from() -> datetime:
+    value = datetime.fromisoformat(INITIAL_SYNC_FROM)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def validate_claim_payload(payload: Any) -> ClaimInput:
+    try:
+        claim = ClaimInput.model_validate(payload)
+    except ValidationError as exc:
+        raise RuntimeError("Backend returned a malformed Telegram sync claim") from exc
+    if claim.requested_start.tzinfo is None or claim.requested_end.tzinfo is None:
+        raise RuntimeError("Backend claim timestamps must include a timezone")
+    requested_start = claim.requested_start.astimezone(timezone.utc)
+    requested_end = claim.requested_end.astimezone(timezone.utc)
+    if requested_end <= requested_start:
+        raise RuntimeError("Backend claim end must be after its start")
+    if requested_start < configured_initial_sync_from():
+        raise RuntimeError(
+            "Backend claim starts before the collector's local sync boundary"
+        )
+    if requested_end - requested_start > timedelta(days=MAX_SYNC_RANGE_DAYS):
+        raise RuntimeError("Backend claim exceeds TELEGRAM_MAX_SYNC_RANGE_DAYS")
+    if requested_end > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise RuntimeError("Backend claim ends too far in the future")
+    return claim
+
+
+class MediaMetadata(NamedTuple):
+    media_type: str
+    filename: str
+    mime_type: str | None
+    media_key: str
+    size_bytes: int | None
+
+
+def media_download_progress_guard(remaining_run_bytes: int):
+    def enforce(received: int, _total: int) -> None:
+        if received > MAX_MEDIA_FILE_BYTES:
+            raise RuntimeError(
+                "Attachment exceeded TELEGRAM_MAX_MEDIA_FILE_BYTES during download"
+            )
+        if received > remaining_run_bytes:
+            raise RuntimeError(
+                "Attachment exceeded the remaining media byte quota during download"
+            )
+
+    return enforce
 
 
 class CollectorStatus:
@@ -266,6 +559,47 @@ class CollectorStatus:
             "events": list(self._events),
         }
 
+    def redacted_snapshot(self) -> dict[str, Any]:
+        snapshot = self.snapshot()
+        if snapshot["account"] is not None:
+            snapshot["account"] = {
+                "display_name": "Connected Telegram account",
+                "username": None,
+            }
+        if snapshot["registration"] is not None:
+            snapshot["registration"] = dict(snapshot["registration"])
+            snapshot["registration"].pop("unmatched_chat_ids", None)
+        for run_name in ("current_run", "last_run"):
+            run = snapshot[run_name]
+            if run is None:
+                continue
+            run = dict(run)
+            snapshot[run_name] = run
+            run.pop("run_id", None)
+            run.pop("telegram_chat_id", None)
+            run["chat_title"] = "Approved Telegram chat"
+            if run.get("error"):
+                run["error"] = (
+                    "Synchronization failed; inspect the local collector logs"
+                )
+        public_messages = {
+            "starting": "Collector is starting",
+            "connecting": "Connecting to Telegram",
+            "awaiting_code": "Telegram verification code required",
+            "awaiting_password": "Telegram two-step verification password required",
+            "authorized": "Telegram session authorized",
+            "registering": "Registering approved Telegram chats",
+            "idle": "Collector is connected and waiting for sync work",
+            "syncing": "Synchronizing an approved Telegram chat",
+            "retrying": "Collector encountered an error and will retry",
+            "configuration_error": "Collector configuration requires attention",
+        }
+        snapshot["message"] = public_messages.get(
+            snapshot["phase"], "Collector status updated"
+        )
+        snapshot["events"] = []
+        return snapshot
+
 
 STATUS = CollectorStatus()
 
@@ -343,13 +677,28 @@ def document_filename(message) -> str | None:
     return None
 
 
-def media_metadata(message) -> tuple[str, str, str | None, str] | None:
+def photo_size_bytes(photo: Any) -> int | None:
+    sizes: list[int] = []
+    for item in getattr(photo, "sizes", None) or []:
+        size = getattr(item, "size", None)
+        if isinstance(size, int) and size >= 0:
+            sizes.append(size)
+        progressive = getattr(item, "sizes", None)
+        if progressive:
+            sizes.extend(
+                value for value in progressive if isinstance(value, int) and value >= 0
+            )
+    return max(sizes) if sizes else None
+
+
+def media_metadata(message) -> MediaMetadata | None:
     if message.photo is not None:
-        return (
+        return MediaMetadata(
             "image",
             f"photo-{message.photo.id}.jpg",
             "image/jpeg",
             f"photo:{message.photo.id}",
+            photo_size_bytes(message.photo),
         )
 
     document = message.document
@@ -378,27 +727,40 @@ def media_metadata(message) -> tuple[str, str, str | None, str] | None:
     if not filename:
         suffix = mimetypes.guess_extension(mime_type) or ""
         filename = f"document-{document.id}{suffix}"
-    return media_type, filename, mime_type, f"document:{document.id}"
+    size_bytes = getattr(document, "size", None)
+    if not isinstance(size_bytes, int) or size_bytes < 0:
+        size_bytes = None
+    return MediaMetadata(
+        media_type,
+        filename,
+        mime_type,
+        f"document:{document.id}",
+        size_bytes,
+    )
 
 
 def normalize_message(message, sender) -> dict[str, Any]:
-    return {
+    normalized = {
         "telegram_message_id": message.id,
         "timestamp": ensure_utc(message.date).isoformat(),
-        "edited_timestamp": ensure_utc(message.edit_date).isoformat()
-        if message.edit_date
-        else None,
+        "edited_timestamp": (
+            ensure_utc(message.edit_date).isoformat() if message.edit_date else None
+        ),
         "sender_id": str(message.sender_id) if message.sender_id is not None else None,
-        "sender_name": get_display_name(sender)
-        if sender is not None
-        else getattr(message, "post_author", None),
+        "sender_name": (
+            get_display_name(sender)
+            if sender is not None
+            else getattr(message, "post_author", None)
+        ),
         "message_type": message_type(message),
         "reply_to_message_id": message.reply_to_msg_id,
         "forwarded_from": forwarded_from(message),
         "reactions": reactions(message),
         "text": message.message or "",
-        "raw": json_safe(message.to_dict()),
     }
+    if INCLUDE_RAW_METADATA:
+        normalized["raw"] = json_safe(message.to_dict())
+    return normalized
 
 
 def chat_type(entity) -> str | None:
@@ -421,6 +783,10 @@ def dialog_ids(entity) -> set[int]:
     return ids
 
 
+def canonical_dialog_id(entity) -> int:
+    return int(get_peer_id(entity))
+
+
 def dialog_id_label(entity) -> str:
     return ", ".join(str(value) for value in sorted(dialog_ids(entity)))
 
@@ -436,11 +802,13 @@ def sha256_file(path: str) -> str:
 class Backend:
     def __init__(self) -> None:
         if not INGEST_TOKEN:
-            raise RuntimeError("TELEGRAM_INGEST_TOKEN is required")
+            raise ConfigurationError("TELEGRAM_INGEST_TOKEN is required")
+        validate_backend_transport()
         self.client = httpx.AsyncClient(
             base_url=BACKEND_URL,
             headers={"Authorization": f"Bearer {INGEST_TOKEN}"},
             timeout=httpx.Timeout(60.0, read=300.0),
+            trust_env=False,
         )
 
     async def close(self) -> None:
@@ -452,10 +820,13 @@ class Backend:
         if kind is None:
             return False
         payload = {
-            "telegram_chat_id": int(entity.id),
-            "access_hash": str(getattr(entity, "access_hash", ""))
-            if getattr(entity, "access_hash", None) is not None
-            else None,
+            "telegram_chat_id": canonical_dialog_id(entity),
+            "access_hash": (
+                str(getattr(entity, "access_hash", ""))
+                if INCLUDE_RAW_METADATA
+                and getattr(entity, "access_hash", None) is not None
+                else None
+            ),
             "title": dialog.name or get_display_name(entity) or str(entity.id),
             "username": getattr(entity, "username", None),
             "chat_type": kind,
@@ -468,17 +839,17 @@ class Backend:
         backend_chat_id = data.get("chat", {}).get("id", "unknown")
         log(
             "Registered external Telegram chat "
-            f"{payload['title']!r} raw_id={payload['telegram_chat_id']} "
+            f"{payload['title']!r} canonical_id={payload['telegram_chat_id']} "
             f"ids=[{dialog_id_label(entity)}] backend_chat_id={backend_chat_id}"
         )
         return True
 
-    async def claim_next(self) -> dict[str, Any] | None:
+    async def claim_next(self) -> ClaimInput | None:
         response = await self.client.post("/telegram/ingest/claims/next")
         if response.status_code == 204:
             return None
         response.raise_for_status()
-        return response.json()
+        return validate_claim_payload(response.json())
 
     async def heartbeat(self, run_id: str) -> None:
         response = await self.client.post(f"/telegram/ingest/runs/{run_id}/heartbeat")
@@ -497,10 +868,10 @@ class Backend:
         self,
         run_id: str,
         message_id: int,
-        metadata: tuple[str, str, str | None, str],
+        metadata: MediaMetadata,
         error: str,
     ) -> None:
-        media_type, filename, mime_type, media_key = metadata
+        media_type, filename, mime_type, media_key, _size_bytes = metadata
         response = await self.client.post(
             f"/telegram/ingest/runs/{run_id}/media",
             data={
@@ -518,10 +889,10 @@ class Backend:
         self,
         run_id: str,
         message_id: int,
-        metadata: tuple[str, str, str | None, str],
+        metadata: MediaMetadata,
         path: str,
     ) -> None:
-        media_type, filename, mime_type, media_key = metadata
+        media_type, filename, mime_type, media_key, _size_bytes = metadata
         size = os.path.getsize(path)
         digest = sha256_file(path)
         with open(path, "rb") as source:
@@ -572,13 +943,23 @@ class Backend:
         response.raise_for_status()
 
 
-async def resolve_entity(client: TelegramClient, telegram_chat_id: int):
-    async for dialog in client.iter_dialogs():
-        if int(dialog.entity.id) == int(telegram_chat_id):
-            return dialog.entity
-    raise RuntimeError(
-        f"Telegram chat {telegram_chat_id} is not available in this session"
-    )
+def approved_entity_for_claim(
+    claim: ClaimInput, approved_entities: dict[int, Any]
+) -> Any:
+    telegram_chat_id = claim.chat.telegram_chat_id
+    entity = approved_entities.get(telegram_chat_id)
+    if entity is None:
+        raise RuntimeError("Backend claim targets a chat outside the local allowlist")
+    kind = chat_type(entity)
+    if kind is None or kind != claim.chat.chat_type:
+        raise RuntimeError(
+            "Backend claim Telegram peer type does not match local registration"
+        )
+    if canonical_dialog_id(entity) != telegram_chat_id:
+        raise RuntimeError(
+            "Backend claim Telegram peer ID does not match local registration"
+        )
+    return entity
 
 
 def dialog_summary(dialog) -> str:
@@ -589,11 +970,23 @@ def dialog_summary(dialog) -> str:
     )
 
 
-async def register_dialogs(backend: Backend, client: TelegramClient) -> dict[str, Any]:
-    if not REGISTER_CHAT_IDS:
+async def register_dialogs(
+    backend: Backend,
+    client: TelegramClient,
+    approved_entities: dict[int, Any] | None = None,
+) -> dict[str, Any]:
+    approved = approved_entities if approved_entities is not None else {}
+    approved.clear()
+    fail_closed = not REGISTER_CHAT_IDS and not ALL_CHATS
+    if fail_closed:
         log(
-            "TELEGRAM_CHAT_IDS is empty; registering every visible Telegram group/channel "
-            "for this account."
+            "TELEGRAM_CHAT_IDS is empty and TELEGRAM_ALL_CHATS is false; "
+            "fail-closed mode will only list locally visible canonical chat IDs and "
+            "will not register or synchronize any chats."
+        )
+    elif ALL_CHATS:
+        log(
+            "TELEGRAM_ALL_CHATS is explicitly enabled; registering every group/channel."
         )
     else:
         log(f"TELEGRAM_CHAT_IDS allowlist active: {sorted(REGISTER_CHAT_IDS)}")
@@ -611,17 +1004,24 @@ async def register_dialogs(backend: Backend, client: TelegramClient) -> dict[str
         if chat_type(entity) is None:
             continue
         supported += 1
-        ids = dialog_ids(entity)
+        canonical_id = canonical_dialog_id(entity)
         if len(available) < 30:
             available.append(dialog_summary(dialog))
-        matched_ids = REGISTER_CHAT_IDS.intersection(ids) if REGISTER_CHAT_IDS else ids
-        if REGISTER_CHAT_IDS and not matched_ids:
+        if fail_closed:
+            continue
+        matched_ids = (
+            REGISTER_CHAT_IDS.intersection({canonical_id})
+            if REGISTER_CHAT_IDS
+            else {canonical_id}
+        )
+        if not ALL_CHATS and not matched_ids:
             log(f"Skipping Telegram dialog outside allowlist: {dialog_summary(dialog)}")
             continue
         matched += 1
         matched_requested_ids.update(matched_ids)
         if await backend.upsert_chat(dialog):
             registered += 1
+            approved[canonical_id] = entity
 
     log(
         "External collector registration summary: "
@@ -635,7 +1035,7 @@ async def register_dialogs(backend: Backend, client: TelegramClient) -> dict[str
         log(
             f"No Telegram dialog matched TELEGRAM_CHAT_IDS allowlist entries: {sorted(unmatched)}"
         )
-    if available and (unmatched or registered == 0):
+    if available and (fail_closed or unmatched or registered == 0):
         log("Available group/channel IDs visible to this Telegram session:")
         for item in available:
             log(f"  - {item}")
@@ -661,24 +1061,30 @@ async def heartbeat_loop(backend: Backend, run_id: str, stopped: asyncio.Event) 
 
 
 async def process_claim(
-    backend: Backend, client: TelegramClient, claim: dict[str, Any]
+    backend: Backend,
+    client: TelegramClient,
+    claim: ClaimInput | dict[str, Any],
+    approved_entities: dict[int, Any] | None = None,
 ) -> None:
-    run_id = claim["run_id"]
-    chat = claim["chat"]
-    requested_start = datetime.fromisoformat(claim["requested_start"])
-    requested_end = datetime.fromisoformat(claim["requested_end"])
-    after_message_id = claim.get("after_message_id")
-    STATUS.start_run(claim)
+    validated_claim = (
+        claim if isinstance(claim, ClaimInput) else validate_claim_payload(claim)
+    )
+    run_id = str(validated_claim.run_id)
+    chat = validated_claim.chat
+    requested_start = validated_claim.requested_start.astimezone(timezone.utc)
+    requested_end = validated_claim.requested_end.astimezone(timezone.utc)
+    after_message_id = validated_claim.after_message_id
+    STATUS.start_run(validated_claim.model_dump(mode="json"))
     log(
-        f"Received external sync claim run={run_id} chat={chat['title']!r} "
-        f"telegram_chat_id={chat['telegram_chat_id']} "
+        f"Received external sync claim run={run_id} chat={chat.title!r} "
+        f"telegram_chat_id={chat.telegram_chat_id} "
         f"range={requested_start.isoformat()}..{requested_end.isoformat()} "
         f"after_message_id={after_message_id}"
     )
-    entity = await resolve_entity(client, chat["telegram_chat_id"])
+    entity = approved_entity_for_claim(validated_claim, approved_entities or {})
     log(
         f"Resolved Telegram entity for run={run_id} "
-        f"title={get_display_name(entity) or getattr(entity, 'title', chat['title'])!r} "
+        f"title={get_display_name(entity) or getattr(entity, 'title', chat.title)!r} "
         f"ids=[{dialog_id_label(entity)}]"
     )
 
@@ -688,6 +1094,7 @@ async def process_claim(
     messages_seen = 0
     attachments_seen = 0
     attachments_failed = 0
+    media_bytes_consumed = 0
 
     async def flush_messages() -> None:
         nonlocal messages
@@ -706,7 +1113,7 @@ async def process_claim(
             messages = []
 
     async def scan_messages(scan_client: TelegramClient) -> None:
-        nonlocal messages_seen, attachments_seen, attachments_failed
+        nonlocal messages_seen, attachments_seen, attachments_failed, media_bytes_consumed
         mode = "takeout" if scan_client is not client else "regular"
         iter_kwargs = message_scan_kwargs(requested_end, after_message_id)
         log(f"Starting Telegram message scan run={run_id} mode={mode}")
@@ -746,27 +1153,72 @@ async def process_claim(
                     attachments_seen=attachments_seen,
                     attachments_failed=attachments_failed,
                 )
+                media_type, filename, _mime_type, media_key, declared_size = metadata
+                quota_error: str | None = None
+                if attachments_seen > MAX_MEDIA_FILES_PER_RUN:
+                    quota_error = "Collector media file-count limit exceeded"
+                elif declared_size is not None and declared_size > MAX_MEDIA_FILE_BYTES:
+                    quota_error = "Attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
+                elif (
+                    declared_size is not None
+                    and media_bytes_consumed + declared_size > MAX_MEDIA_BYTES_PER_RUN
+                ):
+                    quota_error = (
+                        "Collector media byte limit for this sync run exceeded"
+                    )
+                if quota_error is not None:
+                    attachments_failed += 1
+                    STATUS.update_run(
+                        messages_seen=messages_seen,
+                        attachments_seen=attachments_seen,
+                        attachments_failed=attachments_failed,
+                    )
+                    log(
+                        f"Skipping media run={run_id} message_id={message.id} "
+                        f"media_key={media_key}: {quota_error}",
+                        "warning",
+                    )
+                    await backend.post_media_error(
+                        run_id, message.id, metadata, quota_error
+                    )
+                    continue
                 temp = tempfile.NamedTemporaryFile(
                     prefix="telegram-external-media-", delete=False
                 )
                 temp_path = temp.name
                 temp.close()
                 downloaded_path = temp_path
-                media_type, filename, _mime_type, media_key = metadata
                 log(
                     f"Downloading media run={run_id} message_id={message.id} "
                     f"media_key={media_key} type={media_type} filename={filename!r}"
                 )
                 try:
-                    downloaded = await message.download_media(file=temp_path)
+                    remaining_run_bytes = MAX_MEDIA_BYTES_PER_RUN - media_bytes_consumed
+                    async with asyncio.timeout(MEDIA_DOWNLOAD_TIMEOUT_SECONDS):
+                        downloaded = await message.download_media(
+                            file=temp_path,
+                            progress_callback=media_download_progress_guard(
+                                remaining_run_bytes
+                            ),
+                        )
                     if not downloaded:
                         raise RuntimeError(
                             "Telegram returned no downloadable attachment"
                         )
                     downloaded_path = downloaded
+                    actual_size = os.path.getsize(downloaded_path)
+                    if actual_size > MAX_MEDIA_FILE_BYTES:
+                        raise RuntimeError(
+                            "Downloaded attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
+                        )
+                    if media_bytes_consumed + actual_size > MAX_MEDIA_BYTES_PER_RUN:
+                        raise RuntimeError(
+                            "Downloaded attachment exceeds the media byte limit for this sync run"
+                        )
+                    media_bytes_consumed += actual_size
                     log(
                         f"Uploading media run={run_id} message_id={message.id} "
-                        f"path={downloaded_path} size_bytes={os.path.getsize(downloaded_path)}"
+                        f"size_bytes={actual_size}"
                     )
                     await backend.post_media_file(
                         run_id, message.id, metadata, downloaded_path
@@ -825,7 +1277,7 @@ async def process_claim(
         )
         STATUS.finish_run("completed")
         log(
-            f"Completed external sync run={run_id} chat={chat['title']!r} "
+            f"Completed external sync run={run_id} chat={chat.title!r} "
             f"messages={messages_seen} attachments={attachments_seen} failures={attachments_failed}"
         )
     except TakeoutInitDelayError as exc:
@@ -879,18 +1331,6 @@ async def process_claim(
         await heartbeat_task
 
 
-class ConfigurationError(RuntimeError):
-    pass
-
-
-class LoginRejected(ValueError):
-    pass
-
-
-class LoginPhaseError(RuntimeError):
-    pass
-
-
 def configuration_errors() -> list[str]:
     errors = list(CONFIG_ERRORS)
     if not API_ID:
@@ -899,14 +1339,42 @@ def configuration_errors() -> list[str]:
         errors.append("TELEGRAM_API_HASH is required")
     if not INGEST_TOKEN:
         errors.append("TELEGRAM_INGEST_TOKEN is required")
-    if not BACKEND_URL or not BACKEND_URL.startswith(("http://", "https://")):
-        errors.append("BACKEND_URL must be an http:// or https:// URL")
+    parsed_backend = urlsplit(BACKEND_URL)
+    if parsed_backend.scheme not in {"http", "https"} or not parsed_backend.hostname:
+        errors.append("BACKEND_URL must be an absolute http:// or https:// URL")
+    if (
+        parsed_backend.username
+        or parsed_backend.password
+        or parsed_backend.query
+        or parsed_backend.fragment
+    ):
+        errors.append(
+            "BACKEND_URL must not contain credentials, a query string, or a fragment"
+        )
+    try:
+        validate_backend_transport()
+    except ConfigurationError as exc:
+        errors.append(str(exc))
     try:
         datetime.fromisoformat(INITIAL_SYNC_FROM)
     except ValueError:
         errors.append("INITIAL_SYNC_FROM must be an ISO-8601 date or timestamp")
     if SYNC_INTERVAL_MINUTES not in {15, 60, 360, 1440}:
         errors.append("SYNC_INTERVAL_MINUTES must be one of 15, 60, 360, 1440")
+    if ALL_CHATS and REGISTER_CHAT_IDS:
+        errors.append("Set either TELEGRAM_ALL_CHATS or TELEGRAM_CHAT_IDS, not both")
+    if env("COLLECTOR_WEB_AUTH_TOKEN") and len(WEB_AUTH_TOKEN) < 32:
+        errors.append("COLLECTOR_WEB_AUTH_TOKEN must contain at least 32 characters")
+    if WEB_ENABLED:
+        try:
+            validate_web_binding()
+        except ConfigurationError as exc:
+            errors.append(str(exc))
+    if MAX_MEDIA_BYTES_PER_RUN < MAX_MEDIA_FILE_BYTES:
+        errors.append(
+            "TELEGRAM_MAX_MEDIA_BYTES_PER_RUN must be at least "
+            "TELEGRAM_MAX_MEDIA_FILE_BYTES"
+        )
     return list(dict.fromkeys(errors))
 
 
@@ -917,7 +1385,8 @@ def startup_description() -> str:
         f"poll_seconds={POLL_SECONDS} batch_size={BATCH_SIZE} "
         f"message_progress_every={MESSAGE_PROGRESS_EVERY} "
         f"use_takeout={USE_TAKEOUT} takeout_wait_time={TAKEOUT_WAIT_TIME} "
-        f"register_chat_ids={sorted(REGISTER_CHAT_IDS) if REGISTER_CHAT_IDS else 'ALL'}"
+        f"register_chat_ids={sorted(REGISTER_CHAT_IDS) if REGISTER_CHAT_IDS else 'NONE'} "
+        f"all_chats={ALL_CHATS} include_raw_metadata={INCLUDE_RAW_METADATA}"
     )
 
 
@@ -926,7 +1395,7 @@ class CollectorRuntime:
         self,
         *,
         status_store: CollectorStatus = STATUS,
-        client_factory=TelegramClient,
+        client_factory=secure_telegram_client_factory,
         backend_factory=Backend,
         sleep=asyncio.sleep,
     ) -> None:
@@ -938,6 +1407,7 @@ class CollectorRuntime:
         self.phone_code_hash: str | None = None
         self.authorized = asyncio.Event()
         self.login_lock = asyncio.Lock()
+        self.approved_entities: dict[int, Any] = {}
 
     def _set_phase(self, phase: str, message: str, level: str = "info") -> None:
         self.status.set_phase(phase, message)
@@ -1079,7 +1549,7 @@ class CollectorRuntime:
                 await self.sleep(POLL_SECONDS)
                 continue
             idle_polls = 0
-            await process_claim(backend, client, claim)
+            await process_claim(backend, client, claim, self.approved_entities)
             self.status.set_phase(
                 "idle", "Collector is connected and waiting for sync work"
             )
@@ -1104,10 +1574,10 @@ class CollectorRuntime:
                 await self.authorized.wait()
 
             self._set_phase(
-                "registering", "Registering visible Telegram groups and channels"
+                "registering", "Registering approved Telegram groups and channels"
             )
             backend = self.backend_factory()
-            await register_dialogs(backend, client)
+            await register_dialogs(backend, client, self.approved_entities)
             await self._poll_claims(backend, client)
         finally:
             self.phone_code_hash = None
@@ -1163,6 +1633,143 @@ def require_json(request: Request) -> None:
         )
 
 
+class RequestBodyLimitMiddleware:
+    def __init__(self, app, *, max_body_bytes: int) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") not in {"POST", "PUT", "PATCH"}
+            or not scope.get("path", "").startswith("/api/")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                response = Response("Invalid Content-Length", status_code=400)
+                await response(scope, receive, send)
+                return
+            if declared_length < 0 or declared_length > self.max_body_bytes:
+                response = Response("Request body too large", status_code=413)
+                await response(scope, receive, send)
+                return
+
+        consumed = 0
+        chunks: list[bytes] = []
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            consumed += len(chunk)
+            if consumed > self.max_body_bytes:
+                response = Response("Request body too large", status_code=413)
+                await response(scope, receive, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay_receive():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {
+                    "type": "http.request",
+                    "body": b"".join(chunks),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        async def send_with_security_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.extend(
+                    [
+                        (b"cache-control", b"no-store"),
+                        (
+                            b"content-security-policy",
+                            b"default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                            b"form-action 'self'; object-src 'none'",
+                        ),
+                        (b"referrer-policy", b"no-referrer"),
+                        (b"x-content-type-options", b"nosniff"),
+                        (b"x-frame-options", b"DENY"),
+                        (
+                            b"permissions-policy",
+                            b"camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+                        ),
+                    ]
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+
+class AsyncRateLimiter:
+    def __init__(self, limit: int, window_seconds: int = 60) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._requests: dict[str, deque[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def check(self, key: str) -> None:
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        async with self._lock:
+            bucket = self._requests.setdefault(key, deque())
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+            if len(bucket) >= self.limit:
+                retry_after = max(1, int(bucket[0] + self.window_seconds - now) + 1)
+                raise HTTPException(
+                    status_code=http_status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many requests",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            bucket.append(now)
+            if len(self._requests) > 1024:
+                self._requests = {
+                    request_key: requests
+                    for request_key, requests in self._requests.items()
+                    if requests and requests[-1] > cutoff
+                }
+
+
+def request_client_key(request: Request) -> str:
+    return request.client.host if request.client is not None else "local"
+
+
+def basic_credentials(request: Request) -> tuple[str, str] | None:
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Basic "):
+        return None
+    try:
+        decoded = base64.b64decode(authorization[6:], validate=True).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return username, password
+
+
 def login_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, LoginRejected):
         return HTTPException(
@@ -1175,8 +1782,50 @@ def create_app(
     runtime: CollectorRuntime | None = None,
     *,
     asset_dir: Path = WEB_ASSET_DIR,
+    auth_token: str = WEB_AUTH_TOKEN,
+    allowed_hosts: tuple[str, ...] = WEB_ALLOWED_HOSTS,
+    allowed_origins: tuple[str, ...] = WEB_ALLOWED_ORIGINS,
+    max_body_bytes: int = WEB_MAX_BODY_BYTES,
+    api_requests_per_minute: int = WEB_API_REQUESTS_PER_MINUTE,
+    login_attempts_per_minute: int = WEB_LOGIN_ATTEMPTS_PER_MINUTE,
 ) -> FastAPI:
     collector_runtime = runtime or CollectorRuntime()
+    if len(auth_token) < 32:
+        raise ConfigurationError(
+            "Collector web authentication token must contain at least 32 characters"
+        )
+    api_limiter = AsyncRateLimiter(api_requests_per_minute)
+    login_limiter = AsyncRateLimiter(login_attempts_per_minute)
+
+    async def require_api_rate_limit(request: Request) -> None:
+        await api_limiter.check(request_client_key(request))
+
+    async def require_login_rate_limit(request: Request) -> None:
+        await login_limiter.check(request_client_key(request))
+
+    async def require_web_auth(request: Request) -> None:
+        credentials = basic_credentials(request)
+        username = credentials[0] if credentials is not None else ""
+        password = credentials[1] if credentials is not None else ""
+        username_matches = secrets.compare_digest(username, "collector")
+        token_matches = secrets.compare_digest(password, auth_token)
+        if not (username_matches and token_matches):
+            raise HTTPException(
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
+                detail="Collector web authentication required",
+                headers={"WWW-Authenticate": 'Basic realm="Telegram Collector"'},
+            )
+
+    async def require_allowed_origin(request: Request) -> None:
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in allowed_origins:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Request origin is not allowed",
+            )
+
+    async def require_json_async(request: Request) -> None:
+        require_json(request)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1193,20 +1842,33 @@ def create_app(
         openapi_url=None,
         lifespan=lifespan,
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
+    app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=max_body_bytes)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.state.collector_runtime = collector_runtime
     index_html = (asset_dir / "index.html").read_text(encoding="utf-8")
     stylesheet = (asset_dir / "styles.css").read_text(encoding="utf-8")
     javascript = (asset_dir / "app.js").read_text(encoding="utf-8")
 
-    @app.get("/", response_class=HTMLResponse)
+    authenticated = [Depends(require_web_auth)]
+    api_authenticated = [Depends(require_api_rate_limit), Depends(require_web_auth)]
+    login_protected = [
+        Depends(require_api_rate_limit),
+        Depends(require_login_rate_limit),
+        Depends(require_web_auth),
+        Depends(require_allowed_origin),
+        Depends(require_json_async),
+    ]
+
+    @app.get("/", response_class=HTMLResponse, dependencies=authenticated)
     async def index() -> str:
         return index_html
 
-    @app.get("/assets/styles.css")
+    @app.get("/assets/styles.css", dependencies=authenticated)
     async def styles() -> Response:
         return Response(stylesheet, media_type="text/css")
 
-    @app.get("/assets/app.js")
+    @app.get("/assets/app.js", dependencies=authenticated)
     async def script() -> Response:
         return Response(javascript, media_type="text/javascript")
 
@@ -1214,33 +1876,33 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {"ok": True, "phase": collector_runtime.status.phase}
 
-    @app.get("/api/status")
+    @app.get("/api/status", dependencies=api_authenticated)
     async def collector_status() -> dict[str, Any]:
-        return collector_runtime.status.snapshot()
+        return collector_runtime.status.redacted_snapshot()
 
-    @app.post("/api/login/code", dependencies=[Depends(require_json)])
+    @app.post("/api/login/code", dependencies=login_protected)
     async def submit_login_code(payload: LoginCodeInput) -> dict[str, Any]:
         try:
             await collector_runtime.submit_code(payload.code)
         except (LoginRejected, LoginPhaseError) as exc:
             raise login_http_error(exc) from exc
-        return collector_runtime.status.snapshot()
+        return collector_runtime.status.redacted_snapshot()
 
-    @app.post("/api/login/password", dependencies=[Depends(require_json)])
+    @app.post("/api/login/password", dependencies=login_protected)
     async def submit_login_password(payload: LoginPasswordInput) -> dict[str, Any]:
         try:
             await collector_runtime.submit_password(payload.password)
         except (LoginRejected, LoginPhaseError) as exc:
             raise login_http_error(exc) from exc
-        return collector_runtime.status.snapshot()
+        return collector_runtime.status.redacted_snapshot()
 
-    @app.post("/api/login/resend", dependencies=[Depends(require_json)])
+    @app.post("/api/login/resend", dependencies=login_protected)
     async def resend_login_code() -> dict[str, Any]:
         try:
             await collector_runtime.resend_code()
         except (LoginRejected, LoginPhaseError) as exc:
             raise login_http_error(exc) from exc
-        return collector_runtime.status.snapshot()
+        return collector_runtime.status.redacted_snapshot()
 
     return app
 
@@ -1253,7 +1915,7 @@ async def main() -> None:
 
     log(startup_description())
     backend = Backend()
-    client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+    client = secure_telegram_client_factory(SESSION_PATH, API_ID, API_HASH)
     await client.start(phone=PHONE or None)
     try:
         me = await client.get_me()
@@ -1262,8 +1924,9 @@ async def main() -> None:
             "authorized",
             f"Telegram session authorized as {get_display_name(me) or getattr(me, 'id', 'unknown')}",
         )
-        publish("registering", "Registering visible Telegram groups and channels")
-        await register_dialogs(backend, client)
+        publish("registering", "Registering approved Telegram groups and channels")
+        approved_entities: dict[int, Any] = {}
+        await register_dialogs(backend, client, approved_entities)
 
         idle_polls = 0
         while True:
@@ -1280,19 +1943,29 @@ async def main() -> None:
                 await asyncio.sleep(POLL_SECONDS)
                 continue
             idle_polls = 0
-            await process_claim(backend, client, claim)
+            await process_claim(backend, client, claim, approved_entities)
     finally:
         await backend.close()
         await client.disconnect()
 
 
 def run_web_server() -> None:
-    log(f"Collector web interface available at http://{WEB_HOST}:{WEB_PORT}")
+    validate_web_binding()
+    if WEB_AUTH_TOKEN_GENERATED:
+        print(
+            "Generated collector web credentials (shown once): "
+            f"username=collector password={WEB_AUTH_TOKEN}",
+            flush=True,
+        )
+    scheme = "https" if WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE else "http"
+    log(f"Collector web interface available at {scheme}://{WEB_HOST}:{WEB_PORT}")
     uvicorn.run(
         create_app(),
         host=WEB_HOST,
         port=WEB_PORT,
         log_level="info",
+        ssl_certfile=WEB_TLS_CERT_FILE or None,
+        ssl_keyfile=WEB_TLS_KEY_FILE or None,
     )
 
 

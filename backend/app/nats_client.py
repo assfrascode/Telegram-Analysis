@@ -18,7 +18,15 @@ DLQ_STREAM = "CHAT_ANALYSE_DLQ"
 
 
 async def connect_nats() -> NATS:
-    return await nats.connect(settings.nats_url)
+    options: dict[str, str] = {}
+    if settings.nats_token:
+        options["token"] = settings.nats_token
+    elif settings.nats_user:
+        options["user"] = settings.nats_user
+        options["password"] = settings.nats_password
+    # Credentials embedded in nats://user:password@host remain supported when
+    # the explicit fields are empty.
+    return await nats.connect(settings.nats_url, **options)
 
 
 async def ensure_streams(js: JetStreamContext) -> None:

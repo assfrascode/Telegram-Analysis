@@ -47,11 +47,6 @@ def ensure_bucket() -> None:
         raise RuntimeError(f"Could not ensure MinIO bucket: {exc}") from exc
 
 
-def presigned_put(object_key: str, expires: timedelta = timedelta(hours=12)) -> str:
-    client = public_minio_client()
-    return client.presigned_put_object(settings.minio_bucket, object_key, expires=expires)
-
-
 def presigned_get(object_key: str, expires: timedelta = timedelta(hours=1)) -> str:
     client = public_minio_client()
     return client.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
@@ -108,6 +103,10 @@ def get_bytes(object_key: str) -> bytes:
 def stat_object(object_key: str):
     client = minio_client()
     return client.stat_object(settings.minio_bucket, object_key)
+
+
+def remove_object(object_key: str) -> None:
+    minio_client().remove_object(settings.minio_bucket, object_key)
 
 
 def object_exists(object_key: str) -> bool:

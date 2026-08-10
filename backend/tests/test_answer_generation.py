@@ -42,10 +42,12 @@ def test_build_evidence_context_preserves_chunk_metadata_and_text():
 
     context = build_evidence_context([chunk])
 
-    assert "[EVIDENCE_CHUNK rank=1 chunk_index=7" in context
-    assert "message_ids=1,2" in context
+    assert "[BEGIN_UNTRUSTED_EVIDENCE_JSON]" in context
+    assert '"rank":1' in context
+    assert '"chunk_index":7' in context
+    assert '"message_ids":["1","2"]' in context
     assert "IMAGE_DESCRIPTION" in context
-    assert "[/EVIDENCE_CHUNK]" in context
+    assert "[END_UNTRUSTED_EVIDENCE_JSON]" in context
 
 
 def test_build_evidence_context_respects_max_chars():
@@ -113,7 +115,7 @@ def test_build_evidence_batches_token_budget_splits_without_truncating():
     assert all(len(batch.context) <= 240 for batch in batches)
     assert all(not batch.truncated for batch in batches)
     assert "CONTEXT_TRUNCATED" not in "\n".join(batch.context for batch in batches)
-    assert "part=1/" in batches[0].context
+    assert '"part":[1,' in batches[0].context
 
 
 def test_build_answer_prompt_contains_question_and_context():
@@ -131,7 +133,7 @@ def test_map_and_reduce_prompts_contain_question_and_summary_context():
 
     assert "Welche Narrative?" in map_prompt
     assert "Evidence batch 1/1" in map_prompt
-    assert "chunk_id=00000000-0000-0000-0000-000000000001" in map_prompt
+    assert '"chunk_id":"00000000-0000-0000-0000-000000000001"' in map_prompt
     assert "Intermediate summary" in map_prompt
 
     summary_batch = build_summary_batches(["Zusammenfassung A", "Zusammenfassung B"], max_chars=10_000)[0]

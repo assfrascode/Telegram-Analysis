@@ -1,4 +1,3 @@
-import json
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -8,29 +7,32 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.models import Job, JobEvent
 from app.nats_client import connect_nats
-from app.security import get_user_from_token
+from app.services.websocket_tickets import consume_websocket_ticket
 
 router = APIRouter(tags=["websocket"])
 
 
 @router.websocket("/ws/jobs/{job_id}")
-async def job_websocket(websocket: WebSocket, job_id: uuid.UUID, token: str):
-    await websocket.accept()
-
+async def job_websocket(websocket: WebSocket, job_id: uuid.UUID, ticket: str):
     async with SessionLocal() as session:
-        user = await get_user_from_token(session, token)
-        if not user:
+        owner_user_id = await consume_websocket_ticket(session, raw_token=ticket, job_id=job_id)
+        if owner_user_id is None:
             await websocket.close(code=4401, reason="Unauthorized")
             return
 
-        result = await session.execute(select(Job).where(Job.id == job_id, Job.owner_user_id == user.id))
+        result = await session.execute(select(Job).where(Job.id == job_id, Job.owner_user_id == owner_user_id))
         job = result.scalar_one_or_none()
         if not job:
             await websocket.close(code=4404, reason="Job not found")
             return
 
+        await websocket.accept()
+
         backlog = await session.execute(
-            select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.owner_user_id == user.id).order_by(JobEvent.id).limit(1000)
+            select(JobEvent)
+            .where(JobEvent.job_id == job_id, JobEvent.owner_user_id == owner_user_id)
+            .order_by(JobEvent.id)
+            .limit(1000)
         )
         for event in backlog.scalars().all():
             await websocket.send_json(

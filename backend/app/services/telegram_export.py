@@ -1,5 +1,4 @@
 
-import json
 import posixpath
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,6 +23,133 @@ MISSING_FILE_MARKERS = (
 
 class TelegramExportError(ValueError):
     pass
+
+
+def validate_json_stream_limits(
+    file_obj: BinaryIO,
+    *,
+    max_string_bytes: int,
+    max_nesting_depth: int = 64,
+) -> None:
+    """Lexically reject huge JSON strings/depth before a parser allocates them."""
+
+    file_obj.seek(0)
+    in_string = False
+    escaped = False
+    string_bytes = 0
+    depth = 0
+    while True:
+        chunk = file_obj.read(1024 * 1024)
+        if not chunk:
+            break
+        for byte in chunk:
+            if in_string:
+                string_bytes += 1
+                if string_bytes > max_string_bytes:
+                    raise TelegramExportError("JSON string exceeds configured per-message limit")
+                if escaped:
+                    escaped = False
+                elif byte == 0x5C:  # backslash
+                    escaped = True
+                elif byte == 0x22:  # quote
+                    in_string = False
+                continue
+            if byte == 0x22:
+                in_string = True
+                escaped = False
+                string_bytes = 0
+            elif byte in {0x7B, 0x5B}:  # { [
+                depth += 1
+                if depth > max_nesting_depth:
+                    raise TelegramExportError("JSON nesting exceeds configured limit")
+            elif byte in {0x7D, 0x5D}:  # } ]
+                depth = max(0, depth - 1)
+    file_obj.seek(0)
+
+
+@dataclass
+class _JsonFrame:
+    container: dict[str, Any] | list[Any]
+    pending_key: str | None = None
+
+
+def _attach_json_value(frame: _JsonFrame, value: Any) -> None:
+    if isinstance(frame.container, list):
+        frame.container.append(value)
+        return
+    if frame.pending_key is None:
+        raise TelegramExportError("Malformed JSON object while parsing message")
+    frame.container[frame.pending_key] = value
+    frame.pending_key = None
+
+
+def _bounded_result_messages(
+    file_obj: BinaryIO,
+    *,
+    max_messages: int,
+    max_message_bytes: int,
+    max_nesting_depth: int = 64,
+) -> Iterator[dict[str, Any]]:
+    try:
+        import ijson  # type: ignore
+    except ImportError as exc:
+        raise TelegramExportError("Streaming JSON parser is required") from exc
+
+    validate_json_stream_limits(
+        file_obj,
+        max_string_bytes=max_message_bytes,
+        max_nesting_depth=max_nesting_depth,
+    )
+    frames: list[_JsonFrame] = []
+    root: dict[str, Any] | None = None
+    message_size = 0
+    messages_seen = 0
+
+    for prefix, event, value in ijson.parse(file_obj):
+        if not frames:
+            if prefix == "messages.item" and event == "start_map":
+                root = {}
+                frames = [_JsonFrame(root)]
+                message_size = 2
+            continue
+
+        if event == "map_key":
+            encoded_size = len(str(value).encode("utf-8", errors="replace"))
+            message_size += encoded_size + 4
+            if message_size > max_message_bytes:
+                raise TelegramExportError("Telegram message exceeds configured size limit")
+            frames[-1].pending_key = str(value)
+            continue
+
+        if event in {"start_map", "start_array"}:
+            if len(frames) >= max_nesting_depth:
+                raise TelegramExportError("Telegram message nesting exceeds configured limit")
+            child: dict[str, Any] | list[Any] = {} if event == "start_map" else []
+            _attach_json_value(frames[-1], child)
+            frames.append(_JsonFrame(child))
+            message_size += 2
+            continue
+
+        if event in {"string", "number", "boolean", "null"}:
+            if isinstance(value, str):
+                value_size = len(value.encode("utf-8", errors="replace"))
+            else:
+                value_size = 32
+            message_size += value_size + 2
+            if message_size > max_message_bytes:
+                raise TelegramExportError("Telegram message exceeds configured size limit")
+            _attach_json_value(frames[-1], value)
+            continue
+
+        if event in {"end_map", "end_array"}:
+            frames.pop()
+            if not frames:
+                messages_seen += 1
+                if messages_seen > max_messages:
+                    raise TelegramExportError("Telegram export contains too many messages")
+                if root is not None:
+                    yield root
+                root = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +182,7 @@ def normalize_export_name(value: Any) -> str | None:
     return normalized[:MAX_EXPORT_NAME_LENGTH] or None
 
 
-def read_result_name(file_obj: BinaryIO) -> str | None:
+def read_result_name(file_obj: BinaryIO, *, max_string_bytes: int = 1_000_000) -> str | None:
     """Best-effort read of a Telegram chat export's top-level name.
 
     Telegram places ``name`` before the potentially large ``messages`` array.
@@ -66,13 +192,10 @@ def read_result_name(file_obj: BinaryIO) -> str | None:
     try:
         import ijson  # type: ignore
     except ImportError:
-        try:
-            data = json.load(file_obj)
-        except Exception:
-            return None
-        return normalize_export_name(data.get("name")) if isinstance(data, dict) else None
+        return None
 
     try:
+        validate_json_stream_limits(file_obj, max_string_bytes=max_string_bytes)
         for prefix, event, value in ijson.parse(file_obj):
             if prefix == "name":
                 return normalize_export_name(value) if event == "string" else None
@@ -317,42 +440,46 @@ def parse_message(message: dict[str, Any]) -> ParsedMessage | None:
     )
 
 
-def iter_result_messages(file_obj: BinaryIO) -> Iterator[dict[str, Any]]:
+def iter_result_messages(
+    file_obj: BinaryIO,
+    *,
+    max_messages: int = 2_000_000,
+    max_message_bytes: int = 1_000_000,
+) -> Iterator[dict[str, Any]]:
     """Yield Telegram messages from result.json.
 
     Uses ijson when installed. Falls back to json.load for development setups.
     """
-    try:
-        import ijson  # type: ignore
-    except ImportError:
-        data = json.load(file_obj)
-        messages = data.get("messages", []) if isinstance(data, dict) else []
-        for message in messages:
-            if isinstance(message, dict):
-                yield message
-        return
-
-    for message in ijson.items(file_obj, "messages.item"):
-        if isinstance(message, dict):
-            yield message
+    yield from _bounded_result_messages(
+        file_obj,
+        max_messages=max_messages,
+        max_message_bytes=max_message_bytes,
+    )
 
 
-def count_result_messages(file_obj: BinaryIO) -> int | None:
+def count_result_messages(
+    file_obj: BinaryIO,
+    *,
+    max_messages: int = 2_000_000,
+    max_message_bytes: int = 1_000_000,
+) -> int | None:
     """Best-effort message count for progress. Returns None when streaming count is unavailable."""
     try:
         import ijson  # type: ignore
     except ImportError:
-        try:
-            data = json.load(file_obj)
-            messages = data.get("messages", []) if isinstance(data, dict) else []
-            return len(messages) if isinstance(messages, list) else None
-        except Exception:
-            return None
+        return None
 
     count = 0
     try:
-        for _ in ijson.items(file_obj, "messages.item"):
-            count += 1
+        validate_json_stream_limits(
+            file_obj,
+            max_string_bytes=max_message_bytes,
+        )
+        for prefix, event, _value in ijson.parse(file_obj):
+            if prefix == "messages.item" and event == "start_map":
+                count += 1
+                if count > max_messages:
+                    raise TelegramExportError("Telegram export contains too many messages")
         return count
     except Exception:
         return None

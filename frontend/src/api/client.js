@@ -1,6 +1,5 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL || "").replace(/\/$/, "");
-const DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export function buildApiUrl(path) {
   if (/^https?:\/\//i.test(path)) return path;
@@ -8,8 +7,8 @@ export function buildApiUrl(path) {
   return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-export function buildWsUrl(path, token) {
-  const suffix = `${path.startsWith("/") ? path : `/${path}`}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+export function buildWsUrl(path, ticket) {
+  const suffix = `${path.startsWith("/") ? path : `/${path}`}${path.includes("?") ? "&" : "?"}ticket=${encodeURIComponent(ticket)}`;
 
   if (WS_BASE_URL) return `${WS_BASE_URL}${suffix}`;
 
@@ -66,36 +65,9 @@ export async function downloadBlob(path, { token } = {}) {
   return { blob: await response.blob(), filename };
 }
 
-export function uploadFileToObjectStore(upload, file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && onProgress) onProgress((event.loaded / event.total) * 100);
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress?.(100);
-        resolve({});
-      } else {
-        reject(new Error(`${xhr.status} ${xhr.responseText}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Network error during direct upload"));
-    xhr.onabort = () => reject(new Error("Upload was cancelled"));
-    xhr.open("PUT", upload.presigned_put_url);
-    xhr.setRequestHeader("Content-Type", file.type || "application/zip");
-    xhr.send(file);
-  });
-}
-
 export function uploadFileViaBackend(upload, file, token, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file, file.name);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) onProgress((event.loaded / event.total) * 100);
@@ -116,18 +88,13 @@ export function uploadFileViaBackend(upload, file, token, onProgress) {
 
     xhr.onerror = () => reject(new Error("Network error during upload"));
     xhr.onabort = () => reject(new Error("Upload was cancelled"));
-    xhr.open("POST", buildApiUrl(upload.backend_upload_url));
+    xhr.open("PUT", buildApiUrl(upload.backend_upload_url));
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    xhr.send(form);
+    xhr.setRequestHeader("Content-Type", "application/zip");
+    xhr.send(file);
   });
 }
 
 export async function uploadFileForAnalysis(upload, file, token, onProgress) {
-  // Single presigned PUTs are not multipart; larger files use backend streaming.
-  if (!upload.presigned_put_url || file.size > DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES) {
-    return uploadFileViaBackend(upload, file, token, onProgress);
-  }
-
-  await uploadFileToObjectStore(upload, file, onProgress);
-  return apiJson(`/uploads/${upload.upload_id}/complete`, { token, method: "POST" });
+  return uploadFileViaBackend(upload, file, token, onProgress);
 }

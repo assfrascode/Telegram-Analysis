@@ -17,7 +17,6 @@ from app.services.events import record_event
 from app.services.worker_control import (
     NON_RUNNABLE_JOB_STATUSES,
     PermanentWorkerError,
-    RetryableWorkerError,
     WorkerCancelled,
     classify_worker_exception,
     create_dead_letter,

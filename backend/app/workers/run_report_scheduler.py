@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.nats_client import nats_context
 from app.schemas import JobOptions, TelegramReportCreateRequest
-from app.services.capacity import capacity_snapshot
+from app.services.capacity import ensure_accepting_jobs
 from app.services.jobs import (
     create_telegram_job_record,
     mark_job_start_failed_db_only,
@@ -137,14 +137,9 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
             return None
 
         try:
-            capacity = await capacity_snapshot(session)
-        except Exception as exc:
-            defer_schedule(schedule, f"Capacity check failed: {exc}")
-            await session.commit()
-            return None
-        if not capacity.get("accepting_jobs", False):
-            blockers = ", ".join(capacity.get("blockers") or ["capacity_unavailable"])
-            defer_schedule(schedule, f"System is not accepting new analyses: {blockers}")
+            await ensure_accepting_jobs(session)
+        except HTTPException as exc:
+            defer_schedule(schedule, f"System is not accepting new analyses: {exc.detail}")
             await session.commit()
             return None
 
@@ -250,6 +245,8 @@ async def process_safely(schedule_id: uuid.UUID) -> None:
 
 
 async def main() -> None:
+    if settings.app_role not in {"scheduler", "all"}:
+        raise RuntimeError("Report scheduler requires APP_ROLE=scheduler (or all)")
     await init_db()
     print(
         f"Report scheduler started id={SCHEDULER_ID} "

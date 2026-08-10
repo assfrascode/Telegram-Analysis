@@ -2,6 +2,7 @@ import asyncio
 import sys
 
 from app.db import SessionLocal, init_db
+from app.config import get_settings
 from app.nats_client import nats_context
 from app.services.job_recovery import recover_stale_queued_jobs
 from app.workers.ingest_worker import ValidateWorker, ExtractWorker
@@ -31,9 +32,12 @@ WORKERS = {
     "answer": AnswerWorker,
     "report": ReportWorker,
 }
+settings = get_settings()
 
 
 async def main() -> None:
+    if settings.app_role not in {"worker", "all"}:
+        raise RuntimeError("Generic workers require APP_ROLE=worker (or all)")
     await init_db()
     async with nats_context() as (_, js):
         async with SessionLocal() as session:

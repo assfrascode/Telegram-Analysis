@@ -2,6 +2,15 @@
 .env
 .env.*
 !.env.example
+*.env
+!*.env.example
+*.pem
+*.key
+*.license
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
 .codex/
 .agents/
 # Python
@@ -31,6 +40,8 @@ nats-data/
 minio-data/
 qdrant-data/
 hf-cache/
+collector-data/
+external_telegram_collector/data/
 
 # Logs
 *.log

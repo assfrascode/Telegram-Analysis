@@ -15,6 +15,7 @@ from app.nats_client import TASK_STREAM, connect_nats, ensure_streams
 from app.services.minio_store import minio_client
 
 settings = get_settings()
+JOB_ADMISSION_LOCK_KEY = 0x434841544A4F42  # "CHATJOB", PostgreSQL advisory xact lock
 
 
 @dataclass(slots=True)
@@ -91,7 +92,8 @@ async def _check_minio() -> HealthCheck:
 
 async def _check_qdrant() -> HealthCheck:
     base = settings.qdrant_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=settings.capacity_health_timeout_seconds) as client:
+    headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
+    async with httpx.AsyncClient(timeout=settings.capacity_health_timeout_seconds, headers=headers) as client:
         response = await client.get(f"{base}/readyz")
         if response.status_code == 404:
             # Older Qdrant builds may not expose /readyz. /collections is enough
@@ -322,6 +324,13 @@ async def ensure_accepting_jobs(session: AsyncSession) -> None:
     from fastapi import HTTPException, status
 
     try:
+        # The caller inserts and commits its Job on this same session. Holding a
+        # transaction-scoped advisory lock therefore serializes count -> insert
+        # reservations across API processes and the report scheduler.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": JOB_ADMISSION_LOCK_KEY},
+        )
         snapshot = await capacity_snapshot(session)
     except Exception as exc:
         raise HTTPException(

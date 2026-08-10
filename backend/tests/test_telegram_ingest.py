@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.api.routes_telegram_ingest import chat_response
@@ -79,11 +80,13 @@ def test_external_collector_uses_claim_cursor_as_telegram_min_id() -> None:
 def test_completed_external_run_advances_durable_cursor() -> None:
     now = datetime.now(timezone.utc)
     owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
     run_id = uuid.uuid4()
     chat_id = uuid.uuid4()
     run = SimpleNamespace(
         id=run_id,
         owner_user_id=owner_id,
+        ingest_token_id=token_id,
         chat_id=chat_id,
         job_id=None,
         status=TelegramSyncStatus.running,
@@ -98,6 +101,7 @@ def test_completed_external_run_advances_durable_cursor() -> None:
     chat = SimpleNamespace(
         id=chat_id,
         owner_user_id=owner_id,
+        ingest_token_id=token_id,
         ingest_mode=TelegramIngestMode.external_push,
         lease_owner=f"external:{run_id}",
         lease_expires_at=now + timedelta(minutes=5),
@@ -137,7 +141,7 @@ def test_completed_external_run_advances_durable_cursor() -> None:
     asyncio.run(
         complete_external_run(
             Session(),
-            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+            principal=IngestPrincipal(token_id=token_id, owner_user_id=owner_id),
             run_id=run_id,
             payload=TelegramIngestRunCompleteRequest(
                 status="completed",
@@ -155,12 +159,14 @@ def test_completed_external_run_immediately_requeues_chat_for_another_waiting_re
 ) -> None:
     now = datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc)
     owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
     run_id = uuid.uuid4()
     chat_id = uuid.uuid4()
     completed_interval_end = now - timedelta(days=2)
     run = SimpleNamespace(
         id=run_id,
         owner_user_id=owner_id,
+        ingest_token_id=token_id,
         chat_id=chat_id,
         job_id=uuid.uuid4(),
         status=TelegramSyncStatus.running,
@@ -175,6 +181,7 @@ def test_completed_external_run_immediately_requeues_chat_for_another_waiting_re
     chat = SimpleNamespace(
         id=chat_id,
         owner_user_id=owner_id,
+        ingest_token_id=token_id,
         ingest_mode=TelegramIngestMode.external_push,
         lease_owner=f"external:{run_id}",
         lease_expires_at=now + timedelta(minutes=5),
@@ -226,7 +233,7 @@ def test_completed_external_run_immediately_requeues_chat_for_another_waiting_re
     asyncio.run(
         complete_external_run(
             Session(),
-            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+            principal=IngestPrincipal(token_id=token_id, owner_user_id=owner_id),
             run_id=run_id,
             payload=TelegramIngestRunCompleteRequest(status="completed"),
         )
@@ -258,13 +265,13 @@ def test_external_chat_response_exposes_ingest_mode_without_connection() -> None
     assert response.telegram_chat_id == 42
 
 
-def test_external_chat_upsert_converts_backend_pull_row_and_clears_stale_connection_error() -> None:
+def test_external_chat_upsert_refuses_backend_pull_conversion() -> None:
     now = datetime.now(timezone.utc)
     owner_id = uuid.uuid4()
     chat = SimpleNamespace(
         owner_user_id=owner_id,
         connection_id=uuid.uuid4(),
-        telegram_chat_id=42,
+        telegram_chat_id=-10042,
         ingest_mode=TelegramIngestMode.backend_pull,
         access_hash=None,
         title="Backend row",
@@ -280,7 +287,7 @@ def test_external_chat_upsert_converts_backend_pull_row_and_clears_stale_connect
         updated_at=now - timedelta(days=1),
     )
     payload = TelegramIngestChatUpsertRequest(
-        telegram_chat_id=42,
+        telegram_chat_id=-10042,
         title="External channel",
         chat_type="channel",
         initial_sync_from=now - timedelta(days=1),
@@ -298,22 +305,18 @@ def test_external_chat_upsert_converts_backend_pull_row_and_clears_stale_connect
         async def flush(self):
             return None
 
-    result = asyncio.run(
-        upsert_external_chat(
-            Session(),
-            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
-            payload=payload,
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            upsert_external_chat(
+                Session(),
+                principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+                payload=payload,
+            )
         )
-    )
 
-    assert result is chat
-    assert chat.connection_id is None
-    assert chat.ingest_mode == TelegramIngestMode.external_push
-    assert chat.status == TelegramChatStatus.active
-    assert chat.last_error is None
-    assert chat.lease_owner is None
-    assert chat.lease_expires_at is None
-    assert chat.next_sync_at < now + timedelta(minutes=1)
+    assert exc_info.value.status_code == 409
+    assert chat.connection_id is not None
+    assert chat.ingest_mode == TelegramIngestMode.backend_pull
 
 
 def test_snapshot_external_coverage_helper_accepts_existing_coverage() -> None:

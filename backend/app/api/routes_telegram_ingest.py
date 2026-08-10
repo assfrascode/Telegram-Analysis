@@ -1,15 +1,18 @@
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.config import get_settings
 from app.dependencies import get_current_user
 from app.models import TelegramChat, User
 from app.schemas import (
     TelegramChatResponse,
     TelegramIngestChatUpsertRequest,
     TelegramIngestChatUpsertResponse,
+    TelegramIngestChatTokenAssignRequest,
     TelegramIngestClaimResponse,
     TelegramIngestMessagesRequest,
     TelegramIngestRunCompleteRequest,
@@ -23,13 +26,16 @@ from app.services.telegram_ingest import (
     complete_external_run,
     create_ingest_token,
     heartbeat_external_run,
+    reassign_external_chat_token,
     revoke_ingest_token,
     upsert_external_chat,
     upsert_external_media,
     upsert_external_messages,
 )
+from app.services.minio_store import remove_object
 
 router = APIRouter(prefix="/telegram/ingest", tags=["telegram-ingest"])
+settings = get_settings()
 
 
 def chat_response(chat: TelegramChat) -> TelegramChatResponse:
@@ -74,12 +80,14 @@ async def create_token(
         session,
         owner_user_id=user.id,
         name=payload.name,
+        expires_in_days=payload.expires_in_days,
     )
     await session.commit()
     return TelegramIngestTokenCreateResponse(
         id=token.id,
         name=token.name,
         created_at=token.created_at,
+        expires_at=token.expires_at,
         revoked_at=token.revoked_at,
         last_used_at=token.last_used_at,
         token=raw_token,
@@ -103,6 +111,23 @@ async def upsert_chat(
     session: AsyncSession = Depends(get_session),
 ) -> TelegramIngestChatUpsertResponse:
     chat = await upsert_external_chat(session, principal=principal, payload=payload)
+    await session.commit()
+    return TelegramIngestChatUpsertResponse(chat=chat_response(chat))
+
+
+@router.put("/chats/{chat_id}/token", response_model=TelegramIngestChatUpsertResponse)
+async def assign_chat_token(
+    chat_id: uuid.UUID,
+    payload: TelegramIngestChatTokenAssignRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TelegramIngestChatUpsertResponse:
+    chat = await reassign_external_chat_token(
+        session,
+        owner_user_id=user.id,
+        chat_id=chat_id,
+        token_id=payload.token_id,
+    )
     await session.commit()
     return TelegramIngestChatUpsertResponse(chat=chat_response(chat))
 
@@ -158,19 +183,19 @@ async def post_messages(
 @router.post("/runs/{run_id}/media")
 async def post_media(
     run_id: uuid.UUID,
-    telegram_message_id: int = Form(...),
-    telegram_media_key: str = Form(...),
-    media_type: str = Form(...),
-    filename: str = Form(...),
-    mime_type: str | None = Form(default=None),
-    size_bytes: int | None = Form(default=None),
-    sha256: str | None = Form(default=None),
-    error_message: str | None = Form(default=None),
+    telegram_message_id: int = Form(..., ge=1),
+    telegram_media_key: str = Form(..., min_length=1, max_length=512),
+    media_type: str = Form(..., min_length=1, max_length=64),
+    filename: str = Form(..., min_length=1, max_length=900),
+    mime_type: str | None = Form(default=None, max_length=255),
+    size_bytes: int | None = Form(default=None, ge=0, le=settings.max_ingest_media_bytes),
+    sha256: str | None = Form(default=None, pattern=r"^[0-9a-fA-F]{64}$"),
+    error_message: str | None = Form(default=None, max_length=4000),
     file: UploadFile | None = File(default=None),
     principal: IngestPrincipal = Depends(get_current_ingest_principal),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    media = await upsert_external_media(
+    result = await upsert_external_media(
         session,
         principal=principal,
         run_id=run_id,
@@ -184,7 +209,21 @@ async def post_media(
         file=file,
         error_message=error_message,
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        if result.new_object_key:
+            try:
+                await asyncio.to_thread(remove_object, result.new_object_key)
+            except Exception:
+                pass
+        raise
+    if result.superseded_object_key:
+        try:
+            await asyncio.to_thread(remove_object, result.superseded_object_key)
+        except Exception:
+            pass
+    media = result.media
     return {
         "ok": True,
         "media_id": str(media.id),

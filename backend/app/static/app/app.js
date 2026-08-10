@@ -4,7 +4,6 @@ const STORAGE_JOB = "chat_analyse_current_job";
 const MAX_EVENTS = 300;
 const UI_RENDER_THROTTLE_MS = 80;
 const UPLOAD_PROGRESS_THROTTLE_MS = 140;
-const DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 const ui = {
   renderScheduled: false,
@@ -642,8 +641,6 @@ function updateFileInfo() {
 async function uploadFileViaBackend(upload, file) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const form = new FormData();
-    form.append("file", file, file.name);
 
     $("uploadProgressWrap").hidden = false;
     setUploadProgress(0, {force: true});
@@ -663,48 +660,15 @@ async function uploadFileViaBackend(upload, file) {
     };
     xhr.onerror = () => reject(new Error("Netzwerkfehler beim Upload"));
     xhr.onabort = () => reject(new Error("Upload wurde abgebrochen"));
-    xhr.open("POST", upload.backend_upload_url);
+    xhr.open("PUT", upload.backend_upload_url);
     xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
-    xhr.send(form);
-  });
-}
-
-async function uploadFileToObjectStore(upload, file) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    $("uploadProgressWrap").hidden = false;
-    setUploadProgress(0, {force: true});
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        setUploadProgress((event.loaded / event.total) * 100);
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setUploadProgress(100, {force: true});
-        resolve({});
-      } else {
-        reject(new Error(`${xhr.status} ${xhr.responseText}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Netzwerkfehler beim direkten Upload"));
-    xhr.onabort = () => reject(new Error("Upload wurde abgebrochen"));
-    xhr.open("PUT", upload.presigned_put_url);
-    xhr.setRequestHeader("Content-Type", file.type || "application/zip");
+    xhr.setRequestHeader("Content-Type", "application/zip");
     xhr.send(file);
   });
 }
 
 async function uploadFileForAnalysis(upload, file) {
-  // Single presigned PUTs are not multipart; larger files use backend streaming.
-  if (!upload.presigned_put_url || file.size > DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES) {
-    return await uploadFileViaBackend(upload, file);
-  }
-
-  await uploadFileToObjectStore(upload, file);
-  return await apiJson(`/uploads/${upload.upload_id}/complete`, {method: "POST"});
+  return await uploadFileViaBackend(upload, file);
 }
 
 function setUploadProgress(percent, {force = false} = {}) {
@@ -1181,14 +1145,28 @@ function formatProgressPayload(payload = {}) {
   return "";
 }
 
-function connectWs() {
+async function connectWs() {
   disconnectWs();
   if (!state.token || !state.currentJobId) return;
 
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${scheme}://${location.host}/ws/jobs/${state.currentJobId}?token=${encodeURIComponent(state.token)}`);
-  state.ws = ws;
+  const jobId = state.currentJobId;
   setWsStatus("verbinde", "badge-warning");
+  let ticket;
+  try {
+    ({ticket} = await apiJson(`/jobs/${jobId}/ws-ticket`, {method: "POST"}));
+  } catch (err) {
+    setWsStatus("fehler", "badge-error");
+    addLocalLog(`WebSocket-Ticket fehlgeschlagen: ${err.message}`, "warning");
+    startPolling();
+    window.clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = window.setTimeout(() => connectWs(), 3000);
+    return;
+  }
+
+  if (!state.token || state.currentJobId !== jobId) return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/ws/jobs/${jobId}?ticket=${encodeURIComponent(ticket)}`);
+  state.ws = ws;
 
   ws.onopen = () => {
     stopPolling();

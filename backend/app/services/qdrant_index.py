@@ -75,9 +75,10 @@ class QdrantIndex:
     def __init__(self, *, base_url: str | None = None, collection: str | None = None) -> None:
         self.base_url = (base_url or settings.qdrant_url).rstrip("/")
         self.collection = collection or settings.qdrant_collection
+        self._headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
 
     async def ensure_collection(self, *, vector_size: int) -> None:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=self._headers) as client:
             response = await client.get(f"{self.base_url}/collections/{self.collection}")
             if response.status_code == 404:
                 create = await client.put(
@@ -139,7 +140,7 @@ class QdrantIndex:
                 continue
 
     async def delete_job_points(self, job_id: uuid.UUID) -> None:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, headers=self._headers) as client:
             response = await client.post(
                 f"{self.base_url}/collections/{self.collection}/points/delete",
                 params={"wait": "true"},
@@ -158,7 +159,7 @@ class QdrantIndex:
     async def upsert_points(self, points: list[QdrantPoint]) -> None:
         if not points:
             return
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, headers=self._headers) as client:
             response = await client.put(
                 f"{self.base_url}/collections/{self.collection}/points",
                 params={"wait": "true"},
@@ -179,7 +180,7 @@ class QdrantIndex:
         limit: int,
         with_payload: bool = True,
     ) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, headers=self._headers) as client:
             response = await client.post(
                 f"{self.base_url}/collections/{self.collection}/points/search",
                 json={

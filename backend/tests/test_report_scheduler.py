@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.models import Job, JobStatus, QuestionSet, TelegramChat, TelegramChatStatus, TelegramReportSchedule
@@ -190,7 +191,7 @@ def test_scheduler_defers_when_previous_job_is_active(monkeypatch) -> None:
     async def fail_capacity(session):
         raise AssertionError("capacity should not be checked while previous job is active")
 
-    monkeypatch.setattr(run_report_scheduler, "capacity_snapshot", fail_capacity)
+    monkeypatch.setattr(run_report_scheduler, "ensure_accepting_jobs", fail_capacity)
 
     result = asyncio.run(run_report_scheduler.process_schedule(schedule.id))
 
@@ -206,9 +207,9 @@ def test_scheduler_defers_when_capacity_is_full(monkeypatch) -> None:
     patch_session(monkeypatch, session)
 
     async def full_capacity(session):
-        return {"accepting_jobs": False, "blockers": ["max_active_jobs_reached"]}
+        raise HTTPException(status_code=429, detail={"blockers": ["max_active_jobs_reached"]})
 
-    monkeypatch.setattr(run_report_scheduler, "capacity_snapshot", full_capacity)
+    monkeypatch.setattr(run_report_scheduler, "ensure_accepting_jobs", full_capacity)
 
     result = asyncio.run(run_report_scheduler.process_schedule(schedule.id))
 
@@ -245,7 +246,7 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
     published_jobs = []
 
     async def accepting_capacity(session):
-        return {"accepting_jobs": True, "blockers": []}
+        return None
 
     async def create_job(session, owner_user_id, payload):
         assert owner_user_id == owner_id
@@ -269,7 +270,7 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
     async def fake_nats_context():
         yield None, SimpleNamespace()
 
-    monkeypatch.setattr(run_report_scheduler, "capacity_snapshot", accepting_capacity)
+    monkeypatch.setattr(run_report_scheduler, "ensure_accepting_jobs", accepting_capacity)
     monkeypatch.setattr(run_report_scheduler, "create_telegram_job_record", create_job)
     monkeypatch.setattr(run_report_scheduler, "publish_initial_job_task", publish_task)
     monkeypatch.setattr(run_report_scheduler, "nats_context", fake_nats_context)

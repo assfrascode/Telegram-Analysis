@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20-bookworm-slim AS build
+ARG NODE_BASE_IMAGE=node:slim
+ARG NGINX_BASE_IMAGE=nginxinc/nginx-unprivileged:latest
+
+FROM ${NODE_BASE_IMAGE} AS build
 WORKDIR /app
 
 ENV CI=true \
@@ -34,17 +37,18 @@ ENV VITE_WS_BASE_URL=${VITE_WS_BASE_URL}
 
 RUN npm run build
 
-FROM nginx:1.27-alpine AS runtime
+FROM ${NGINX_BASE_IMAGE} AS runtime
 
 ENV BACKEND_URL=http://backend:8000 \
-    CLIENT_MAX_BODY_SIZE=50g \
-    PROXY_READ_TIMEOUT=3600s \
-    PROXY_SEND_TIMEOUT=3600s
+    SERVER_NAME=_ \
+    CLIENT_MAX_BODY_SIZE=1g \
+    PROXY_READ_TIMEOUT=300s \
+    PROXY_SEND_TIMEOUT=300s
 
 COPY docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1

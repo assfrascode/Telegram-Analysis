@@ -28,6 +28,7 @@ from app.schemas import (
     JobResponse,
     ScheduledReportJobMetadata,
     TelegramReportCreateRequest,
+    WebSocketTicketResponse,
 )
 from app.services.access_control import get_owned_job_or_404, get_owned_report_or_404
 from app.services.capacity import capacity_snapshot, ensure_accepting_jobs
@@ -43,6 +44,7 @@ from app.services.jobs import (
 )
 from app.services.events import record_event
 from app.services.worker_control import mark_job_cancelled
+from app.services.websocket_tickets import issue_websocket_ticket
 from app.services.minio_store import get_bytes, minio_client
 from app.services.report_bundle import (
     ReportBundleConflictError,
@@ -173,6 +175,21 @@ async def get_job(
 ) -> JobResponse:
     job = await get_owned_job_or_404(session, job_id=job_id, user=user)
     return _job_response(job)
+
+
+@router.post("/{job_id}/ws-ticket", response_model=WebSocketTicketResponse)
+async def create_websocket_ticket(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> WebSocketTicketResponse:
+    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    ticket, expires_at = await issue_websocket_ticket(
+        session,
+        owner_user_id=user.id,
+        job_id=job.id,
+    )
+    return WebSocketTicketResponse(ticket=ticket, expires_at=expires_at)
 
 
 @router.post("/{job_id}/cancel")

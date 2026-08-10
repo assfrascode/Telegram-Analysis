@@ -124,6 +124,25 @@ def convert_html_export_pages(pages: Iterable[TelegramHtmlPage]) -> TelegramHtml
     )
 
 
+def parse_html_export_page(
+    page: TelegramHtmlPage,
+    *,
+    max_messages: int,
+    max_message_bytes: int,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Parse one bounded HTML page without retaining other pages in memory."""
+
+    soup = BeautifulSoup(page.html, "html.parser")
+    messages = _parse_messages_from_page(soup, page.relative_path)
+    if len(messages) > max_messages:
+        raise TelegramHtmlExportError("HTML export page contains too many messages")
+    for message in messages:
+        encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > max_message_bytes:
+            raise TelegramHtmlExportError("HTML export message exceeds configured size limit")
+    return _extract_chat_name(soup), messages
+
+
 def html_conversion_result_to_json_bytes(result: TelegramHtmlConversionResult) -> bytes:
     return json.dumps(result.data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 

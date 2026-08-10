@@ -32,7 +32,7 @@ from app.schemas import (
     TelegramIngestMessageInput,
     TelegramIngestRunCompleteRequest,
 )
-from app.services.minio_store import put_stream
+from app.services.minio_store import put_stream, remove_object
 from app.services.telegram_sync import (
     chat_covers_interval as sync_chat_covers_interval,
     forward_sync_cursor,
@@ -48,6 +48,13 @@ TOKEN_PREFIX = "tg_ingest_"
 class IngestPrincipal:
     token_id: uuid.UUID
     owner_user_id: uuid.UUID
+
+
+@dataclass(slots=True)
+class MediaUpsertResult:
+    media: CollectedTelegramMedia
+    new_object_key: str | None = None
+    superseded_object_key: str | None = None
 
 
 def utc_now() -> datetime:
@@ -114,12 +121,14 @@ async def create_ingest_token(
     *,
     owner_user_id: uuid.UUID,
     name: str,
+    expires_in_days: int,
 ) -> tuple[TelegramIngestToken, str]:
     raw_token = new_ingest_token()
     token = TelegramIngestToken(
         owner_user_id=owner_user_id,
         name=name.strip(),
         token_hash=hash_ingest_token(raw_token),
+        expires_at=utc_now() + timedelta(days=expires_in_days),
     )
     session.add(token)
     await session.flush()
@@ -147,12 +156,74 @@ async def revoke_ingest_token(
     await session.flush()
 
 
+async def reassign_external_chat_token(
+    session: AsyncSession,
+    *,
+    owner_user_id: uuid.UUID,
+    chat_id: uuid.UUID,
+    token_id: uuid.UUID,
+) -> TelegramChat:
+    now = utc_now()
+    chat = (
+        await session.execute(
+            select(TelegramChat)
+            .where(
+                TelegramChat.id == chat_id,
+                TelegramChat.owner_user_id == owner_user_id,
+                TelegramChat.ingest_mode == TelegramIngestMode.external_push,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if chat is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+
+    token = (
+        await session.execute(
+            select(TelegramIngestToken).where(
+                TelegramIngestToken.id == token_id,
+                TelegramIngestToken.owner_user_id == owner_user_id,
+                TelegramIngestToken.revoked_at.is_(None),
+                TelegramIngestToken.expires_at > now,
+            )
+        )
+    ).scalar_one_or_none()
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+
+    running_runs = (
+        await session.execute(
+            select(TelegramSyncRun).where(
+                TelegramSyncRun.chat_id == chat.id,
+                TelegramSyncRun.status == TelegramSyncStatus.running,
+            )
+        )
+    ).scalars().all()
+    for run in running_runs:
+        run.status = TelegramSyncStatus.failed
+        run.error_message = "Ingest token rotated by account owner"
+        run.completed_at = now
+
+    chat.ingest_token_id = token.id
+    chat.lease_owner = None
+    chat.lease_expires_at = None
+    chat.status = TelegramChatStatus.active
+    chat.last_error = None
+    chat.next_sync_at = now
+    chat.updated_at = now
+    await session.flush()
+    return chat
+
+
 async def authenticate_ingest_token(session: AsyncSession, raw_token: str) -> IngestPrincipal | None:
+    if not raw_token.startswith(TOKEN_PREFIX) or len(raw_token) > 256:
+        return None
     token = (
         await session.execute(
             select(TelegramIngestToken).where(
                 TelegramIngestToken.token_hash == hash_ingest_token(raw_token),
                 TelegramIngestToken.revoked_at.is_(None),
+                TelegramIngestToken.expires_at > utc_now(),
             )
         )
     ).scalar_one_or_none()
@@ -178,9 +249,16 @@ async def upsert_external_chat(
             )
         )
     ).scalar_one_or_none()
-    was_external = chat is not None and chat.ingest_mode == TelegramIngestMode.external_push
+    if chat is not None and chat.ingest_mode != TelegramIngestMode.external_push:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A backend-managed Telegram chat cannot be converted by an ingest token",
+        )
+    if chat is not None and chat.ingest_token_id != principal.token_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     values = {
         "connection_id": None,
+        "ingest_token_id": principal.token_id,
         "ingest_mode": TelegramIngestMode.external_push,
         "access_hash": parse_access_hash(payload.access_hash),
         "title": payload.title,
@@ -205,7 +283,7 @@ async def upsert_external_chat(
     else:
         for key, value in values.items():
             setattr(chat, key, value)
-        if chat.next_sync_at is None or not was_external:
+        if chat.next_sync_at is None:
             chat.next_sync_at = now
     await session.flush()
     return chat
@@ -222,6 +300,7 @@ async def claim_next_external_chat(
             select(TelegramChat)
             .where(
                 TelegramChat.owner_user_id == principal.owner_user_id,
+                TelegramChat.ingest_token_id == principal.token_id,
                 TelegramChat.ingest_mode == TelegramIngestMode.external_push,
                 TelegramChat.status.in_(
                     [
@@ -264,6 +343,7 @@ async def claim_next_external_chat(
     run = TelegramSyncRun(
         chat_id=chat.id,
         owner_user_id=chat.owner_user_id,
+        ingest_token_id=principal.token_id,
         job_id=job_id,
         requested_start=requested_start,
         requested_end=requested_end,
@@ -333,13 +413,21 @@ async def load_running_external_run(
     require_active_lease: bool = True,
 ) -> tuple[TelegramSyncRun, TelegramChat]:
     run = await session.get(TelegramSyncRun, run_id)
-    if run is None or run.owner_user_id != principal.owner_user_id:
+    if (
+        run is None
+        or run.owner_user_id != principal.owner_user_id
+        or run.ingest_token_id != principal.token_id
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     if run.status != TelegramSyncStatus.running:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Sync run is not running")
 
     chat = await session.get(TelegramChat, run.chat_id)
-    if chat is None or chat.owner_user_id != principal.owner_user_id:
+    if (
+        chat is None
+        or chat.owner_user_id != principal.owner_user_id
+        or chat.ingest_token_id != principal.token_id
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     if chat.ingest_mode != TelegramIngestMode.external_push:
         raise HTTPException(
@@ -410,7 +498,7 @@ async def upsert_external_messages(
     return len(messages)
 
 
-async def _copy_upload_to_temp(file: UploadFile) -> tuple[str, int, str]:
+async def _copy_upload_to_temp(file: UploadFile, *, max_bytes: int) -> tuple[str, int, str]:
     temp = tempfile.NamedTemporaryFile(prefix="telegram-ingest-media-", delete=False)
     temp_path = temp.name
     digest = hashlib.sha256()
@@ -421,9 +509,21 @@ async def _copy_upload_to_temp(file: UploadFile) -> tuple[str, int, str]:
             if not chunk:
                 break
             size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="Uploaded media exceeds configured max size",
+                )
             digest.update(chunk)
             temp.write(chunk)
-    finally:
+    except Exception:
+        temp.close()
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    else:
         temp.close()
     return temp_path, size, digest.hexdigest()
 
@@ -447,7 +547,7 @@ async def upsert_external_media(
     declared_sha256: str | None,
     file: UploadFile | None,
     error_message: str | None,
-) -> CollectedTelegramMedia:
+) -> MediaUpsertResult:
     _run, chat = await load_running_external_run(session, principal=principal, run_id=run_id)
     message = (
         await session.execute(
@@ -488,6 +588,7 @@ async def upsert_external_media(
     row.filename = safe_filename(filename)
     row.mime_type = mime_type
     row.updated_at = utc_now()
+    previous_object_key = row.minio_object_key
 
     if file is None:
         if not error_message:
@@ -501,11 +602,24 @@ async def upsert_external_media(
         row.status = StepStatus.failed_retryable
         row.error_message = error_message[:4000]
         await session.flush()
-        return row
+        return MediaUpsertResult(media=row, superseded_object_key=previous_object_key)
+
+    if declared_size_bytes is not None:
+        if declared_size_bytes < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="size_bytes cannot be negative")
+        if declared_size_bytes > settings.max_ingest_media_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Uploaded media exceeds configured max size",
+            )
 
     temp_path = None
+    new_object_key: str | None = None
     try:
-        temp_path, actual_size, actual_sha256 = await _copy_upload_to_temp(file)
+        temp_path, actual_size, actual_sha256 = await _copy_upload_to_temp(
+            file,
+            max_bytes=settings.max_ingest_media_bytes,
+        )
         if declared_size_bytes is not None and actual_size != declared_size_bytes:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -518,8 +632,9 @@ async def upsert_external_media(
             )
         object_key = (
             f"users/{chat.owner_user_id}/telegram/chats/{chat.id}/"
-            f"messages/{message.telegram_message_id}/{row.id}-{row.filename}"
+            f"messages/{message.telegram_message_id}/{row.id}-{uuid.uuid4()}-{row.filename}"
         )
+        new_object_key = object_key
         await _put_temp_file(
             object_key,
             temp_path,
@@ -532,7 +647,20 @@ async def upsert_external_media(
         row.status = StepStatus.completed
         row.error_message = None
         await session.flush()
-        return row
+        return MediaUpsertResult(
+            media=row,
+            new_object_key=object_key,
+            superseded_object_key=(
+                previous_object_key if previous_object_key != object_key else None
+            ),
+        )
+    except Exception:
+        if new_object_key:
+            try:
+                await asyncio.to_thread(remove_object, new_object_key)
+            except Exception:
+                pass
+        raise
     finally:
         if temp_path is not None:
             try:

@@ -215,6 +215,16 @@ def _safe_filename(value: str) -> str:
     return name[:900] or "attachment"
 
 
+def _declared_media_size(message) -> int | None:
+    document = getattr(message, "document", None)
+    if document is not None and getattr(document, "size", None) is not None:
+        return int(document.size)
+    photo = getattr(message, "photo", None)
+    sizes = getattr(photo, "sizes", None) or []
+    known_sizes = [int(size.size) for size in sizes if getattr(size, "size", None) is not None]
+    return max(known_sizes) if known_sizes else None
+
+
 async def _upsert_message(
     session: AsyncSession,
     *,
@@ -296,8 +306,25 @@ async def _download_media(
     temp.close()
     try:
         try:
+            declared_size = _declared_media_size(message)
+            if declared_size is not None and declared_size > settings.max_ingest_media_bytes:
+                raise TelegramSyncError("Attachment exceeds configured max size")
+
+            def check_progress(received: int, total: int) -> None:
+                if (
+                    received is not None
+                    and int(received) > settings.max_ingest_media_bytes
+                ) or (
+                    total is not None
+                    and int(total) > settings.max_ingest_media_bytes
+                ):
+                    raise TelegramSyncError("Attachment exceeds configured max size")
+
             async with asyncio.timeout(settings.telegram_media_download_timeout_seconds):
-                downloaded = await message.download_media(file=temp_path)
+                downloaded = await message.download_media(
+                    file=temp_path,
+                    progress_callback=check_progress,
+                )
         except TimeoutError as exc:
             raise TelegramSyncError(
                 "Attachment download timed out after "
@@ -307,6 +334,8 @@ async def _download_media(
             raise TelegramSyncError("Telegram returned no downloadable attachment")
         downloaded_path = downloaded
         size = os.path.getsize(downloaded)
+        if size > settings.max_ingest_media_bytes:
+            raise TelegramSyncError("Attachment exceeds configured max size")
         digest = hashlib.sha256()
         with open(downloaded, "rb") as source:
             while chunk := source.read(1024 * 1024):

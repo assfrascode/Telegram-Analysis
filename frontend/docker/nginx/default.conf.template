@@ -1,11 +1,41 @@
+limit_req_zone $binary_remote_addr zone=api_per_ip:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=connections_per_ip:10m;
+
+# Preserve the original HTTPS scheme from the trusted host TLS terminator. Any
+# other value falls back to the scheme on this hop.
+map $http_x_forwarded_proto $forwarded_proto {
+    https https;
+    http http;
+    default $scheme;
+}
+
+map $http_x_forwarded_port $forwarded_port {
+    "443" 443;
+    "80" 80;
+    default $server_port;
+}
+
 server {
-    listen 80;
-    server_name _;
+    listen 8080 default_server;
+    server_name ${SERVER_NAME};
+    server_tokens off;
 
     root /usr/share/nginx/html;
     index index.html;
 
     client_max_body_size ${CLIENT_MAX_BODY_SIZE};
+    client_body_timeout 60s;
+    client_header_timeout 30s;
+    keepalive_timeout 30s;
+
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
 
     gzip on;
     gzip_comp_level 5;
@@ -25,30 +55,40 @@ server {
     location ~* \.(?:js|css|png|jpg|jpeg|gif|ico|svg|webp|woff2?)$ {
         try_files $uri =404;
         expires 30d;
-        add_header Cache-Control "public, immutable";
     }
 
     location ~ ^/(auth|capacity|uploads|jobs|question-sets|telegram)(/|$) {
+        limit_req zone=api_per_ip burst=40 nodelay;
+        limit_conn connections_per_ip 20;
         proxy_pass ${BACKEND_URL};
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header Proxy "";
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_hide_header X-Powered-By;
         proxy_read_timeout ${PROXY_READ_TIMEOUT};
         proxy_send_timeout ${PROXY_SEND_TIMEOUT};
         proxy_request_buffering off;
     }
 
     location /ws {
+        limit_conn connections_per_ip 10;
         proxy_pass ${BACKEND_URL};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
+        proxy_set_header Proxy "";
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_hide_header X-Powered-By;
         proxy_read_timeout ${PROXY_READ_TIMEOUT};
         proxy_send_timeout ${PROXY_SEND_TIMEOUT};
     }

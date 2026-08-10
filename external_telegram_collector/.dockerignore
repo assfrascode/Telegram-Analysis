@@ -1,0 +1,15 @@
+.env
+.env.*
+*.env
+.git
+__pycache__
+*.py[cod]
+*.log
+*.pem
+*.key
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
+collector-data
+data

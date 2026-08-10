@@ -119,20 +119,35 @@ def test_frontend_proxies_telegram_api_routes() -> None:
     assert '"/telegram": proxyTarget' in vite
 
 
-def test_frontend_supports_larger_upload_path() -> None:
+def test_frontend_uses_size_capped_backend_upload_path() -> None:
     react_client = Path("frontend/src/api/client.js").read_text()
     react_app = Path("frontend/src/App.jsx").read_text()
     static_app = Path("backend/app/static/app/app.js").read_text()
     compose = Path("docker-compose.yml").read_text()
     dockerfile = Path("frontend/Dockerfile").read_text()
 
-    assert "DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES" in react_client
-    assert 'xhr.open("PUT", upload.presigned_put_url)' in react_client
-    assert "`/uploads/${upload.upload_id}/complete`" in react_client
+    assert "presigned_put_url" not in react_client
+    assert 'xhr.open("PUT", buildApiUrl(upload.backend_upload_url))' in react_client
+    assert 'xhr.setRequestHeader("Content-Type", "application/zip")' in react_client
+    assert "new FormData" not in react_client
     assert "uploadFileViaBackend(upload, file, token, onProgress)" in react_client
     assert "uploadFileForAnalysis(upload, file, token, setUploadProgress)" in react_app
-    assert "DIRECT_OBJECT_STORE_UPLOAD_MAX_BYTES" in static_app
-    assert 'xhr.open("PUT", upload.presigned_put_url)' in static_app
-    assert "`/uploads/${upload.upload_id}/complete`" in static_app
-    assert 'CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-50g}"' in compose
-    assert "CLIENT_MAX_BODY_SIZE=50g" in dockerfile
+    assert "presigned_put_url" not in static_app
+    assert 'xhr.open("PUT", upload.backend_upload_url)' in static_app
+    assert 'xhr.setRequestHeader("Content-Type", "application/zip")' in static_app
+    assert "new FormData" not in static_app
+    assert "CLIENT_MAX_BODY_SIZE" in compose
+    assert "CLIENT_MAX_BODY_SIZE" in dockerfile
+
+
+def test_frontends_use_single_use_websocket_tickets() -> None:
+    react_client = Path("frontend/src/api/client.js").read_text()
+    react_socket = Path("frontend/src/hooks/useJobSocket.js").read_text()
+    static_app = Path("backend/app/static/app/app.js").read_text()
+
+    assert "?token=" not in react_client
+    assert "?token=" not in static_app
+    assert "ticket=${encodeURIComponent(ticket)}" in react_client
+    assert "?ticket=" in static_app
+    assert "`/jobs/${currentJobId}/ws-ticket`" in react_socket
+    assert "`/jobs/${jobId}/ws-ticket`" in static_app

@@ -1,0 +1,14 @@
+.env
+.env.*
+.git
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.py[cod]
+tests
+htmlcov
+.coverage
+*.pem
+*.key
+*.session*

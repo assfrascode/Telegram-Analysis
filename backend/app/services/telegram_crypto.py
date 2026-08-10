@@ -13,6 +13,10 @@ class TelegramCredentialError(ValueError):
 def _fernet() -> Fernet:
     settings = get_settings()
     configured = settings.telegram_credentials_encryption_key.strip()
+    if not configured and settings.app_env == "production":
+        raise TelegramCredentialError(
+            "TELEGRAM_CREDENTIALS_ENCRYPTION_KEY must be configured independently in production"
+        )
     key = (
         configured.encode("ascii")
         if configured

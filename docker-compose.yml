@@ -1,57 +1,247 @@
+name: chat-analyse
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-common-environment: &common-environment
+  APP_NAME: "${APP_NAME:-Chat Analyse}"
+  APP_ENV: "${APP_ENV:-production}"
+
+x-api-environment: &api-environment
+  APP_BASE_URL: "${APP_BASE_URL:?Set APP_BASE_URL to the public HTTPS origin}"
+  TRUSTED_HOSTS: '${TRUSTED_HOSTS:?Set TRUSTED_HOSTS to a JSON array of public hostnames}'
+  SECRET_KEY: "${SECRET_KEY:?Set a random SECRET_KEY of at least 32 bytes}"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
+  REGISTRATION_ENABLED: "${REGISTRATION_ENABLED:-false}"
+  AUTH_RATE_LIMIT_WINDOW_SECONDS: "${AUTH_RATE_LIMIT_WINDOW_SECONDS:-60}"
+  AUTH_LOGIN_ATTEMPTS_PER_WINDOW: "${AUTH_LOGIN_ATTEMPTS_PER_WINDOW:-10}"
+  AUTH_REGISTER_ATTEMPTS_PER_WINDOW: "${AUTH_REGISTER_ATTEMPTS_PER_WINDOW:-5}"
+  AUTH_TELEGRAM_ATTEMPTS_PER_WINDOW: "${AUTH_TELEGRAM_ATTEMPTS_PER_WINDOW:-5}"
+  WEBSOCKET_TICKET_EXPIRE_SECONDS: "${WEBSOCKET_TICKET_EXPIRE_SECONDS:-60}"
+  MAX_REQUEST_BODY_BYTES: "${MAX_REQUEST_BODY_BYTES:-1048576}"
+  MAX_CONCURRENT_UPLOADS: "${MAX_CONCURRENT_UPLOADS:-1}"
+  MAX_INGEST_MEDIA_BYTES: "${MAX_INGEST_MEDIA_BYTES:-104857600}"
+  MAX_INGEST_MESSAGES_BODY_BYTES: "${MAX_INGEST_MESSAGES_BODY_BYTES:-16777216}"
+
+x-telegram-environment: &telegram-environment
+  TELEGRAM_CREDENTIALS_ENCRYPTION_KEY: "${TELEGRAM_CREDENTIALS_ENCRYPTION_KEY:?Set a dedicated Fernet key}"
+  TELEGRAM_LOGIN_CHALLENGE_MINUTES: "${TELEGRAM_LOGIN_CHALLENGE_MINUTES:-10}"
+  TELEGRAM_SYNC_POLL_SECONDS: "${TELEGRAM_SYNC_POLL_SECONDS:-30}"
+  TELEGRAM_SYNC_LEASE_MINUTES: "${TELEGRAM_SYNC_LEASE_MINUTES:-30}"
+  TELEGRAM_SYNC_CONCURRENCY: "${TELEGRAM_SYNC_CONCURRENCY:-2}"
+  TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS: "${TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS:-900}"
+  TELEGRAM_MEDIA_DOWNLOAD_TIMEOUT_SECONDS: "${TELEGRAM_MEDIA_DOWNLOAD_TIMEOUT_SECONDS:-600}"
+  TELEGRAM_SYNC_RETRY_MINUTES: "${TELEGRAM_SYNC_RETRY_MINUTES:-5}"
+  TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS: "${TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS:-900}"
+  TELEGRAM_EXTERNAL_INITIAL_RESPONSE_TIMEOUT_SECONDS: "${TELEGRAM_EXTERNAL_INITIAL_RESPONSE_TIMEOUT_SECONDS:-60}"
+
+x-scheduler-environment: &scheduler-environment
+  REPORT_SCHEDULER_POLL_SECONDS: "${REPORT_SCHEDULER_POLL_SECONDS:-30}"
+  REPORT_SCHEDULER_LEASE_MINUTES: "${REPORT_SCHEDULER_LEASE_MINUTES:-5}"
+
+x-database-environment: &database-environment
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "${POSTGRES_DB:-chat_analyse}"
+  POSTGRES_USER: "${POSTGRES_USER:?Set a non-default POSTGRES_USER}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set a strong URL-safe POSTGRES_PASSWORD}"
+
+x-nats-environment: &nats-environment
+  NATS_URL: nats://nats:4222
+  NATS_USER: "${NATS_USER:?Set NATS_USER}"
+  NATS_PASSWORD: "${NATS_PASSWORD:?Set a strong NATS_PASSWORD}"
+
+x-object-storage-environment: &object-storage-environment
+  MINIO_ENDPOINT: minio:9000
+  MINIO_PUBLIC_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:?Set a non-default MINIO_ACCESS_KEY}"
+  MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:?Set a strong MINIO_SECRET_KEY}"
+  MINIO_SECURE: "false"
+  MINIO_BUCKET: "${MINIO_BUCKET:-chat-analyse}"
+
+x-vector-storage-environment: &vector-storage-environment
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_API_KEY: "${QDRANT_API_KEY:?Set a strong QDRANT_API_KEY}"
+  QDRANT_COLLECTION: "${QDRANT_COLLECTION:-chat_chunks}"
+  EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE:-64}"
+
+x-job-default-environment: &job-default-environment
+  DEFAULT_RETRIEVAL_K: "${DEFAULT_RETRIEVAL_K:-50}"
+  DEFAULT_RERANK_K: "${DEFAULT_RERANK_K:-15}"
+
+x-worker-model-environment: &worker-model-environment
+  LIBRETRANSLATE_BASE_URL: "${LIBRETRANSLATE_BASE_URL:-}"
+  LIBRETRANSLATE_API_KEY: "${LIBRETRANSLATE_API_KEY:-}"
+  LIBRETRANSLATE_BATCH_SIZE: "${LIBRETRANSLATE_BATCH_SIZE:-20}"
+  LIBRETRANSLATE_TIMEOUT_SECONDS: "${LIBRETRANSLATE_TIMEOUT_SECONDS:-60}"
+  VLLM_TEXT_BASE_URL: "${VLLM_TEXT_BASE_URL:-http://vllm-text:8000/v1}"
+  VLLM_VISION_BASE_URL: "${VLLM_VISION_BASE_URL:-http://vllm-vision:8000/v1}"
+  VLLM_EMBEDDING_BASE_URL: http://vllm-embedding:8000/v1
+  VLLM_RERANKER_BASE_URL: http://vllm-reranker:8000/v1
+  TEXT_MODEL: "${TEXT_MODEL:-google/gemma-4-E2B-it}"
+  VISION_MODEL: "${VISION_MODEL:-google/gemma-4-E2B-it}"
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+  RERANKER_MODEL: "${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}"
+  LLM_MOCK_ENABLED: "${LLM_MOCK_ENABLED:-true}"
+  MOCK_EMBEDDING_DIMENSIONS: "${MOCK_EMBEDDING_DIMENSIONS:-64}"
+  PROMPT_LIMIT_SAFETY_TOKENS: "${PROMPT_LIMIT_SAFETY_TOKENS:-256}"
+  PROMPT_LIMIT_TIKTOKEN_RATIO: "${PROMPT_LIMIT_TIKTOKEN_RATIO:-0.75}"
+  PROMPT_LIMIT_TIKTOKEN_ENCODING: "${PROMPT_LIMIT_TIKTOKEN_ENCODING:-cl100k_base}"
+  PROMPT_LIMIT_CACHE_TTL_SECONDS: "${PROMPT_LIMIT_CACHE_TTL_SECONDS:-300}"
+  PROMPT_LIMIT_MODELS_TIMEOUT_SECONDS: "${PROMPT_LIMIT_MODELS_TIMEOUT_SECONDS:-10}"
+  PROMPT_LIMIT_MOCK_MAX_MODEL_LEN: "${PROMPT_LIMIT_MOCK_MAX_MODEL_LEN:-128000}"
+  PROMPT_LIMIT_CHAT_MESSAGE_OVERHEAD_TOKENS: "${PROMPT_LIMIT_CHAT_MESSAGE_OVERHEAD_TOKENS:-16}"
+  PROMPT_LIMIT_RERANK_PAIR_OVERHEAD_TOKENS: "${PROMPT_LIMIT_RERANK_PAIR_OVERHEAD_TOKENS:-16}"
+  ANSWER_CONTEXT_MAX_CHARS: "${ANSWER_CONTEXT_MAX_CHARS:-120000}"
+  CHUNK_TARGET_CHARS: "${CHUNK_TARGET_CHARS:-8000}"
+  CHUNK_OVERLAP_MESSAGES: "${CHUNK_OVERLAP_MESSAGES:-2}"
+  VLLM_TEXT_CONCURRENCY: "${VLLM_TEXT_CONCURRENCY:-4}"
+  VLLM_TEXT_HTTP_MAX_CONNECTIONS: "${VLLM_TEXT_HTTP_MAX_CONNECTIONS:-16}"
+  VLLM_TEXT_HTTP_MAX_KEEPALIVE_CONNECTIONS: "${VLLM_TEXT_HTTP_MAX_KEEPALIVE_CONNECTIONS:-8}"
+  MEDIA_ANALYSIS_CONCURRENCY: "${MEDIA_ANALYSIS_CONCURRENCY:-4}"
+  MEDIA_ANALYSIS_BATCH_SIZE: "${MEDIA_ANALYSIS_BATCH_SIZE:-100}"
+  MEDIA_ANALYSIS_PROMPT_VERSION: "${MEDIA_ANALYSIS_PROMPT_VERSION:-neutral-en-v2}"
+  MEDIA_ANALYSIS_TRANSPORT: "${MEDIA_ANALYSIS_TRANSPORT:-data_url}"
+  VLLM_MEDIA_REQUEST_TIMEOUT_SECONDS: "${VLLM_MEDIA_REQUEST_TIMEOUT_SECONDS:-300}"
+  MAX_MEDIA_ANALYSIS_ATTEMPTS: "${MAX_MEDIA_ANALYSIS_ATTEMPTS:-3}"
+  MEDIA_FAIL_JOB_ON_ERROR: "${MEDIA_FAIL_JOB_ON_ERROR:-false}"
+
+x-capacity-environment: &capacity-environment
+  MAX_ACTIVE_JOBS: "${MAX_ACTIVE_JOBS:-2}"
+  MAX_PENDING_MEDIA_TASKS: "${MAX_PENDING_MEDIA_TASKS:-5000}"
+  MAX_PENDING_WORKER_TASKS: "${MAX_PENDING_WORKER_TASKS:-10000}"
+  MAX_FAILED_RETRYABLE_TASKS: "${MAX_FAILED_RETRYABLE_TASKS:-1000}"
+  MAX_WORKER_TASK_ATTEMPTS: "${MAX_WORKER_TASK_ATTEMPTS:-3}"
+  WORKER_TASK_MAX_ATTEMPTS_BY_SUBJECT: "${WORKER_TASK_MAX_ATTEMPTS_BY_SUBJECT:-{}}"
+  WORKER_RETRY_BASE_DELAY_SECONDS: "${WORKER_RETRY_BASE_DELAY_SECONDS:-10}"
+  WORKER_RETRY_MAX_DELAY_SECONDS: "${WORKER_RETRY_MAX_DELAY_SECONDS:-300}"
+  MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-1073741824}"
+  MAX_EXTRACTED_BYTES: "${MAX_EXTRACTED_BYTES:-4294967296}"
+  MAX_ZIP_FILES: "${MAX_ZIP_FILES:-10000}"
+  MAX_FILE_BYTES: "${MAX_FILE_BYTES:-1073741824}"
+  MAX_TELEGRAM_MESSAGE_CHARS: "${MAX_TELEGRAM_MESSAGE_CHARS:-262144}"
+  MAX_TELEGRAM_MESSAGES_PER_EXPORT: "${MAX_TELEGRAM_MESSAGES_PER_EXPORT:-500000}"
+  MAX_HTML_PAGE_BYTES: "${MAX_HTML_PAGE_BYTES:-16777216}"
+  MAX_INLINE_MEDIA_ANALYSIS_BYTES: "${MAX_INLINE_MEDIA_ANALYSIS_BYTES:-26214400}"
+  MAX_NATS_TASK_STREAM_MESSAGES: "${MAX_NATS_TASK_STREAM_MESSAGES:-10000}"
+  CAPACITY_HEALTH_TIMEOUT_SECONDS: "${CAPACITY_HEALTH_TIMEOUT_SECONDS:-2}"
+  CAPACITY_REQUIRE_POSTGRES: "true"
+  CAPACITY_REQUIRE_MINIO: "true"
+  CAPACITY_REQUIRE_NATS: "true"
+  CAPACITY_REQUIRE_QDRANT: "true"
+  RECOVER_STALE_QUEUED_JOBS: "${RECOVER_STALE_QUEUED_JOBS:-true}"
+  STALE_QUEUED_JOB_AFTER_SECONDS: "${STALE_QUEUED_JOB_AFTER_SECONDS:-120}"
+  STALE_QUEUED_JOB_RECOVERY_LIMIT: "${STALE_QUEUED_JOB_RECOVERY_LIMIT:-100}"
+
+x-app-runtime: &app-runtime
+  build:
+    context: ./backend
+    args:
+      PYTHON_BASE_IMAGE: "${PYTHON_BASE_IMAGE:-python:slim}"
+  init: true
+  restart: unless-stopped
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=${APP_TMPFS_SIZE:-2g},mode=1777
+  logging: *default-logging
+
 services:
   postgres:
-    image: postgres:16
+    image: "${POSTGRES_IMAGE:-postgres:latest}"
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: chat_analyse
-      POSTGRES_USER: chat_analyse
-      POSTGRES_PASSWORD: chat_analyse
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: "${POSTGRES_DB:-chat_analyse}"
+      POSTGRES_USER: "${POSTGRES_USER:?Set a non-default POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set a strong URL-safe POSTGRES_PASSWORD}"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # PostgreSQL 18+ uses a versioned PGDATA below this parent directory.
+      - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chat_analyse -d chat_analyse"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+    logging: *default-logging
 
   nats:
-    image: nats:2.10
-    command: ["-js", "-sd", "/data", "-m", "8222"]
-    ports:
-      - "4222:4222"
-      - "8222:8222"
+    image: nats:latest
+    restart: unless-stopped
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_USER: "${NATS_USER:?Set NATS_USER}"
+      NATS_PASSWORD: "${NATS_PASSWORD:?Set a strong URL-safe NATS_PASSWORD}"
     volumes:
       - nats-data:/data
+      - ./docker/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    networks:
+      - data
+    logging: *default-logging
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+    image: "${MINIO_IMAGE:-quay.io/minio/aistor/minio:latest}"
+    restart: unless-stopped
+    command: server /data --console-address ":9001" --license /run/secrets/minio.license
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?Set a non-default MINIO_ACCESS_KEY}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?Set a strong MINIO_SECRET_KEY}"
     volumes:
       - minio-data:/data
+      - "${MINIO_LICENSE_FILE:?Set MINIO_LICENSE_FILE to an AIStor license path}:/run/secrets/minio.license:ro"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+    logging: *default-logging
 
   qdrant:
-    image: qdrant/qdrant:v1.14.1
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?Set a strong QDRANT_API_KEY}"
     volumes:
       - qdrant-data:/qdrant/storage
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    networks:
+      - data
+    logging: *default-logging
 
-  # Optional GPU model server for embeddings.
-  # Start with: docker compose --profile models up --build
+  # Optional GPU model server for embeddings. No host ports or remote model code.
   vllm-embedding:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
     profiles: ["models"]
-    # The vllm-openai image starts `vllm serve`; provide the model as
-    # positional argument. Do not use `--task`: recent vLLM images removed or
-    # changed that flag and auto-detect embedding/pooling models here.
     command:
       - "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
       - "--served-model-name"
@@ -64,26 +254,30 @@ services:
       - "auto"
       - "--gpu-memory-utilization"
       - "${VLLM_EMBEDDING_GPU_MEMORY_UTILIZATION:-0.35}"
-      - "--trust-remote-code"
     environment:
-      HF_HOME: /root/.cache/huggingface
-      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /models
+      XDG_CACHE_HOME: /models
+      VLLM_API_KEY: "${VLLM_API_KEY:?Set a strong VLLM_API_KEY}"
+      VLLM_DO_NOT_TRACK: "1"
     volumes:
-      - hf-cache:/root/.cache/huggingface
-    ports:
-      - "8011:8000"
-    ipc: host
+      - hf-cache:/models
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=2g,mode=1777
     shm_size: "2gb"
     gpus: all
+    networks:
+      - model
+    logging: *default-logging
 
   # Optional GPU model server for reranking/scoring.
-  # The backend tries /v1/rerank first and falls back to /v1/score.
   vllm-reranker:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
     profiles: ["models"]
-    # The vllm-openai image starts `vllm serve`; provide the model as
-    # positional argument. Do not use `--task`: the backend tries /v1/rerank
-    # and falls back to /v1/score depending on the vLLM build.
     command:
       - "${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}"
       - "--served-model-name"
@@ -96,85 +290,118 @@ services:
       - "auto"
       - "--gpu-memory-utilization"
       - "${VLLM_RERANKER_GPU_MEMORY_UTILIZATION:-0.35}"
-      - "--trust-remote-code"
     environment:
-      HF_HOME: /root/.cache/huggingface
-      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /models
+      XDG_CACHE_HOME: /models
+      VLLM_API_KEY: "${VLLM_API_KEY:?Set a strong VLLM_API_KEY}"
+      VLLM_DO_NOT_TRACK: "1"
     volumes:
-      - hf-cache:/root/.cache/huggingface
-    ports:
-      - "8012:8000"
-    ipc: host
+      - hf-cache:/models
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=2g,mode=1777
     shm_size: "2gb"
     gpus: all
+    networks:
+      - model
+    logging: *default-logging
 
   backend:
-    build:
-      context: ./backend
-    env_file:
-      - .env
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    volumes:
-      - ./backend:/app
-    ports:
-      - "8000:8000"
+    <<: *app-runtime
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]
+    environment:
+      <<: [*common-environment, *api-environment, *telegram-environment, *database-environment, *nats-environment, *object-storage-environment, *vector-storage-environment, *job-default-environment, *capacity-environment]
+      APP_ROLE: api
+      HEALTHCHECK_HOST: "${HEALTHCHECK_HOST:?Set HEALTHCHECK_HOST to a hostname in TRUSTED_HOSTS}"
+      BOOTSTRAP_ADMIN_ENABLED: "${BOOTSTRAP_ADMIN_ENABLED:-true}"
+      BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+    networks:
+      - app
+      - data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8000/health', headers={'Host': os.environ['HEALTHCHECK_HOST']}); urllib.request.urlopen(request, timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
       nats:
         condition: service_started
       minio:
-        condition: service_started
+        condition: service_healthy
       qdrant:
         condition: service_started
 
   worker:
-    build:
-      context: ./backend
-    env_file:
-      - .env
+    <<: *app-runtime
     command: ["python", "-m", "app.workers.run_worker", "all"]
-    volumes:
-      - ./backend:/app
+    environment:
+      <<: [*common-environment, *telegram-environment, *database-environment, *nats-environment, *object-storage-environment, *vector-storage-environment, *job-default-environment, *worker-model-environment, *capacity-environment]
+      APP_ROLE: worker
+      VLLM_API_KEY: "${VLLM_API_KEY:?Set a strong VLLM_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_TRANSCRIPTION_BASE_URL: "${OPENAI_TRANSCRIPTION_BASE_URL:-https://api.openai.com/v1}"
+      OPENAI_TRANSCRIPTION_MODEL: "${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}"
+      OPENAI_TRANSCRIPTION_MAX_BYTES: "${OPENAI_TRANSCRIPTION_MAX_BYTES:-26214400}"
+      OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS: "${OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS:-300}"
+      OPENAI_TRANSCRIPTION_BATCH_SIZE: "${OPENAI_TRANSCRIPTION_BATCH_SIZE:-20}"
+      OPENAI_TRANSCRIPTION_MAX_ATTEMPTS: "${OPENAI_TRANSCRIPTION_MAX_ATTEMPTS:-3}"
+    networks:
+      - data
+      - model
+      - worker-egress
+    tmpfs:
+      # Two active max-size jobs can hold input, parse, and output spools.
+      - /tmp:rw,noexec,nosuid,size=${WORKER_TMPFS_SIZE:-8g},mode=1777
     depends_on:
       postgres:
         condition: service_healthy
       nats:
         condition: service_started
       minio:
-        condition: service_started
+        condition: service_healthy
       qdrant:
         condition: service_started
 
   telegram-collector:
-    build:
-      context: ./backend
-    env_file:
-      - .env
+    <<: *app-runtime
     command: ["python", "-m", "app.workers.run_telegram_collector"]
-    volumes:
-      - ./backend:/app
+    environment:
+      <<: [*common-environment, *telegram-environment, *database-environment, *object-storage-environment]
+      APP_ROLE: telegram_collector
+    networks:
+      - data
+      # Dedicated outbound network permits Telegram API access without joining
+      # the browser/backend application segment.
+      - telegram-egress
     depends_on:
       postgres:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
 
   report-scheduler:
-    build:
-      context: ./backend
-    env_file:
-      - .env
+    <<: *app-runtime
     command: ["python", "-m", "app.workers.run_report_scheduler"]
-    volumes:
-      - ./backend:/app
+    environment:
+      <<: [*common-environment, *scheduler-environment, *database-environment, *nats-environment, *object-storage-environment, *vector-storage-environment, *job-default-environment, *capacity-environment]
+      APP_ROLE: scheduler
+    networks:
+      - data
     depends_on:
       postgres:
         condition: service_healthy
       nats:
         condition: service_started
       minio:
-        condition: service_started
+        condition: service_healthy
       qdrant:
         condition: service_started
 
@@ -182,18 +409,43 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NODE_BASE_IMAGE: "${NODE_BASE_IMAGE:-node:slim}"
+        NGINX_BASE_IMAGE: "${NGINX_BASE_IMAGE:-nginxinc/nginx-unprivileged:latest}"
     image: chat-analyse-react-frontend:local
+    init: true
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+      - /etc/nginx/conf.d:rw,noexec,nosuid,size=1m,uid=101,gid=101,mode=0755
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-3000}:8080"
     environment:
-      BACKEND_URL: "${BACKEND_URL:-http://backend:8000}"
-      CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-50g}"
-      PROXY_READ_TIMEOUT: "${PROXY_READ_TIMEOUT:-3600s}"
-      PROXY_SEND_TIMEOUT: "${PROXY_SEND_TIMEOUT:-3600s}"
+      BACKEND_URL: http://backend:8000
+      SERVER_NAME: "${SERVER_NAME:?Set SERVER_NAME to the public hostname}"
+      CLIENT_MAX_BODY_SIZE: "${CLIENT_MAX_BODY_SIZE:-1g}"
+      PROXY_READ_TIMEOUT: "${PROXY_READ_TIMEOUT:-300s}"
+      PROXY_SEND_TIMEOUT: "${PROXY_SEND_TIMEOUT:-300s}"
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
+    networks:
+      - app
+    logging: *default-logging
+
+networks:
+  app:
+  data:
+    internal: true
+  model:
+    internal: true
+  telegram-egress:
+  worker-egress:
 
 volumes:
   postgres-data:

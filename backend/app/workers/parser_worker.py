@@ -183,7 +183,11 @@ class ParserWorker(Worker):
 
             messages_total = None
             with open(result_temp_path, "rb") as count_file:
-                messages_total = count_result_messages(count_file)
+                messages_total = count_result_messages(
+                    count_file,
+                    max_messages=settings.max_telegram_messages_per_export,
+                    max_message_bytes=settings.max_telegram_message_chars,
+                )
 
             await self.emit_event(
                 session,
@@ -203,7 +207,11 @@ class ParserWorker(Worker):
             media_missing = 0
 
             with open(result_temp_path, "rb") as result_file:
-                for raw_message in iter_result_messages(result_file):
+                for raw_message in iter_result_messages(
+                    result_file,
+                    max_messages=settings.max_telegram_messages_per_export,
+                    max_message_bytes=settings.max_telegram_message_chars,
+                ):
                     parsed = parse_message(raw_message)
                     if parsed is None:
                         continue
