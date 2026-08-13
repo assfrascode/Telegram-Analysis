@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # APP_ENV is deliberately required. Weak development secrets are accepted
     # only when the operator explicitly selects local or test mode.
     app_env: Literal["local", "test", "production"]
-    app_role: Literal["api", "worker", "telegram_collector", "scheduler", "all"]
+    app_role: Literal["api", "worker", "telegram_collector", "scheduler", "migration", "all"]
     app_base_url: str = "http://localhost:8000"
     secret_key: str = ""
     access_token_expire_minutes: int = Field(default=60, ge=1, le=24 * 60)
@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     telegram_external_initial_response_timeout_seconds: int = 60
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
+    metrics_enabled: bool = True
+    metrics_port: int = Field(default=9100, ge=1024, le=65535)
+    observability_poll_seconds: int = Field(default=30, ge=5, le=3600)
+    log_level: str = "INFO"
 
     bootstrap_admin_enabled: bool = False
     bootstrap_admin_email: str = ""
@@ -194,6 +198,7 @@ class Settings(BaseSettings):
         api_role = self.app_role in {"api", "all"}
         nats_role = self.app_role in {"api", "worker", "scheduler", "all"}
         qdrant_role = self.app_role in {"api", "worker", "scheduler", "all"}
+        minio_role = self.app_role != "migration"
         fernet_role = self.app_role in {"api", "worker", "telegram_collector", "all"}
         vllm_role = self.app_role in {"worker", "all"} or (
             self.app_role in {"api", "scheduler"} and self.capacity_check_vllm
@@ -261,11 +266,13 @@ class Settings(BaseSettings):
                 raise ValueError("Default PostgreSQL credentials are forbidden in production")
             if len(self.postgres_password) < 16:
                 raise ValueError("POSTGRES_PASSWORD must contain at least 16 characters in production")
-            if not (3 <= len(self.minio_access_key.strip()) <= 128):
+            if minio_role and not (3 <= len(self.minio_access_key.strip()) <= 128):
                 raise ValueError("MINIO_ACCESS_KEY must contain between 3 and 128 characters")
-            if self.minio_access_key == "minioadmin" or self.minio_secret_key == "minioadmin":
+            if minio_role and (
+                self.minio_access_key == "minioadmin" or self.minio_secret_key == "minioadmin"
+            ):
                 raise ValueError("Default MinIO credentials are forbidden in production")
-            if not (16 <= len(self.minio_secret_key) <= 128):
+            if minio_role and not (16 <= len(self.minio_secret_key) <= 128):
                 raise ValueError("MINIO_SECRET_KEY must contain between 16 and 128 characters in production")
 
             parsed_nats_url = urlsplit(self.nats_url)

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import tempfile
@@ -36,9 +37,11 @@ from app.models import (
     TelegramSyncStatus,
 )
 from app.services.minio_store import put_stream
+from app.observability.metrics import record_sync_terminal
 from app.services.telegram_accounts import connected_client
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class TelegramSyncError(RuntimeError):
@@ -426,11 +429,13 @@ async def synchronize_chat(
             minutes=settings.telegram_sync_lease_minutes
         )
         await session.commit()
-        print(
-            f"Telegram sync connected chat_id={chat.id} "
-            f"telegram_chat_id={chat.telegram_chat_id} "
-            f"after_message_id={after_message_id}",
-            flush=True,
+        logger.info(
+            "Telegram sync connected",
+            extra={
+                "event": "telegram.sync_connected",
+                "chat_id": str(chat.id),
+                "sync_run_id": str(run.id),
+            },
         )
         messages_seen = 0
         attachments_seen = 0
@@ -488,11 +493,13 @@ async def synchronize_chat(
                 )
                 chat.updated_at = utc_now()
                 await session.commit()
-                print(
-                    f"Telegram sync progress chat_id={chat.id} messages={messages_seen} "
-                    f"attachments={attachments_seen} "
-                    f"attachment_failures={attachments_failed}",
-                    flush=True,
+                logger.info(
+                    "Telegram sync made progress",
+                    extra={
+                        "event": "telegram.sync_progress",
+                        "chat_id": str(chat.id),
+                        "sync_run_id": str(run.id),
+                    },
                 )
 
         now = utc_now()
@@ -558,13 +565,20 @@ async def synchronize_chat(
         await session.commit()
         raise TelegramSyncError(run.error_message) from exc
     finally:
+        if run.completed_at is not None:
+            record_sync_terminal(run, "backend_pull")
         if client is not None:
             try:
                 await asyncio.wait_for(client.disconnect(), timeout=10)
             except Exception as exc:
-                print(
-                    f"Telegram client disconnect failed chat_id={chat.id}: {exc}",
-                    flush=True,
+                logger.warning(
+                    "Telegram client disconnect failed",
+                    extra={
+                        "event": "telegram.disconnect_failed",
+                        "chat_id": str(chat.id),
+                        "sync_run_id": str(run.id),
+                        "error_type": type(exc).__name__,
+                    },
                 )
 
 

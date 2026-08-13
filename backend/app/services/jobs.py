@@ -25,6 +25,8 @@ from app.models import (
     WorkerTask,
 )
 from app.nats_client import publish_json
+from app.observability.context import current_request_id
+from app.observability.metrics import record_job_terminal
 from app.schemas import JobCreateRequest, QuestionInput, TelegramReportCreateRequest
 from app.services.events import record_event, record_event_db_only
 from app.services.question_sets import question_inputs_from_set, question_set_snapshot
@@ -147,6 +149,9 @@ def initial_task_payload(job: Job) -> dict[str, str]:
     else:
         payload["upload_id"] = str(job.upload_id)
         payload["task_key"] = f"validate:{job.id}"
+    request_id = current_request_id()
+    if request_id:
+        payload["request_id"] = request_id
     return payload
 
 
@@ -274,6 +279,7 @@ async def mark_job_retry_enqueue_failed_db_only(
     job.status = JobStatus.failed
     job.error_message = f"Analysis retry could not be enqueued: {error}"
     job.completed_at = utc_now()
+    record_job_terminal(job)
     task = (
         await session.execute(select(WorkerTask).where(WorkerTask.task_key == target.task_key))
     ).scalar_one_or_none()
@@ -427,6 +433,7 @@ async def mark_job_start_failed_db_only(session: AsyncSession, job_id: uuid.UUID
     job.status = JobStatus.failed
     job.error_message = f"Analysis could not be started: {error}"
     job.completed_at = utc_now()
+    record_job_terminal(job)
     await record_event_db_only(
         session,
         job_id=job.id,

@@ -4,6 +4,8 @@ Chat Analyse is a Dockerized Python application for analysing Telegram conversat
 
 The project is still an MVP, but it includes a functional backend, worker pipeline, storage layer, React frontend, Telegram collection flows, and report scheduling.
 
+See [TODO.md](TODO.md) for the prioritized project backlog.
+
 ## Current Capabilities
 
 - Authenticated React web interface for creating and monitoring analysis jobs.
@@ -94,6 +96,22 @@ the broker reads them through its configuration parser.
 ```bash
 docker compose up --build
 ```
+
+Compose runs `alembic upgrade head` in the one-shot `database-migrate` service
+before the API, workers, Telegram collector, or scheduler may start. The baseline
+migration handles both a clean database and an existing unversioned MVP schema;
+it applies the former compatibility columns, validates all expected tables and
+columns, and records revision `20260813_0001`. Application processes now perform
+a read-only revision check and fail fast when migration was skipped.
+
+Back up PostgreSQL before upgrading an existing deployment, then run:
+
+```bash
+docker compose run --rm database-migrate
+```
+
+Do not stamp an unknown or partially initialized schema. The baseline refuses to
+adopt an MVP database when expected tables or columns remain missing.
 
 This Compose file is a clean-install layout. In particular, current PostgreSQL
 images persist the versioned data directory below `/var/lib/postgresql`. Do not
@@ -270,6 +288,19 @@ pip install -e ".[dev]"
 PYTHONPATH=. pytest
 ```
 
+Migration integration coverage uses an explicitly disposable PostgreSQL
+database and refuses any database name that does not end in `_migration_test`:
+
+```bash
+MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost/chat_analyse_migration_test \
+  PYTHONPATH=. pytest tests/test_migrations_integration.py
+```
+
+That test resets the database, verifies a clean `upgrade head`, recreates the
+unversioned MVP shape without the historical compatibility columns, and verifies
+the adoption/upgrade path. It also runs `alembic check` after both paths to detect
+schema drift between the migration head and current SQLAlchemy metadata.
+
 The React frontend lives in `frontend/` and is built into an Nginx image by Docker Compose. For frontend-only development:
 
 ```bash
@@ -298,6 +329,38 @@ Original Telegram media is not duplicated in the report ZIP. Previews and links 
 For completed upload jobs, **Download all** creates a second archive named `<original-stem>-with-report.zip`. It preserves the original export contents and adds `report/` beside the selected `result.json` or `messages.html`, so the report and its relative media links work after one extraction. Direct Telegram jobs continue to offer the report-only download because they have no original uploaded ZIP.
 
 ## Operational Notes
+
+### Metrics, logs, and alerts
+
+Every application process exposes Prometheus metrics on private port `9100` by
+default. Metrics cover HTTP requests, JetStream publishes and backlog, worker
+outcomes/duration/retries/dead letters, model and translation calls, Telegram
+sync outcomes/duration, terminal job duration, dependency health, and scheduler
+failures. The API refreshes dependency and persistent backlog gauges every
+`OBSERVABILITY_POLL_SECONDS` (30 seconds by default).
+
+Start the optional loopback-only Prometheus UI with:
+
+```bash
+docker compose --profile observability up --build
+```
+
+Prometheus is then available at `http://127.0.0.1:9090`. Its configuration is in
+`observability/prometheus.yml`; `observability/alerts.yml` defines alerts for
+unreachable exporters, unhealthy dependencies, a sustained task-stream backlog,
+new dead letters, repeated retries/retry backlog, and failed schedules. Connect
+Prometheus to the deployment's Alertmanager or managed notification receiver;
+this repository intentionally does not embed paging credentials or destinations.
+If `MAX_NATS_TASK_STREAM_MESSAGES` is changed substantially, adjust the supplied
+8000-message warning threshold as part of the same deployment change.
+
+Application logs are one-line JSON. HTTP logs carry a validated or generated
+`request_id`; NATS tasks propagate it and worker logs add `job_id` and `task_id`.
+Operational logs use allowlisted metadata only: request bodies, queue payloads,
+Telegram message text/titles, transcripts, prompts, responses, and credential
+values are not logged. Credential-shaped values are redacted as a final guard,
+and exception records retain the exception type without the potentially
+sensitive exception message.
 
 - Capacity checks reject new jobs when required dependencies are unhealthy or configured queue/job thresholds are reached.
 - Workers record task attempts and dead letters for permanent failures.

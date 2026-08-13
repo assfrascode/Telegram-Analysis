@@ -1,0 +1,80 @@
+groups:
+  - name: chat-analyse-production
+    rules:
+      - alert: ChatAnalyseMetricsTargetDown
+        expr: up{job=~"chat-analyse-.+"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Chat Analyse metrics target is down"
+          description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}."
+
+      - alert: ChatAnalyseDependencyUnhealthy
+        expr: chat_analyse_dependency_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Required dependency is unhealthy"
+          description: "Dependency {{ $labels.dependency }} has been unhealthy for five minutes."
+
+      - alert: ChatAnalyseObservabilityRefreshFailing
+        expr: increase(chat_analyse_observability_refresh_total{status="error"}[10m]) >= 3
+        labels:
+          severity: critical
+        annotations:
+          summary: "Operational metrics refresh is failing"
+          description: "Dependency and backlog gauges could be stale because three refreshes failed."
+
+      - alert: ChatAnalyseQueueBacklogHigh
+        expr: chat_analyse_queue_backlog_messages{stream="CHAT_ANALYSE_TASKS"} > 8000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker queue backlog is high"
+          description: "The task consumers have {{ $value }} pending or in-flight messages (warning threshold: 8000)."
+
+      - alert: ChatAnalyseDeadLettersCreated
+        expr: sum(increase(chat_analyse_worker_dead_letters_created_total[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "New worker dead letters were created"
+          description: "At least one task became permanently failed during the last ten minutes."
+
+      - alert: ChatAnalyseRepeatedWorkerRetries
+        expr: sum(increase(chat_analyse_worker_retries_total[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Workers are retrying repeatedly"
+          description: "At least five worker retries occurred in the last fifteen minutes."
+
+      - alert: ChatAnalyseWorkerRetryBacklog
+        expr: chat_analyse_worker_retry_backlog > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeatedly failing tasks remain in the backlog"
+          description: "{{ $value }} retryable tasks have already failed at least twice."
+
+      - alert: ChatAnalyseSchedulesFailed
+        expr: chat_analyse_failed_schedules > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Report schedules are failing"
+          description: "{{ $value }} enabled schedules currently have a recorded failure."
+
+      - alert: ChatAnalyseScheduleRunFailed
+        expr: increase(chat_analyse_schedule_runs_total{status="failed"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A report schedule run failed"
+          description: "At least one scheduler attempt failed during the last ten minutes."

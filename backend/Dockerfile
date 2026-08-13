@@ -36,9 +36,11 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app app /app/app
+COPY --chown=app:app alembic.ini /app/alembic.ini
+COPY --chown=app:app migrations /app/migrations
 
 USER 10001:10001
 
-EXPOSE 8000
+EXPOSE 8000 9100
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--no-access-log"]

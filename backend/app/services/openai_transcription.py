@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.observability.metrics import observe_model_call
 
 settings = get_settings()
 
@@ -48,18 +49,19 @@ class OpenAITranscriptionClient:
 
         upload_name = filename or Path(file_path).name or "audio"
         media_type = content_type or "application/octet-stream"
-        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-            with open(file_path, "rb") as source:
-                response = await client.post(
-                    f"{self.base_url}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    data={
-                        "model": self.model,
-                        "response_format": "text",
-                    },
-                    files={"file": (upload_name, source, media_type)},
-                )
-            response.raise_for_status()
+        async with observe_model_call("openai", "transcription", self.model):
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                with open(file_path, "rb") as source:
+                    response = await client.post(
+                        f"{self.base_url}/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        data={
+                            "model": self.model,
+                            "response_format": "text",
+                        },
+                        files={"file": (upload_name, source, media_type)},
+                    )
+                response.raise_for_status()
 
         transcript = response.text.strip()
         return TranscriptionResult(

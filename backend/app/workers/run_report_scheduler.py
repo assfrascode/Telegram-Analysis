@@ -1,7 +1,7 @@
 import asyncio
+import logging
 import os
 import socket
-import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -27,8 +27,12 @@ from app.services.jobs import (
     publish_initial_job_task,
 )
 from app.services.report_schedules import calculate_next_run_at
+from app.observability.context import correlation_context
+from app.observability.logging import configure_logging
+from app.observability.metrics import SCHEDULE_RUNS, start_metrics_server
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 SCHEDULER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
 ACTIVE_JOB_STATUSES = {JobStatus.queued, JobStatus.running, JobStatus.cancelling}
 
@@ -133,6 +137,7 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
         scheduled_for = schedule.next_run_at
         if await previous_job_is_active(session, schedule):
             defer_schedule(schedule, "Previous scheduled report is still queued or running")
+            SCHEDULE_RUNS.labels("deferred").inc()
             await session.commit()
             return None
 
@@ -140,16 +145,19 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
             await ensure_accepting_jobs(session)
         except HTTPException as exc:
             defer_schedule(schedule, f"System is not accepting new analyses: {exc.detail}")
+            SCHEDULE_RUNS.labels("deferred").inc()
             await session.commit()
             return None
 
         chat = await session.get(TelegramChat, schedule.telegram_chat_id)
         if chat is None or chat.owner_user_id != schedule.owner_user_id:
             disable_schedule(schedule, "Scheduled Telegram chat is no longer available")
+            SCHEDULE_RUNS.labels("failed").inc()
             await session.commit()
             return None
         if chat.status == TelegramChatStatus.archived:
             disable_schedule(schedule, "Scheduled Telegram chat is archived")
+            SCHEDULE_RUNS.labels("failed").inc()
             await session.commit()
             return None
 
@@ -160,6 +168,7 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
             or question_set.archived_at is not None
         ):
             disable_schedule(schedule, "Scheduled question set is no longer available")
+            SCHEDULE_RUNS.labels("failed").inc()
             await session.commit()
             return None
 
@@ -178,6 +187,7 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
             job = await create_telegram_job_record(session, schedule.owner_user_id, payload)
         except HTTPException as exc:
             disable_schedule(schedule, str(exc.detail))
+            SCHEDULE_RUNS.labels("failed").inc()
             await session.commit()
             return None
 
@@ -210,12 +220,13 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
                 schedule.last_error = f"Analysis job could not be enqueued: {exc}"[:4000]
                 release_schedule(schedule)
             await session.commit()
+            SCHEDULE_RUNS.labels("failed").inc()
             return None
 
-        print(
-            f"Scheduled Telegram report created schedule_id={schedule_id} "
-            f"job_id={job.id} scheduled_for={scheduled_for.isoformat()}",
-            flush=True,
+        SCHEDULE_RUNS.labels("created").inc()
+        logger.info(
+            "Scheduled Telegram report created",
+            extra={"event": "schedule.job_created", "schedule_id": str(schedule_id)},
         )
         return job.id
 
@@ -230,28 +241,36 @@ async def record_schedule_failure(schedule_id: uuid.UUID, exc: Exception) -> Non
 
 
 async def process_safely(schedule_id: uuid.UUID) -> None:
-    try:
-        await process_schedule(schedule_id)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        print(
-            f"Scheduled Telegram report failed schedule_id={schedule_id}: "
-            f"{exc.__class__.__name__}: {exc}",
-            flush=True,
-        )
-        traceback.print_exc()
-        await record_schedule_failure(schedule_id, exc)
+    with correlation_context(task_id=f"schedule:{schedule_id}"):
+        try:
+            await process_schedule(schedule_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            SCHEDULE_RUNS.labels("failed").inc()
+            logger.exception(
+                "Scheduled Telegram report failed",
+                extra={
+                    "event": "schedule.failed",
+                    "schedule_id": str(schedule_id),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            await record_schedule_failure(schedule_id, exc)
 
 
 async def main() -> None:
     if settings.app_role not in {"scheduler", "all"}:
         raise RuntimeError("Report scheduler requires APP_ROLE=scheduler (or all)")
+    configure_logging(settings.log_level)
+    start_metrics_server(settings.metrics_port, enabled=settings.metrics_enabled)
     await init_db()
-    print(
-        f"Report scheduler started id={SCHEDULER_ID} "
-        f"poll_interval={settings.report_scheduler_poll_seconds}s",
-        flush=True,
+    logger.info(
+        "Report scheduler started",
+        extra={
+            "event": "scheduler.started",
+            "poll_interval_seconds": settings.report_scheduler_poll_seconds,
+        },
     )
     while True:
         schedule_id = await claim_due_schedule()

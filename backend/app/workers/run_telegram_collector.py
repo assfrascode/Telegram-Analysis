@@ -1,7 +1,7 @@
 import asyncio
+import logging
 import os
 import socket
-import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -20,8 +20,12 @@ from app.models import (
 )
 from app.services.telegram_ingest import ensure_utc, report_job_needing_coverage
 from app.services.telegram_sync import missing_sync_range, periodic_sync_start, synchronize_chat
+from app.observability.context import correlation_context
+from app.observability.logging import configure_logging
+from app.observability.metrics import start_metrics_server
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 COLLECTOR_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
 
 
@@ -147,24 +151,29 @@ async def collect(chat_id: uuid.UUID) -> None:
             chat,
             requested_end,
         )
-        print(
-            f"Telegram collector sync started chat_id={chat.id} title={chat.title!r} "
-            f"range={requested_start.isoformat()}..{requested_end.isoformat()}",
-            flush=True,
-        )
-        run = await synchronize_chat(
-            session,
-            chat=chat,
-            requested_start=requested_start,
-            requested_end=requested_end,
-            job_id=job_id,
-        )
-        print(
-            f"Telegram collector sync completed chat_id={chat.id} "
-            f"messages={run.messages_seen} attachments={run.attachments_seen} "
-            f"attachment_failures={run.attachments_failed}",
-            flush=True,
-        )
+        with correlation_context(
+            job_id=str(job_id) if job_id else None,
+            task_id=f"telegram-sync:{chat.id}",
+        ):
+            logger.info(
+                "Telegram collector sync started",
+                extra={"event": "telegram.collector_sync_started", "chat_id": str(chat.id)},
+            )
+            run = await synchronize_chat(
+                session,
+                chat=chat,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                job_id=job_id,
+            )
+            logger.info(
+                "Telegram collector sync completed",
+                extra={
+                    "event": "telegram.collector_sync_completed",
+                    "chat_id": str(chat.id),
+                    "sync_run_id": str(run.id),
+                },
+            )
 
 
 async def record_collection_failure(chat_id: uuid.UUID, exc: Exception) -> None:
@@ -232,9 +241,9 @@ async def collection_heartbeat(chat_id: uuid.UUID, stopped: asyncio.Event) -> No
             await session.commit()
             if result.rowcount != 1:
                 return
-        print(
-            f"Telegram collector sync still running chat_id={chat_id}",
-            flush=True,
+        logger.info(
+            "Telegram collector sync still running",
+            extra={"event": "telegram.collector_heartbeat", "chat_id": str(chat_id)},
         )
 
 
@@ -242,26 +251,31 @@ async def collect_safely(chat_id: uuid.UUID) -> None:
     stopped = asyncio.Event()
     heartbeat = asyncio.create_task(collection_heartbeat(chat_id, stopped))
     try:
-        try:
-            await collect(chat_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(
-                f"Telegram collection failed chat_id={chat_id}: "
-                f"{exc.__class__.__name__}: {exc}",
-                flush=True,
-            )
-            traceback.print_exc()
+        with correlation_context(task_id=f"telegram-sync:{chat_id}"):
             try:
-                await record_collection_failure(chat_id, exc)
-            except Exception as recovery_exc:
-                print(
-                    f"Telegram collection failure could not be persisted chat_id={chat_id}: "
-                    f"{recovery_exc.__class__.__name__}: {recovery_exc}",
-                    flush=True,
+                await collect(chat_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "Telegram collection failed",
+                    extra={
+                        "event": "telegram.collection_failed",
+                        "chat_id": str(chat_id),
+                        "error_type": type(exc).__name__,
+                    },
                 )
-                traceback.print_exc()
+                try:
+                    await record_collection_failure(chat_id, exc)
+                except Exception as recovery_exc:
+                    logger.exception(
+                        "Telegram collection failure could not be persisted",
+                        extra={
+                            "event": "telegram.collection_failure_persist_failed",
+                            "chat_id": str(chat_id),
+                            "error_type": type(recovery_exc).__name__,
+                        },
+                    )
     finally:
         stopped.set()
         await heartbeat
@@ -270,14 +284,18 @@ async def collect_safely(chat_id: uuid.UUID) -> None:
 async def main() -> None:
     if settings.app_role not in {"telegram_collector", "all"}:
         raise RuntimeError("Telegram collector requires APP_ROLE=telegram_collector (or all)")
+    configure_logging(settings.log_level)
+    start_metrics_server(settings.metrics_port, enabled=settings.metrics_enabled)
     await init_db()
     released = await release_orphaned_collector_leases()
-    print(
-        f"Telegram collector started id={COLLECTOR_ID} "
-        f"poll_interval={settings.telegram_sync_poll_seconds}s "
-        f"concurrency={settings.telegram_sync_concurrency} "
-        f"released_orphaned_leases={released}",
-        flush=True,
+    logger.info(
+        "Telegram collector started",
+        extra={
+            "event": "telegram.collector_started",
+            "poll_interval_seconds": settings.telegram_sync_poll_seconds,
+            "concurrency": settings.telegram_sync_concurrency,
+            "released_leases": released,
+        },
     )
     active: set[asyncio.Task] = set()
     while True:

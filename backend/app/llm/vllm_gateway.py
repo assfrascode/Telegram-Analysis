@@ -10,6 +10,7 @@ from app.llm.prompt_limits import (
     count_chat_messages_tokens,
     resolve_prompt_budget,
 )
+from app.observability.metrics import observe_model_call
 
 settings = get_settings()
 
@@ -166,21 +167,23 @@ class VLLMGateway:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        if base_url.rstrip("/") == settings.vllm_text_base_url.rstrip("/"):
-            response = await self._get_text_client().post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                json=request_json,
-                timeout=timeout,
-            )
-        else:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
+        operation = "vision_chat" if base_url.rstrip("/") == settings.vllm_vision_base_url.rstrip("/") else "text_chat"
+        async with observe_model_call("vllm", operation, model):
+            if base_url.rstrip("/") == settings.vllm_text_base_url.rstrip("/"):
+                response = await self._get_text_client().post(
                     f"{base_url.rstrip('/')}/chat/completions",
-                    headers=self.headers,
                     json=request_json,
+                    timeout=timeout,
                 )
-        response.raise_for_status()
-        return response.json()
+            else:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        f"{base_url.rstrip('/')}/chat/completions",
+                        headers=self.headers,
+                        json=request_json,
+                    )
+            response.raise_for_status()
+            return response.json()
 
     async def describe_media_with_raw(
         self,

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -37,6 +38,7 @@ from app.workers.base import Worker
 from app.workers.pipeline import next_tasks_after_messages
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class TelegramSnapshotWorker(Worker):
@@ -51,10 +53,9 @@ class TelegramSnapshotWorker(Worker):
         chat = await session.get(TelegramChat, job.telegram_chat_id)
         if chat is None or job.report_start_at is None or job.report_end_at is None:
             raise TelegramSyncError("Telegram report interval is incomplete")
-        print(
-            f"Telegram report sync started job_id={job.id} chat_id={chat.id} "
-            f"range={job.report_start_at.isoformat()}..{job.report_end_at.isoformat()}",
-            flush=True,
+        logger.info(
+            "Telegram report sync started",
+            extra={"event": "telegram.report_sync_started", "chat_id": str(chat.id)},
         )
 
         job.status = JobStatus.running
@@ -82,9 +83,13 @@ class TelegramSnapshotWorker(Worker):
             else:
                 run = await self._synchronize_backend_coverage(session, job, chat)
         except TelegramSyncError as exc:
-            print(
-                f"Telegram report sync failed job_id={job.id} chat_id={chat.id}: {exc}",
-                flush=True,
+            logger.warning(
+                "Telegram report sync failed",
+                extra={
+                    "event": "telegram.report_sync_failed",
+                    "chat_id": str(chat.id),
+                    "error_type": type(exc).__name__,
+                },
             )
             job = await session.get(Job, job.id)
             job.status = JobStatus.failed
@@ -102,11 +107,13 @@ class TelegramSnapshotWorker(Worker):
         messages_seen = run.messages_seen if run is not None else 0
         attachments_seen = run.attachments_seen if run is not None else 0
         attachments_failed = run.attachments_failed if run is not None else 0
-        print(
-            f"Telegram report sync completed job_id={job.id} chat_id={chat.id} "
-            f"messages={messages_seen} attachments={attachments_seen} "
-            f"attachment_failures={attachments_failed}",
-            flush=True,
+        logger.info(
+            "Telegram report sync completed",
+            extra={
+                "event": "telegram.report_sync_completed",
+                "chat_id": str(chat.id),
+                "sync_run_id": str(run.id) if run is not None else "partial",
+            },
         )
         await self.emit_event(
             session,
@@ -362,10 +369,13 @@ class TelegramSnapshotWorker(Worker):
                 try:
                     await heartbeat
                 except Exception as exc:
-                    print(
-                        f"Telegram report lease heartbeat failed job_id={job.id} "
-                        f"chat_id={chat.id}: {exc}",
-                        flush=True,
+                    logger.warning(
+                        "Telegram report lease heartbeat failed",
+                        extra={
+                            "event": "telegram.report_lease_heartbeat_failed",
+                            "chat_id": str(chat.id),
+                            "error_type": type(exc).__name__,
+                        },
                     )
             await self.checkpoint_cancelled(
                 session,
@@ -555,10 +565,9 @@ class TelegramSnapshotWorker(Worker):
                     },
                 )
                 await session.commit()
-                print(
-                    f"Telegram report sync waiting job_id={job.id} chat_id={chat.id} "
-                    f"lease_owner={chat.lease_owner} lease_expires_at={chat.lease_expires_at.isoformat()}",
-                    flush=True,
+                logger.info(
+                    "Telegram report sync is waiting for an active lease",
+                    extra={"event": "telegram.report_sync_waiting", "chat_id": str(chat.id)},
                 )
                 waiting_event_emitted = True
 

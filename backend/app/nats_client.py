@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -8,6 +9,7 @@ from nats.aio.client import Client as NATS
 from nats.js import JetStreamContext
 
 from app.config import get_settings
+from app.observability.metrics import QUEUE_PUBLISHED, QUEUE_PUBLISH_DURATION
 
 settings = get_settings()
 
@@ -65,7 +67,39 @@ async def ensure_streams(js: JetStreamContext) -> None:
 
 
 async def publish_json(js: JetStreamContext, subject: str, payload: dict[str, Any]) -> Any:
-    return await js.publish(subject, json.dumps(payload, default=str).encode("utf-8"))
+    if subject.startswith("jobs."):
+        stream = TASK_STREAM
+        metric_subject = subject
+    elif subject.startswith("dlq."):
+        stream = DLQ_STREAM
+        metric_subject = subject
+    else:
+        stream = EVENT_STREAM
+        # Event subjects contain user/job UUIDs; do not turn those IDs into
+        # unbounded Prometheus label values.
+        metric_subject = "events"
+    started = time.perf_counter()
+    status = "success"
+    try:
+        return await js.publish(subject, json.dumps(payload, default=str).encode("utf-8"))
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        QUEUE_PUBLISHED.labels(stream, metric_subject, status).inc()
+        QUEUE_PUBLISH_DURATION.labels(stream, metric_subject).observe(
+            time.perf_counter() - started
+        )
+
+
+async def task_queue_backlog(js: JetStreamContext) -> int:
+    """Return messages pending delivery or acknowledgement across task consumers."""
+    consumers = await js.consumers_info(TASK_STREAM)
+    return sum(
+        int(getattr(consumer, "num_pending", 0) or 0)
+        + int(getattr(consumer, "num_ack_pending", 0) or 0)
+        for consumer in consumers
+    )
 
 
 @asynccontextmanager

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from app.bootstrap import bootstrap_services
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.nats_client import nats_context
-from app.middleware import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
+from app.middleware import ObservabilityMiddleware, RequestBodyLimitMiddleware, SecurityHeadersMiddleware
+from app.observability.logging import configure_logging
+from app.observability.metrics import start_metrics_server
+from app.observability.poller import run_operational_metrics_poller
 from app.services.job_recovery import recover_stale_queued_jobs
 
 settings = get_settings()
@@ -29,13 +33,21 @@ static_dir = Path(__file__).parent / "static" / "app"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings.log_level)
+    start_metrics_server(settings.metrics_port, enabled=settings.metrics_enabled)
     await init_db()
     async with SessionLocal() as session:
         await bootstrap_services(session)
     async with nats_context() as (_, js):
         async with SessionLocal() as session:
             await recover_stale_queued_jobs(session, js)
-    yield
+    metrics_stop = asyncio.Event()
+    metrics_task = asyncio.create_task(run_operational_metrics_poller(metrics_stop))
+    try:
+        yield
+    finally:
+        metrics_stop.set()
+        await metrics_task
 
 
 app = FastAPI(
@@ -68,6 +80,7 @@ app.add_middleware(
     ],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+app.add_middleware(ObservabilityMiddleware)
 
 app.include_router(auth_router)
 app.include_router(capacity_router)

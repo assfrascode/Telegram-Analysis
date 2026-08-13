@@ -9,6 +9,10 @@ x-default-logging: &default-logging
 x-common-environment: &common-environment
   APP_NAME: "${APP_NAME:-Chat Analyse}"
   APP_ENV: "${APP_ENV:-production}"
+  METRICS_ENABLED: "${METRICS_ENABLED:-true}"
+  METRICS_PORT: "${METRICS_PORT:-9100}"
+  OBSERVABILITY_POLL_SECONDS: "${OBSERVABILITY_POLL_SECONDS:-30}"
+  LOG_LEVEL: "${LOG_LEVEL:-INFO}"
 
 x-api-environment: &api-environment
   APP_BASE_URL: "${APP_BASE_URL:?Set APP_BASE_URL to the public HTTPS origin}"
@@ -238,6 +242,20 @@ services:
       - data
     logging: *default-logging
 
+  database-migrate:
+    <<: *app-runtime
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: [*common-environment, *database-environment]
+      APP_ROLE: migration
+      METRICS_ENABLED: "false"
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Optional GPU model server for embeddings. No host ports or remote model code.
   vllm-embedding:
     image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
@@ -312,7 +330,7 @@ services:
 
   backend:
     <<: *app-runtime
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--no-access-log"]
     environment:
       <<: [*common-environment, *api-environment, *telegram-environment, *database-environment, *nats-environment, *object-storage-environment, *vector-storage-environment, *job-default-environment, *capacity-environment]
       APP_ROLE: api
@@ -330,8 +348,8 @@ services:
       start_period: 20s
       retries: 3
     depends_on:
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
       nats:
         condition: service_started
       minio:
@@ -361,8 +379,8 @@ services:
       # Two active max-size jobs can hold input, parse, and output spools.
       - /tmp:rw,noexec,nosuid,size=${WORKER_TMPFS_SIZE:-8g},mode=1777
     depends_on:
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
       nats:
         condition: service_started
       minio:
@@ -382,8 +400,8 @@ services:
       # the browser/backend application segment.
       - telegram-egress
     depends_on:
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
 
@@ -396,8 +414,8 @@ services:
     networks:
       - data
     depends_on:
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
       nats:
         condition: service_started
       minio:
@@ -438,6 +456,30 @@ services:
       - app
     logging: *default-logging
 
+  prometheus:
+    image: "${PROMETHEUS_IMAGE:-prom/prometheus:latest}"
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    networks:
+      - data
+    logging: *default-logging
+
 networks:
   app:
   data:
@@ -453,3 +495,4 @@ volumes:
   minio-data:
   qdrant-data:
   hf-cache:
+  prometheus-data:

@@ -12,6 +12,7 @@ from app.llm.prompt_limits import (
     resolve_prompt_budget,
     split_text_by_tokens,
 )
+from app.observability.metrics import observe_model_call
 
 settings = get_settings()
 
@@ -148,6 +149,10 @@ class RerankerClient:
         )
 
     async def _rerank_once(self, query: str, documents: list[str]) -> list[dict[str, Any]]:
+        async with observe_model_call("vllm", "rerank", settings.reranker_model):
+            return await self._rerank_once_unobserved(query, documents)
+
+    async def _rerank_once_unobserved(self, query: str, documents: list[str]) -> list[dict[str, Any]]:
         base_url = settings.vllm_reranker_base_url.rstrip("/")
         headers = {"Authorization": f"Bearer {settings.vllm_api_key}"}
         errors: list[str] = []

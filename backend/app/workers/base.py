@@ -1,6 +1,7 @@
 import abc
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -13,6 +14,13 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Job, JobStatus, StepStatus, WorkerTask
 from app.nats_client import connect_nats, ensure_streams, publish_json
+from app.observability.context import correlated_worker_task, current_request_id
+from app.observability.metrics import (
+    WORKER_DEAD_LETTERS_CREATED,
+    WORKER_RETRIES,
+    instrument_worker_task,
+    record_job_terminal,
+)
 from app.services.events import record_event
 from app.services.worker_control import (
     NON_RUNNABLE_JOB_STATUSES,
@@ -27,6 +35,7 @@ from app.services.worker_control import (
 )
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 AckAction = Literal["ack", "nak"]
 
 
@@ -124,7 +133,14 @@ class Worker(abc.ABC):
             durable=self.durable,
             stream="CHAT_ANALYSE_TASKS",
         )
-        print(f"Worker subscribed: {self.subject} durable={self.durable}", flush=True)
+        logger.info(
+            "Worker subscribed",
+            extra={
+                "event": "worker.subscribed",
+                "subject": self.subject,
+                "durable": self.durable,
+            },
+        )
 
         while True:
             messages = await self._fetch_messages(sub)
@@ -148,11 +164,25 @@ class Worker(abc.ABC):
                 except Exception as exc:
                     # Last-resort guard: the worker process must not die because a
                     # single task failed unexpectedly before it could be recorded.
-                    print(f"Worker fatal task error subject={self.subject}: {exc}", flush=True)
+                    logger.exception(
+                        "Worker message guard caught an error",
+                        extra={
+                            "event": "worker.message_guard_error",
+                            "subject": self.subject,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                     try:
                         await msg.nak(delay=settings.worker_retry_base_delay_seconds)
                     except Exception as nak_exc:
-                        print(f"Could not nak message subject={self.subject}: {nak_exc}", flush=True)
+                        logger.warning(
+                            "Worker could not negatively acknowledge message",
+                            extra={
+                                "event": "worker.nak_failed",
+                                "subject": self.subject,
+                                "error_type": type(nak_exc).__name__,
+                            },
+                        )
                 finally:
                     heartbeat_task.cancel()
                     try:
@@ -168,8 +198,17 @@ class Worker(abc.ABC):
             try:
                 await msg.in_progress()
             except Exception as exc:
-                print(f"Could not extend ack deadline subject={self.subject}: {exc}", flush=True)
+                logger.warning(
+                    "Worker could not extend acknowledgement deadline",
+                    extra={
+                        "event": "worker.ack_heartbeat_failed",
+                        "subject": self.subject,
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
+    @instrument_worker_task
+    @correlated_worker_task
     async def _handle_message(self, payload: dict[str, Any]) -> AckAction:
         job_id = uuid.UUID(payload["job_id"])
         task_key = payload.get("task_key") or f"{self.subject}:{job_id}"
@@ -178,6 +217,7 @@ class Worker(abc.ABC):
             job = await get_job(session, job_id)
             if job is None:
                 exc = PermanentWorkerError(f"Job not found: {job_id}")
+                WORKER_DEAD_LETTERS_CREATED.labels(self.subject, "job_not_found").inc()
                 await publish_json(self.js, f"dlq.{self.subject}", {**payload, "error": str(exc), "reason": "job_not_found"})
                 return "ack"
 
@@ -211,6 +251,7 @@ class Worker(abc.ABC):
                 task.last_error = "job_cancelled_before_start"
                 task.updated_at = datetime.now(timezone.utc)
                 await mark_job_cancelled(session, job, js=self.js)
+                record_job_terminal(job)
                 await session.commit()
                 return "ack"
 
@@ -254,6 +295,9 @@ class Worker(abc.ABC):
                         error=job.error_message or "job_failed_by_handler",
                         reason="handler_marked_job_failed",
                     )
+                    WORKER_DEAD_LETTERS_CREATED.labels(
+                        self.subject, "handler_marked_job_failed"
+                    ).inc()
                     await self.emit_event(
                         session,
                         job=job,
@@ -273,6 +317,8 @@ class Worker(abc.ABC):
                     task.status = StepStatus.completed
                     task.last_error = None
                 task.updated_at = datetime.now(timezone.utc)
+                if job.status in {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}:
+                    record_job_terminal(job)
                 await session.commit()
                 return "ack"
             except Exception as exc:
@@ -307,6 +353,7 @@ class Worker(abc.ABC):
                     task.updated_at = datetime.now(timezone.utc)
                 if job is not None:
                     await mark_job_cancelled(session, job, js=self.js)
+                    record_job_terminal(job)
                 await session.commit()
                 return "ack"
 
@@ -316,11 +363,18 @@ class Worker(abc.ABC):
                 task.updated_at = datetime.now(timezone.utc)
 
             if decision.retry:
-                print(
-                    f"Worker task retrying subject={self.subject} "
-                    f"task_key={task_key} attempts={attempts}/{decision.max_attempts} "
-                    f"delay={decision.delay_seconds}s error={exc}",
-                    flush=True,
+                WORKER_RETRIES.labels(self.subject, decision.reason).inc()
+                logger.warning(
+                    "Worker task will be retried",
+                    extra={
+                        "event": "worker.task_retrying",
+                        "subject": self.subject,
+                        "attempts": attempts,
+                        "max_attempts": decision.max_attempts,
+                        "retry_delay_seconds": decision.delay_seconds,
+                        "reason": decision.reason,
+                        "error_type": type(exc).__name__,
+                    },
                 )
                 if job is not None:
                     await self.emit_event(
@@ -351,11 +405,17 @@ class Worker(abc.ABC):
                 error=exc,
                 reason=decision.reason,
             )
-            print(
-                f"Worker task failed permanently subject={self.subject} "
-                f"task_key={task_key} attempts={attempts}/{decision.max_attempts} "
-                f"reason={decision.reason} error={exc}",
-                flush=True,
+            WORKER_DEAD_LETTERS_CREATED.labels(self.subject, decision.reason).inc()
+            logger.error(
+                "Worker task failed permanently",
+                extra={
+                    "event": "worker.task_dead_lettered",
+                    "subject": self.subject,
+                    "attempts": attempts,
+                    "max_attempts": decision.max_attempts,
+                    "reason": decision.reason,
+                    "error_type": type(exc).__name__,
+                },
             )
             if job is not None:
                 await self.emit_event(
@@ -381,6 +441,7 @@ class Worker(abc.ABC):
                         js=self.js,
                         error_message=f"Worker task failed permanently: {self.subject}: {exc}",
                     )
+                    record_job_terminal(job)
             await session.commit()
             await publish_json(
                 self.js,
@@ -438,5 +499,9 @@ class Worker(abc.ABC):
                         await session.commit()
                     return False
 
-        await publish_json(self.js, subject, payload)
+        outgoing_payload = dict(payload)
+        request_id = current_request_id()
+        if request_id:
+            outgoing_payload.setdefault("request_id", request_id)
+        await publish_json(self.js, subject, outgoing_payload)
         return True

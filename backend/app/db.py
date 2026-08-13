@@ -2,10 +2,12 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
 
 settings = get_settings()
+SCHEMA_REVISION = "20260813_0001"
 
 convention = {
     "ix": "ix_%(column_0_label)s",
@@ -30,71 +32,17 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    # MVP convenience. Replace with Alembic before production.
-    from app import models  # noqa: F401
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                    CREATE TYPE telegramingestmode AS ENUM ('backend_pull', 'external_push');
-                EXCEPTION
-                    WHEN duplicate_object THEN NULL;
-                END $$;
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                ALTER TABLE telegram_chats
-                ADD COLUMN IF NOT EXISTS ingest_mode telegramingestmode
-                DEFAULT 'backend_pull' NOT NULL
-                """
-            )
-        )
-        await conn.execute(text("ALTER TABLE telegram_chats ALTER COLUMN connection_id DROP NOT NULL"))
-        await conn.execute(
-            text(
-                """
-                ALTER TABLE telegram_chats
-                ADD COLUMN IF NOT EXISTS last_collected_message_id bigint
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                UPDATE telegram_chats AS chat
-                SET last_collected_message_id = collected.last_message_id
-                FROM (
-                    SELECT chat_id, MAX(telegram_message_id) AS last_message_id
-                    FROM collected_telegram_messages
-                    GROUP BY chat_id
-                ) AS collected
-                WHERE chat.id = collected.chat_id
-                  AND chat.last_sync_at IS NOT NULL
-                  AND chat.last_collected_message_id IS NULL
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                ALTER TABLE telegram_report_schedules
-                ADD COLUMN IF NOT EXISTS allow_partial_telegram_sync boolean
-                DEFAULT false NOT NULL
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                ALTER TABLE jobs
-                ADD COLUMN IF NOT EXISTS source_name varchar(512)
-                """
-            )
+    """Fail fast when the deployment did not run Alembic to the expected revision."""
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+            revision = result.scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise RuntimeError(
+            "Database schema is not initialized; run `alembic upgrade head` before starting services"
+        ) from exc
+    if revision != SCHEMA_REVISION:
+        raise RuntimeError(
+            f"Database schema revision is {revision!r}; expected {SCHEMA_REVISION!r}. "
+            "Run `alembic upgrade head` before starting services."
         )

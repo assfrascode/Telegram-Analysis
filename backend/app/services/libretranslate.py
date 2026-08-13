@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.config import get_settings
+from app.observability.metrics import observe_model_call
 
 settings = get_settings()
 
@@ -111,14 +112,15 @@ class LibreTranslateClient:
         if self.api_key:
             form_data.append(("api_key", self.api_key))
 
-        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-            response = await client.post(
-                f"{self.base_url.rstrip('/')}/translate",
-                content=urlencode(form_data).encode("utf-8"),
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            response.raise_for_status()
-            data = response.json()
+        async with observe_model_call("libretranslate", "translate", "default"):
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.post(
+                    f"{self.base_url.rstrip('/')}/translate",
+                    content=urlencode(form_data).encode("utf-8"),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+                data = response.json()
 
         if not isinstance(data, dict):
             raise ValueError("LibreTranslate response must be a JSON object")

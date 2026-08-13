@@ -5,6 +5,8 @@ from app.db import SessionLocal, init_db
 from app.config import get_settings
 from app.nats_client import nats_context
 from app.services.job_recovery import recover_stale_queued_jobs
+from app.observability.logging import configure_logging
+from app.observability.metrics import start_metrics_server
 from app.workers.ingest_worker import ValidateWorker, ExtractWorker
 from app.workers.parser_worker import ParserWorker
 from app.workers.media_worker import MediaWorker
@@ -38,6 +40,8 @@ settings = get_settings()
 async def main() -> None:
     if settings.app_role not in {"worker", "all"}:
         raise RuntimeError("Generic workers require APP_ROLE=worker (or all)")
+    configure_logging(settings.log_level)
+    start_metrics_server(settings.metrics_port, enabled=settings.metrics_enabled)
     await init_db()
     async with nats_context() as (_, js):
         async with SessionLocal() as session:

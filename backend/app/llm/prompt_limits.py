@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.observability.metrics import observe_model_call
 
 try:  # pragma: no cover - exercised when the dependency is installed.
     import tiktoken
@@ -169,10 +170,11 @@ async def _models_response(base_url: str) -> dict[str, Any]:
         return cached[1]
 
     headers = {"Authorization": f"Bearer {settings.vllm_api_key}"}
-    async with httpx.AsyncClient(timeout=settings.prompt_limit_models_timeout_seconds) as client:
-        response = await client.get(f"{base}/models", headers=headers)
-        response.raise_for_status()
-        body = response.json()
+    async with observe_model_call("vllm", "model_metadata", "catalog"):
+        async with httpx.AsyncClient(timeout=settings.prompt_limit_models_timeout_seconds) as client:
+            response = await client.get(f"{base}/models", headers=headers)
+            response.raise_for_status()
+            body = response.json()
     if not isinstance(body, dict):
         raise PromptLimitError(f"Unexpected /models response from {base_url!r}")
     if ttl > 0:

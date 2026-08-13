@@ -1,5 +1,21 @@
+import logging
+import re
+import time
+import uuid
+
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.observability.context import correlation_context
+from app.observability.metrics import (
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+    HTTP_REQUESTS_IN_PROGRESS,
+)
+
+
+logger = logging.getLogger(__name__)
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 class RequestBodyTooLarge(Exception):
@@ -118,3 +134,57 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+class ObservabilityMiddleware:
+    """Add request correlation, low-cardinality metrics, and one safe access log."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        supplied_request_id = headers.get("x-request-id", "")
+        request_id = (
+            supplied_request_id
+            if _REQUEST_ID_RE.fullmatch(supplied_request_id)
+            else str(uuid.uuid4())
+        )
+        method = str(scope.get("method") or "UNKNOWN").upper()
+        status_code = 500
+        started = time.perf_counter()
+        HTTP_REQUESTS_IN_PROGRESS.labels(method).inc()
+
+        async def send_with_request_id(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                response_headers = list(message.get("headers", []))
+                response_headers.append((b"x-request-id", request_id.encode("ascii")))
+                message["headers"] = response_headers
+            await send(message)
+
+        with correlation_context(request_id=request_id):
+            try:
+                await self.app(scope, receive, send_with_request_id)
+            finally:
+                duration = time.perf_counter() - started
+                route_object = scope.get("route")
+                route = str(getattr(route_object, "path", None) or "unmatched")
+                HTTP_REQUESTS.labels(method, route, str(status_code)).inc()
+                HTTP_REQUEST_DURATION.labels(method, route).observe(duration)
+                HTTP_REQUESTS_IN_PROGRESS.labels(method).dec()
+                logger.info(
+                    "HTTP request completed",
+                    extra={
+                        "event": "http.request.completed",
+                        "method": method,
+                        "route": route,
+                        "status_code": status_code,
+                        "duration_ms": round(duration * 1000, 2),
+                    },
+                )

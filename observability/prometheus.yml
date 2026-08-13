@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: chat-analyse-api
+    static_configs:
+      - targets: ["backend:9100"]
+  - job_name: chat-analyse-worker
+    static_configs:
+      - targets: ["worker:9100"]
+  - job_name: chat-analyse-telegram-collector
+    static_configs:
+      - targets: ["telegram-collector:9100"]
+  - job_name: chat-analyse-scheduler
+    static_configs:
+      - targets: ["report-scheduler:9100"]
+

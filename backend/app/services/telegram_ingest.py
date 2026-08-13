@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.observability.metrics import record_sync_terminal
 from app.models import (
     CollectedTelegramMedia,
     CollectedTelegramMessage,
@@ -211,6 +212,7 @@ async def reassign_external_chat_token(
     chat.last_error = None
     chat.next_sync_at = now
     chat.updated_at = now
+    record_sync_terminal(run, "external_push")
     await session.flush()
     return chat
 

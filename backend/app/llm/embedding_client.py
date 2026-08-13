@@ -7,6 +7,7 @@ import httpx
 
 from app.config import get_settings
 from app.llm.prompt_limits import TextSegment, resolve_prompt_budget, split_texts_by_tokens
+from app.observability.metrics import observe_model_call
 
 settings = get_settings()
 
@@ -59,15 +60,16 @@ class EmbeddingClient:
         if settings.llm_mock_enabled:
             return [_mock_embedding(text, settings.mock_embedding_dimensions) for text in texts]
 
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(
-                f"{settings.vllm_embedding_base_url.rstrip('/')}/embeddings",
-                headers={"Authorization": f"Bearer {settings.vllm_api_key}"},
-                json={"model": settings.embedding_model, "input": texts},
-            )
-            response.raise_for_status()
-            data: dict[str, Any] = response.json()
-            return [item["embedding"] for item in data["data"]]
+        async with observe_model_call("vllm", "embedding", settings.embedding_model):
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post(
+                    f"{settings.vllm_embedding_base_url.rstrip('/')}/embeddings",
+                    headers={"Authorization": f"Bearer {settings.vllm_api_key}"},
+                    json={"model": settings.embedding_model, "input": texts},
+                )
+                response.raise_for_status()
+                data: dict[str, Any] = response.json()
+                return [item["embedding"] for item in data["data"]]
 
     async def embed_parts(self, texts: list[str]) -> list[EmbeddingVector]:
         segments = await self.split_inputs(texts)
