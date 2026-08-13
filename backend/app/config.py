@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     chunk_target_chars: int = 8000
     chunk_overlap_messages: int = 2
 
+    vllm_text_concurrency: int = Field(default=4, ge=1)
+    vllm_text_http_max_connections: int = Field(default=16, ge=1)
+    vllm_text_http_max_keepalive_connections: int = Field(default=8, ge=0)
+
     media_analysis_concurrency: int = 4
     media_analysis_batch_size: int = 100
     media_analysis_prompt_version: str = "neutral-en-v2"

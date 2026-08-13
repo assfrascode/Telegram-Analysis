@@ -86,6 +86,25 @@ def test_answer_prompt_forwards_max_tokens(monkeypatch) -> None:
     assert captured["max_tokens"] == 1234
 
 
+def test_text_client_uses_configured_connection_limits(monkeypatch) -> None:
+    captured = {}
+    fake_client = object()
+
+    def fake_async_client(**kwargs):
+        captured.update(kwargs)
+        return fake_client
+
+    monkeypatch.setattr(settings, "vllm_text_http_max_connections", 7)
+    monkeypatch.setattr(settings, "vllm_text_http_max_keepalive_connections", 3)
+    monkeypatch.setattr("app.llm.vllm_gateway.httpx.AsyncClient", fake_async_client)
+
+    client = VLLMGateway()._get_text_client()
+
+    assert client is fake_client
+    assert captured["limits"].max_connections == 7
+    assert captured["limits"].max_keepalive_connections == 3
+
+
 def test_chat_completion_rejects_oversized_text_prompt(monkeypatch) -> None:
     async def fake_budget(**kwargs):
         from types import SimpleNamespace

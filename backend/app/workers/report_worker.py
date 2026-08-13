@@ -275,22 +275,25 @@ class ReportWorker(Worker):
             return bluf
 
         gateway = VLLMGateway()
-        bluf_prompt_budget = await gateway.synthesize_bluf_prompt_body_budget(
-            max_tokens=BLUF_MAX_TOKENS
-        )
-        prompt_tokens = count_text_tokens(prompt, model=settings.text_model)
-        if prompt_tokens <= bluf_prompt_budget:
-            bluf = await gateway.synthesize_bluf(prompt)
-            bluf_strategy = "direct"
-            bluf_batches = 1
-            bluf_reduce_rounds = 0
-        else:
-            bluf, bluf_batches, bluf_reduce_rounds = await self._synthesize_bluf_map_reduce(
-                gateway,
-                source_questions,
-                prompt_budget=bluf_prompt_budget,
+        try:
+            bluf_prompt_budget = await gateway.synthesize_bluf_prompt_body_budget(
+                max_tokens=BLUF_MAX_TOKENS
             )
-            bluf_strategy = "map_reduce"
+            prompt_tokens = count_text_tokens(prompt, model=settings.text_model)
+            if prompt_tokens <= bluf_prompt_budget:
+                bluf = await gateway.synthesize_bluf(prompt)
+                bluf_strategy = "direct"
+                bluf_batches = 1
+                bluf_reduce_rounds = 0
+            else:
+                bluf, bluf_batches, bluf_reduce_rounds = await self._synthesize_bluf_map_reduce(
+                    gateway,
+                    source_questions,
+                    prompt_budget=bluf_prompt_budget,
+                )
+                bluf_strategy = "map_reduce"
+        finally:
+            await gateway.aclose()
         await self.checkpoint_cancelled(
             session,
             job,

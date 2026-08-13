@@ -107,6 +107,27 @@ def _mock_chat_response(content: str, *, model: str) -> dict[str, Any]:
 class VLLMGateway:
     def __init__(self) -> None:
         self.headers = {"Authorization": f"Bearer {settings.vllm_api_key}"}
+        self._text_client: httpx.AsyncClient | None = None
+
+    def _get_text_client(self) -> httpx.AsyncClient:
+        if self._text_client is None:
+            max_connections = settings.vllm_text_http_max_connections
+            self._text_client = httpx.AsyncClient(
+                headers=self.headers,
+                limits=httpx.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=min(
+                        settings.vllm_text_http_max_keepalive_connections,
+                        max_connections,
+                    ),
+                ),
+            )
+        return self._text_client
+
+    async def aclose(self) -> None:
+        if self._text_client is not None:
+            await self._text_client.aclose()
+            self._text_client = None
 
     async def chat_completion(
         self,
@@ -139,19 +160,27 @@ class VLLMGateway:
                     f"exceeding effective input budget {budget.input_tokens}"
                 )
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
+        request_json = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if base_url.rstrip("/") == settings.vllm_text_base_url.rstrip("/"):
+            response = await self._get_text_client().post(
                 f"{base_url.rstrip('/')}/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
+                json=request_json,
+                timeout=timeout,
             )
-            response.raise_for_status()
-            return response.json()
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers=self.headers,
+                    json=request_json,
+                )
+        response.raise_for_status()
+        return response.json()
 
     async def describe_media_with_raw(
         self,

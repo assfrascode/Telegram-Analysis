@@ -77,6 +77,86 @@ def _worker_with_recorded_events(events: list[dict]) -> AnswerWorker:
     return worker
 
 
+def test_answer_concurrency_is_capped_by_http_connections(monkeypatch) -> None:
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_concurrency", 8)
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_http_max_connections", 3)
+
+    assert rag_worker.answer_text_concurrency() == 3
+
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_concurrency", 2)
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_http_max_connections", 9)
+
+    assert rag_worker.answer_text_concurrency() == 2
+
+
+def test_answer_worker_runs_questions_in_bounded_parallel(monkeypatch) -> None:
+    job = SimpleNamespace(
+        id=uuid.UUID("00000000-0000-0000-0000-000000000301"),
+        owner_user_id=uuid.UUID("00000000-0000-0000-0000-000000000401"),
+    )
+    question_run_ids = [uuid.uuid4() for _ in range(5)]
+
+    class HandleResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+        def all(self):
+            return self.value
+
+    class HandleSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.execute_calls = 0
+
+        async def execute(self, statement):
+            self.execute_calls += 1
+            if self.execute_calls == 1:
+                return HandleResult(job)
+            return HandleResult([(question_run_id, index) for index, question_run_id in enumerate(question_run_ids)])
+
+    class FakeCloseGateway:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_concurrency", 4)
+    monkeypatch.setattr(rag_worker.settings, "vllm_text_http_max_connections", 2)
+    gateway = FakeCloseGateway()
+    monkeypatch.setattr(rag_worker, "VLLMGateway", lambda: gateway)
+
+    worker = AnswerWorker()
+    active = 0
+    max_active = 0
+
+    async def answer_one_question(**kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        async with kwargs["progress_lock"]:
+            kwargs["progress"]["done"] += 1
+        return {"answered_with_evidence": 1, "evidence_chunks": 1}
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    worker._answer_one_question = answer_one_question
+    worker.emit_event = no_op
+    worker.checkpoint_cancelled = no_op
+    worker.enqueue = no_op
+
+    asyncio.run(worker.handle(HandleSession(), {"job_id": str(job.id)}))
+
+    assert max_active == 2
+    assert gateway.closed is True
+
+
 def test_answer_worker_uses_direct_strategy_when_evidence_fits(monkeypatch) -> None:
     monkeypatch.setattr(rag_worker.settings, "answer_context_max_chars", 10_000)
     events: list[dict] = []

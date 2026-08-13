@@ -1,4 +1,5 @@
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -6,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.llm.embedding_client import EmbeddingClient
 from app.llm.prompt_limits import count_text_tokens
 from app.llm.reranker_client import RerankerClient
@@ -33,6 +35,17 @@ settings = get_settings()
 ANSWER_MAP_MAX_TOKENS = 1536
 ANSWER_REDUCE_MAX_TOKENS = 4096
 MAX_SUMMARY_REDUCE_ROUNDS = 6
+
+
+def answer_text_concurrency() -> int:
+    """Bound parallel answer work by both the worker and HTTP pool limits."""
+    return max(
+        1,
+        min(
+            settings.vllm_text_concurrency,
+            settings.vllm_text_http_max_connections,
+        ),
+    )
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -1001,59 +1014,34 @@ class AnswerWorker(Worker):
             "answer_chars": len(answer),
         }
 
-    async def handle(self, session: AsyncSession, payload: dict) -> None:
-        job_id = uuid.UUID(payload["job_id"])
-        job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-
-        run_rows = (
-            (
-                await session.execute(
+    async def _answer_one_question(
+        self,
+        *,
+        job_id: uuid.UUID,
+        question_run_id: uuid.UUID,
+        gateway: VLLMGateway,
+        questions_total: int,
+        progress: dict[str, int],
+        progress_lock: asyncio.Lock,
+    ) -> dict[str, int]:
+        """Answer and persist one question in an isolated database session."""
+        async with SessionLocal() as question_session:
+            job = (await question_session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+            question_run, question = (
+                await question_session.execute(
                     select(QuestionRun, Question)
                     .join(Question, Question.id == QuestionRun.question_id)
-                    .where(QuestionRun.job_id == job.id)
-                    .order_by(Question.question_index)
+                    .where(QuestionRun.id == question_run_id)
                 )
-            )
-            .all()
-        )
+            ).one()
 
-        await self.emit_event(
-            session,
-            job=job,
-            event_type="answer.started",
-            message="Fragenbeantwortung gestartet",
-            payload={
-                "questions_total": len(run_rows),
-                "text_model": settings.text_model,
-                "mock_enabled": settings.llm_mock_enabled,
-            },
-        )
-        await session.commit()
-
-        gateway = VLLMGateway()
-        done = 0
-        answered = 0
-        total_evidence_chunks = 0
-
-        for question_run, question in run_rows:
-            if await self.should_skip_cancelled(session, job.id):
-                await self.emit_event(
-                    session,
-                    job=job,
-                    event_type="answer.cancelled",
-                    message="Fragenbeantwortung wegen Job-Abbruch beendet",
-                    payload={"questions_done": done, "questions_total": len(run_rows)},
-                    level="warning",
-                )
-                await session.commit()
-                return
-
+            await self.checkpoint_cancelled(question_session, job)
             question_run.status = StepStatus.running
-            await session.flush()
+            await question_session.commit()
 
             hit_rows = (
                 (
-                    await session.execute(
+                    await question_session.execute(
                         select(RetrievalHit, MessageChunk)
                         .join(MessageChunk, MessageChunk.id == RetrievalHit.chunk_id)
                         .where(
@@ -1065,7 +1053,6 @@ class AnswerWorker(Worker):
                 )
                 .all()
             )
-
             evidence_chunks = [
                 EvidenceChunk(
                     chunk_id=chunk.id,
@@ -1083,49 +1070,117 @@ class AnswerWorker(Worker):
             ]
 
             answer, raw_response = await self._answer_question_with_evidence(
-                session,
+                question_session,
                 job,
                 gateway,
                 question_run=question_run,
                 question=question,
                 evidence_chunks=evidence_chunks,
-                questions_done=done,
-                questions_total=len(run_rows),
+                questions_done=progress["done"],
+                questions_total=questions_total,
             )
-            if raw_response.get("strategy") != "no_evidence":
-                answered += 1
 
-            question_run.answer = answer
-            question_run.short_answer = make_short_answer(answer)
-            question_run.status = StepStatus.completed
-            question_run.raw_response = {
-                **(question_run.raw_response or {}),
-                "answer": raw_response,
+            # Serialize only the tiny persistence/progress section. Model calls
+            # remain parallel, while the completion counter stays accurate.
+            async with progress_lock:
+                question_run.answer = answer
+                question_run.short_answer = make_short_answer(answer)
+                question_run.status = StepStatus.completed
+                question_run.raw_response = {
+                    **(question_run.raw_response or {}),
+                    "answer": raw_response,
+                }
+                progress["done"] += 1
+                await self.emit_event(
+                    question_session,
+                    job=job,
+                    event_type="answer.progress",
+                    message=(
+                        f"Frage {question.question_index}/{questions_total} beantwortet "
+                        f"mit {len(evidence_chunks)} Evidenz-Chunks"
+                    ),
+                    payload={
+                        "questions_done": progress["done"],
+                        "questions_total": questions_total,
+                        "question_id": str(question.id),
+                        "question_index": question.question_index,
+                        "question_run_id": str(question_run.id),
+                        "evidence_chunks": len(evidence_chunks),
+                        "strategy": raw_response.get("strategy"),
+                        "evidence_batches": raw_response.get("evidence_batch_count", 0),
+                        "answer_chars": len(answer),
+                    },
+                )
+                await question_session.commit()
+
+            return {
+                "answered_with_evidence": int(raw_response.get("strategy") != "no_evidence"),
+                "evidence_chunks": len(evidence_chunks),
             }
 
-            done += 1
-            total_evidence_chunks += len(evidence_chunks)
-            await self.emit_event(
-                session,
-                job=job,
-                event_type="answer.progress",
-                message=(
-                    f"Frage {question.question_index}/{len(run_rows)} beantwortet "
-                    f"mit {len(evidence_chunks)} Evidenz-Chunks"
-                ),
-                payload={
-                    "questions_done": done,
-                    "questions_total": len(run_rows),
-                    "question_id": str(question.id),
-                    "question_index": question.question_index,
-                    "question_run_id": str(question_run.id),
-                    "evidence_chunks": len(evidence_chunks),
-                    "strategy": raw_response.get("strategy"),
-                    "evidence_batches": raw_response.get("evidence_batch_count", 0),
-                    "answer_chars": len(answer),
-                },
+    async def handle(self, session: AsyncSession, payload: dict) -> None:
+        job_id = uuid.UUID(payload["job_id"])
+        job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+
+        run_rows = (
+            (
+                await session.execute(
+                    select(QuestionRun.id, Question.question_index)
+                    .join(Question, Question.id == QuestionRun.question_id)
+                    .where(QuestionRun.job_id == job.id)
+                    .order_by(Question.question_index)
+                )
             )
-            await session.commit()
+            .all()
+        )
+
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="answer.started",
+            message="Fragenbeantwortung gestartet",
+            payload={
+                "questions_total": len(run_rows),
+                "text_model": settings.text_model,
+                "mock_enabled": settings.llm_mock_enabled,
+                "concurrency": answer_text_concurrency(),
+            },
+        )
+        await session.commit()
+
+        gateway = VLLMGateway()
+        progress = {"done": 0}
+        progress_lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(answer_text_concurrency())
+
+        async def answer_bounded(question_run_id: uuid.UUID) -> dict[str, int]:
+            async with semaphore:
+                return await self._answer_one_question(
+                    job_id=job.id,
+                    question_run_id=question_run_id,
+                    gateway=gateway,
+                    questions_total=len(run_rows),
+                    progress=progress,
+                    progress_lock=progress_lock,
+                )
+
+        tasks = [
+            asyncio.create_task(answer_bounded(question_run_id))
+            for question_run_id, _ in run_rows
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        finally:
+            await gateway.aclose()
+
+        done = progress["done"]
+        answered = sum(result["answered_with_evidence"] for result in results)
+        total_evidence_chunks = sum(result["evidence_chunks"] for result in results)
 
         await self.checkpoint_cancelled(
             session,
