@@ -6,16 +6,44 @@ stores its Telegram session in `TELEGRAM_SESSION_PATH`.
 
 ## Required Backend Setup
 
-Create an ingest token with a normal backend user JWT:
+Create the ingest token through the same public application origin used by the
+browser. That request passes through the frontend proxy with a hostname allowed
+by the backend's `TRUSTED_HOSTS`. Do not use the private `backend:8000` address or
+an arbitrary IP/localhost URL: the backend port is not published by the standard
+Compose deployment, and an unlisted `Host` is deliberately rejected as
+`Invalid host header`.
+
+For the standard loopback development deployment, use
+`APP_ORIGIN=http://127.0.0.1:3000` (the frontend proxy), not port `8000`. For a
+remote deployment, use its browser-facing HTTPS origin as shown below.
+
+First sign in as the user that will own the collected chats and copy the returned
+`access_token`:
 
 ```bash
-curl -X POST "$BACKEND_URL/telegram/ingest/tokens" \
+export APP_ORIGIN=https://chat.example.com
+
+curl --fail-with-body -X POST "$APP_ORIGIN/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"collector-owner@example.com","password":"replace-me"}'
+
+export USER_ACCESS_TOKEN=replace-with-returned-access-token
+```
+
+Then create the ingest token:
+
+```bash
+curl --fail-with-body -X POST "$APP_ORIGIN/telegram/ingest/tokens" \
   -H "Authorization: Bearer $USER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"collector-1","expires_in_days":30}'
 ```
 
-Use the returned one-time `token` as `TELEGRAM_INGEST_TOKEN`.
+Use the returned one-time `token` as `TELEGRAM_INGEST_TOKEN`, and set the
+collector's `BACKEND_URL` to this same `APP_ORIGIN`. The hostname in
+`APP_ORIGIN` must be present in the backend `TRUSTED_HOSTS`; in the standard
+deployment it should also match `APP_BASE_URL`, `SERVER_NAME`, and
+`HEALTHCHECK_HOST`.
 
 Create the token with the same backend user account that you use in the React
 frontend. Collector chats are owned by that user; if the token comes from a
@@ -27,7 +55,7 @@ days. Rotate one without orphaning its registered chats in this order:
 
 1. Create the replacement token and note its returned `id` and one-time `token`.
 2. For each existing chat, assign the replacement with
-   `PUT /telegram/ingest/chats/{chat_db_uuid}/token` and the JSON body
+   `PUT $APP_ORIGIN/telegram/ingest/chats/{chat_db_uuid}/token` and the JSON body
    `{"token_id":"<replacement-token-id>"}` using the owning user's JWT.
 3. Put the replacement one-time token in `TELEGRAM_INGEST_TOKEN` and restart the
    collector.
@@ -55,7 +83,8 @@ TELEGRAM_ALL_CHATS=false
 TELEGRAM_INCLUDE_RAW_METADATA=false
 TELEGRAM_USE_TAKEOUT=false
 TELEGRAM_TAKEOUT_WAIT_TIME=0
-# Optional. Defaults to the current UTC time minus 30 days.
+# Optional. Defaults to the current UTC time minus 31 days, so a report covering
+# the last 30 days is not rejected due to its timezone or time of day.
 INITIAL_SYNC_FROM=
 TELEGRAM_MAX_SYNC_RANGE_DAYS=31
 SYNC_INTERVAL_MINUTES=60
@@ -153,18 +182,58 @@ set:
 COLLECTOR_WEB_ENABLED=false
 ```
 
+## Docker Compose
+
+The Compose deployment uses a host path rather than a Docker-managed volume so
+the session can be backed up or moved to another system. The directory contains
+the main `.session` SQLite file and may contain journal/WAL sidecars; stop the
+collector and transfer the entire directory, not just one live database file.
+
+Compose runs the collector as the current host user. This satisfies the
+collector's ownership checks without `sudo` or a later `chown`, and leaves both
+an imported session and a newly created session directly accessible to that host
+user. Set the numeric IDs in `.env`, create the directory, and optionally copy a
+stopped session directory into it before starting:
+
+```bash
+cd external_telegram_collector
+cp .env.example .env
+mkdir -p session
+chmod 700 session
+# Put the output of these commands in COLLECTOR_UID and COLLECTOR_GID in .env:
+id -u
+id -g
+# Fill the other required values in .env, then:
+docker compose up --build -d
+```
+
+If `session/telegram-external.session` is present, the collector reuses it. If it
+is absent, Telethon creates it in that directory during the first login. Set
+`COLLECTOR_SESSION_DIR` in `.env` to an existing absolute host path if the
+session should live elsewhere; Compose deliberately refuses to silently create
+a root-owned source directory.
+
+For transfer, stop the collector and copy the whole directory as the same host
+user. On the destination, set `COLLECTOR_UID` and `COLLECTOR_GID` to that host
+user's IDs and ensure the copied directory and files belong to that user. The
+Telegram authorization stored in the session remains unchanged. Treat these
+files as account credentials: a valid Telethon session can bypass Telegram 2FA
+until revoked.
+
 ## Docker Run
 
-Build the collector image. The image runs as UID/GID `10001` and stores its
-session in a dedicated Docker volume. On Linux, host networking lets the process
-retain its secure loopback bind without exposing a container-wide plaintext
-listener:
+Build the collector image. Its default UID/GID is `10001`, but for a host bind
+mount run it as the host user so the session remains directly transferable. On
+Linux, host networking lets the process retain its secure loopback bind without
+exposing a container-wide plaintext listener:
 
 ```bash
 docker build -t telegram-external-collector external_telegram_collector
 chmod 600 external-telegram-collector.env
-docker volume create telegram-collector-data
+mkdir -p telegram-session
+chmod 700 telegram-session
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \
@@ -174,7 +243,7 @@ docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=1g,mode=1777 \
   --network host \
   --env-file external-telegram-collector.env \
-  -v telegram-collector-data:/data \
+  --mount type=bind,src="$PWD/telegram-session",dst=/data \
   telegram-external-collector
 ```
 

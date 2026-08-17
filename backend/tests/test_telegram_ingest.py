@@ -517,6 +517,79 @@ def test_external_claim_picks_completed_partial_report_until_covered(monkeypatch
     assert after_message_id == 500
 
 
+def test_external_claim_defers_periodic_sync_when_coverage_is_not_before_now(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    coverage_end = now + timedelta(hours=1)
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        initial_sync_from=now - timedelta(days=30),
+        sync_interval_minutes=60,
+        status=TelegramChatStatus.syncing,
+        last_error="Backend claim end must be after its start",
+        next_sync_at=now,
+        coverage_start=now - timedelta(days=30),
+        coverage_end=coverage_end,
+        last_collected_message_id=500,
+        lease_owner=None,
+        lease_expires_at=None,
+        updated_at=None,
+    )
+
+    class Scalars:
+        def all(self):
+            return []
+
+    class Result:
+        def __init__(self, chat_result=None):
+            self.chat_result = chat_result
+
+        def scalar_one_or_none(self):
+            return self.chat_result
+
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        def __init__(self):
+            self.execute_count = 0
+            self.added = None
+            self.flushes = 0
+
+        async def execute(self, query):
+            self.execute_count += 1
+            return Result(chat if self.execute_count == 1 else None)
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            self.flushes += 1
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+    session = Session()
+
+    claimed = asyncio.run(
+        claim_next_external_chat(
+            session,
+            principal=IngestPrincipal(token_id=uuid.uuid4(), owner_user_id=owner_id),
+        )
+    )
+
+    assert claimed is None
+    assert session.added is None
+    assert session.flushes == 1
+    assert chat.status == TelegramChatStatus.active
+    assert chat.last_error is None
+    assert chat.lease_owner is None
+    assert chat.lease_expires_at is None
+    assert chat.next_sync_at == coverage_end + timedelta(minutes=60)
+    assert chat.updated_at == now
+
+
 def test_external_claim_prioritizes_active_report_over_older_partial_backfill() -> None:
     now = datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc)
     chat = SimpleNamespace(

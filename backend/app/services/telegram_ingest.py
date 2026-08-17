@@ -340,6 +340,20 @@ async def claim_next_external_chat(
         requested_start = periodic_sync_start(chat)
         requested_end = now
         job_id = None
+        if requested_start >= requested_end:
+            # Coverage can briefly reach or exceed the backend clock after a
+            # report ending "now", minor clock adjustments, or imported state.
+            # Do not hand the external collector an empty/reversed interval.
+            chat.status = TelegramChatStatus.active
+            chat.last_error = None
+            chat.lease_owner = None
+            chat.lease_expires_at = None
+            chat.next_sync_at = max(requested_start, now) + timedelta(
+                minutes=chat.sync_interval_minutes
+            )
+            chat.updated_at = now
+            await session.flush()
+            return None
     after_message_id = forward_sync_cursor(chat, requested_start)
 
     run = TelegramSyncRun(

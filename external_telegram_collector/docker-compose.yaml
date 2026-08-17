@@ -1,0 +1,56 @@
+name: external-telegram-collector
+
+services:
+  collector:
+    image: "${COLLECTOR_IMAGE:-telegram-external-collector:local}"
+    build:
+      context: .
+      args:
+        PYTHON_BASE_IMAGE: "${PYTHON_BASE_IMAGE:-python:slim}"
+    init: true
+    restart: unless-stopped
+    env_file:
+      - "${COLLECTOR_ENV_FILE:-.env}"
+    # Run as the host user so bind-mounted session state remains directly
+    # readable and transferable without chowning it after the collector stops.
+    user: "${COLLECTOR_UID:?Set COLLECTOR_UID to the host user ID}:${COLLECTOR_GID:?Set COLLECTOR_GID to the host group ID}"
+    # Linux host networking preserves the collector's secure loopback-only UI
+    # and lets a loopback BACKEND_URL reach a backend running on this host.
+    network_mode: host
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g,mode=1777
+    volumes:
+      - type: bind
+        source: "${COLLECTOR_SESSION_DIR:-./session}"
+        target: /data
+        bind:
+          # Do not let Docker silently create a root-owned directory.
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, ssl, urllib.request;
+          enabled=os.getenv('COLLECTOR_WEB_ENABLED', 'true').lower() in ('1','true','yes','on');
+          tls=bool(os.getenv('COLLECTOR_WEB_TLS_CERT_FILE') and os.getenv('COLLECTOR_WEB_TLS_KEY_FILE'));
+          url=('https' if tls else 'http') + '://127.0.0.1:' + os.getenv('COLLECTOR_WEB_PORT', '8787') + '/health';
+          urllib.request.urlopen(url, timeout=5, context=ssl._create_unverified_context() if tls else None).read() if enabled else None
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

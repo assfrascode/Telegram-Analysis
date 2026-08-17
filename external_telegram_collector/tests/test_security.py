@@ -197,6 +197,14 @@ def test_backend_transport_requires_tls_or_explicit_loopback_override(
     collector.validate_backend_transport()
 
 
+def test_default_initial_sync_boundary_has_buffer_for_thirty_day_reports() -> None:
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+
+    assert datetime.fromisoformat(collector.default_initial_sync_from(now)) == (
+        now - timedelta(days=31)
+    )
+
+
 def test_remote_web_binding_requires_direct_tls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(collector, "WEB_HOST", "0.0.0.0")
     monkeypatch.setattr(collector, "WEB_ALLOW_REMOTE", True)

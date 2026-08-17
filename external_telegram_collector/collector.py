@@ -195,6 +195,7 @@ WEB_ASSET_DIR = Path(__file__).resolve().parent / "web"
 EVENT_LIMIT = 200
 RETRY_INITIAL_SECONDS = 5
 RETRY_MAX_SECONDS = 60
+DEFAULT_INITIAL_SYNC_DAYS = 31
 MAX_SYNC_RANGE_DAYS = env_int(
     "TELEGRAM_MAX_SYNC_RANGE_DAYS", 31, minimum=1, maximum=366
 )
@@ -218,9 +219,10 @@ MEDIA_DOWNLOAD_TIMEOUT_SECONDS = env_float(
 )
 
 
-def default_initial_sync_from() -> str:
+def default_initial_sync_from(now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
     return (
-        (datetime.now(timezone.utc) - timedelta(days=30))
+        (current - timedelta(days=DEFAULT_INITIAL_SYNC_DAYS))
         .replace(microsecond=0)
         .isoformat()
     )

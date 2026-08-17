@@ -40,7 +40,7 @@ nats-data/
 minio-data/
 qdrant-data/
 hf-cache/
-collector-data/
+external_telegram_collector/session/
 external_telegram_collector/data/
 
 # Logs
