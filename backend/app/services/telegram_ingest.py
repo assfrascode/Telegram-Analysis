@@ -38,6 +38,7 @@ from app.services.telegram_sync import (
     chat_covers_interval as sync_chat_covers_interval,
     forward_sync_cursor,
     missing_sync_range,
+    next_periodic_sync_at,
     periodic_sync_start,
 )
 
@@ -210,7 +211,11 @@ async def reassign_external_chat_token(
     chat.lease_expires_at = None
     chat.status = TelegramChatStatus.active
     chat.last_error = None
-    chat.next_sync_at = now
+    sync_interval_minutes = getattr(chat, "sync_interval_minutes", 60)
+    chat.next_sync_at = next_periodic_sync_at(
+        sync_interval_minutes if getattr(chat, "last_sync_at", None) else 0,
+        now=now,
+    )
     chat.updated_at = now
     record_sync_terminal(run, "external_push")
     await session.flush()
@@ -267,7 +272,6 @@ async def upsert_external_chat(
         "username": payload.username,
         "chat_type": payload.chat_type,
         "initial_sync_from": ensure_utc(payload.initial_sync_from),
-        "sync_interval_minutes": payload.sync_interval_minutes,
         "status": TelegramChatStatus.active,
         "last_error": None,
         "lease_owner": None,
@@ -278,7 +282,10 @@ async def upsert_external_chat(
         chat = TelegramChat(
             owner_user_id=principal.owner_user_id,
             telegram_chat_id=payload.telegram_chat_id,
-            next_sync_at=now,
+            sync_interval_minutes=payload.sync_interval_minutes,
+            # Registration only makes the chat available. A manual request or
+            # report schedule starts the potentially expensive first sync.
+            next_sync_at=next_periodic_sync_at(0, now=now),
             **values,
         )
         session.add(chat)
@@ -348,8 +355,9 @@ async def claim_next_external_chat(
             chat.last_error = None
             chat.lease_owner = None
             chat.lease_expires_at = None
-            chat.next_sync_at = max(requested_start, now) + timedelta(
-                minutes=chat.sync_interval_minutes
+            chat.next_sync_at = next_periodic_sync_at(
+                chat.sync_interval_minutes,
+                now=max(requested_start, now),
             )
             chat.updated_at = now
             await session.flush()
@@ -732,7 +740,7 @@ async def complete_external_run(
         chat.next_sync_at = (
             now
             if waiting_report_job is not None
-            else now + timedelta(minutes=chat.sync_interval_minutes)
+            else next_periodic_sync_at(chat.sync_interval_minutes, now=now)
         )
     else:
         error = payload.error_message or "External Telegram ingestion failed"
@@ -740,12 +748,15 @@ async def complete_external_run(
         run.error_message = error[:4000]
         chat.status = TelegramChatStatus.error
         chat.last_error = run.error_message
-        retry_after = (
-            timedelta(seconds=payload.retry_after_seconds)
-            if payload.retry_after_seconds
-            else timedelta(minutes=settings.telegram_sync_retry_minutes)
-        )
-        chat.next_sync_at = now + retry_after
+        if chat.sync_interval_minutes <= 0 and run.job_id is None:
+            chat.next_sync_at = next_periodic_sync_at(0)
+        else:
+            retry_after = (
+                timedelta(seconds=payload.retry_after_seconds)
+                if payload.retry_after_seconds
+                else timedelta(minutes=settings.telegram_sync_retry_minutes)
+            )
+            chat.next_sync_at = now + retry_after
 
     chat.lease_owner = None
     chat.lease_expires_at = None

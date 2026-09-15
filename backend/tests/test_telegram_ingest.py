@@ -319,6 +319,108 @@ def test_external_chat_upsert_refuses_backend_pull_conversion() -> None:
     assert chat.ingest_mode == TelegramIngestMode.backend_pull
 
 
+def test_new_external_chat_waits_for_a_manual_or_report_sync(monkeypatch) -> None:
+    now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    payload = TelegramIngestChatUpsertRequest(
+        telegram_chat_id=-10042,
+        title="External channel",
+        chat_type="channel",
+        initial_sync_from=now - timedelta(days=30),
+        sync_interval_minutes=60,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Session:
+        def __init__(self):
+            self.added = None
+
+        async def execute(self, query):
+            return Result()
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+    session = Session()
+
+    chat = asyncio.run(
+        upsert_external_chat(
+            session,
+            principal=IngestPrincipal(token_id=token_id, owner_user_id=owner_id),
+            payload=payload,
+        )
+    )
+
+    assert session.added is chat
+    assert chat.next_sync_at == datetime.max.replace(tzinfo=timezone.utc)
+
+
+def test_external_chat_reregistration_preserves_user_frequency(monkeypatch) -> None:
+    now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    next_sync_at = now + timedelta(days=1)
+    chat = SimpleNamespace(
+        owner_user_id=owner_id,
+        connection_id=None,
+        ingest_token_id=token_id,
+        telegram_chat_id=-10042,
+        ingest_mode=TelegramIngestMode.external_push,
+        access_hash=None,
+        title="Old title",
+        username=None,
+        chat_type="channel",
+        initial_sync_from=now - timedelta(days=30),
+        sync_interval_minutes=1440,
+        status=TelegramChatStatus.active,
+        last_error=None,
+        next_sync_at=next_sync_at,
+        lease_owner=None,
+        lease_expires_at=None,
+        updated_at=now - timedelta(days=1),
+    )
+    payload = TelegramIngestChatUpsertRequest(
+        telegram_chat_id=-10042,
+        title="Updated title",
+        chat_type="channel",
+        initial_sync_from=now - timedelta(days=7),
+        sync_interval_minutes=60,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return chat
+
+    class Session:
+        async def execute(self, query):
+            return Result()
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(telegram_ingest, "utc_now", lambda: now)
+
+    result = asyncio.run(
+        upsert_external_chat(
+            Session(),
+            principal=IngestPrincipal(token_id=token_id, owner_user_id=owner_id),
+            payload=payload,
+        )
+    )
+
+    assert result.sync_interval_minutes == 1440
+    assert result.next_sync_at == next_sync_at
+    assert result.title == "Updated title"
+
+
 def test_snapshot_external_coverage_helper_accepts_existing_coverage() -> None:
     now = datetime.now(timezone.utc)
     job = SimpleNamespace(

@@ -23,10 +23,10 @@ def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
         telegram_chat_id=uuid.uuid4(),
         question_set_id=uuid.uuid4(),
         run_time_local="05:00",
-        timezone="Europe/Berlin",
         rolling_window_days=1,
     )
     assert default_request.allow_partial_telegram_sync is False
+    assert default_request.timezone == "Europe/Berlin"
 
     update_request = TelegramReportScheduleUpdateRequest(allow_partial_telegram_sync=True)
     assert update_request.allow_partial_telegram_sync is True
@@ -49,13 +49,20 @@ def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
             rolling_window_days=1,
         )
 
+    flexible_request = TelegramReportScheduleCreateRequest(
+        telegram_chat_id=uuid.uuid4(),
+        question_set_id=uuid.uuid4(),
+        run_time_local="05:00",
+        rolling_window_days=365,
+    )
+    assert flexible_request.rolling_window_days == 365
+
     with pytest.raises(ValidationError):
         TelegramReportScheduleCreateRequest(
             telegram_chat_id=uuid.uuid4(),
             question_set_id=uuid.uuid4(),
             run_time_local="05:00",
-            timezone="Europe/Berlin",
-            rolling_window_days=2,
+            rolling_window_days=0,
         )
 
 

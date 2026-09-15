@@ -44,6 +44,16 @@
           </button>
         </div>
         <time class="generated-at" datetime="{{ generated_at.isoformat() }}">Generated {{ generated_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
+        {% set report_start_at = job.report_start_at or stats.report_start_at %}
+        {% set report_end_at = job.report_end_at or stats.report_end_at %}
+        {% if report_start_at and report_end_at %}
+        <p class="report-period">
+          Covers
+          <time datetime="{{ report_start_at.isoformat() }}">{{ report_start_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
+          –
+          <time datetime="{{ report_end_at.isoformat() }}">{{ report_end_at.strftime("%b %d, %Y · %H:%M UTC") }}</time>
+        </p>
+        {% endif %}
       </div>
     </header>
 

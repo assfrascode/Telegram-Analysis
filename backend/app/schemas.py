@@ -2,12 +2,12 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Literal, Self
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-ALLOWED_REPORT_WINDOW_DAYS = {1, 7, 14, 30}
+ALLOWED_TELEGRAM_SYNC_INTERVAL_MINUTES = {0, 15, 60, 360, 1440}
+EXTERNAL_COLLECTOR_SYNC_INTERVAL_MINUTES = {15, 60, 360, 1440}
 MAX_TELEGRAM_REPORT_WINDOW = timedelta(days=30)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -234,8 +234,8 @@ class TelegramChatCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_interval(self) -> Self:
-        if self.sync_interval_minutes not in {15, 60, 360, 1440}:
-            raise ValueError("sync_interval_minutes must be one of 15, 60, 360, 1440")
+        if self.sync_interval_minutes not in ALLOWED_TELEGRAM_SYNC_INTERVAL_MINUTES:
+            raise ValueError("sync_interval_minutes must be one of 0, 15, 60, 360, 1440")
         return self
 
 
@@ -247,9 +247,9 @@ class TelegramChatUpdateRequest(BaseModel):
     def validate_interval(self) -> Self:
         if (
             self.sync_interval_minutes is not None
-            and self.sync_interval_minutes not in {15, 60, 360, 1440}
+            and self.sync_interval_minutes not in ALLOWED_TELEGRAM_SYNC_INTERVAL_MINUTES
         ):
-            raise ValueError("sync_interval_minutes must be one of 15, 60, 360, 1440")
+            raise ValueError("sync_interval_minutes must be one of 0, 15, 60, 360, 1440")
         return self
 
 
@@ -275,54 +275,19 @@ class TelegramReportScheduleCreateRequest(BaseModel):
     telegram_chat_id: uuid.UUID
     question_set_id: uuid.UUID
     run_time_local: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    timezone: str = Field(min_length=1, max_length=128)
-    rolling_window_days: int
+    timezone: Literal["Europe/Berlin"] = "Europe/Berlin"
+    rolling_window_days: int = Field(ge=1)
     enabled: bool = True
     allow_partial_telegram_sync: bool = False
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
-
-    @field_validator("rolling_window_days")
-    @classmethod
-    def validate_window(cls, value: int) -> int:
-        if value not in ALLOWED_REPORT_WINDOW_DAYS:
-            raise ValueError("rolling_window_days must be one of 1, 7, 14, 30")
-        return value
-
 
 class TelegramReportScheduleUpdateRequest(BaseModel):
     telegram_chat_id: uuid.UUID | None = None
     question_set_id: uuid.UUID | None = None
     run_time_local: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    timezone: str | None = Field(default=None, min_length=1, max_length=128)
-    rolling_window_days: int | None = None
+    timezone: Literal["Europe/Berlin"] | None = None
+    rolling_window_days: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
     allow_partial_telegram_sync: bool | None = None
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str | None) -> str | None:
-        if value is None:
-            return value
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValueError("timezone must be a valid IANA timezone") from exc
-        return value
-
-    @field_validator("rolling_window_days")
-    @classmethod
-    def validate_window(cls, value: int | None) -> int | None:
-        if value is not None and value not in ALLOWED_REPORT_WINDOW_DAYS:
-            raise ValueError("rolling_window_days must be one of 1, 7, 14, 30")
-        return value
 
 
 class TelegramReportScheduleResponse(BaseModel):
@@ -371,7 +336,7 @@ class TelegramIngestChatUpsertRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_interval(self) -> Self:
-        if self.sync_interval_minutes not in {15, 60, 360, 1440}:
+        if self.sync_interval_minutes not in EXTERNAL_COLLECTOR_SYNC_INTERVAL_MINUTES:
             raise ValueError("sync_interval_minutes must be one of 15, 60, 360, 1440")
         return self
 

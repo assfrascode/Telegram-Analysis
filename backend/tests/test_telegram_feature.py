@@ -103,6 +103,15 @@ def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
 
 
 def test_chat_sync_interval_is_limited_to_supported_presets() -> None:
+    manual_only = TelegramChatCreateRequest(
+        telegram_chat_id=42,
+        title="Channel",
+        chat_type="channel",
+        initial_sync_from=datetime.now(timezone.utc),
+        sync_interval_minutes=0,
+    )
+    assert manual_only.sync_interval_minutes == 0
+
     with pytest.raises(ValidationError):
         TelegramChatCreateRequest(
             telegram_chat_id=42,

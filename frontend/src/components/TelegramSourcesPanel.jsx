@@ -73,16 +73,27 @@ function chatStatusText(status) {
   return "Active";
 }
 
-function browserTimezone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
+const REPORT_TIMEZONE = "Europe/Berlin";
 
 function rollingWindowLabel(days) {
   return Number(days) === 1 ? "1 day" : `${days} days`;
+}
+
+function syncIntervalValue(chat) {
+  return String(chat.sync_interval_minutes ?? 60);
+}
+
+function nextSyncLabel(chat) {
+  if (chat.status === "syncing" || chat.status === "archived") return "-";
+  if (chat.sync_interval_minutes === 0) return "Manual only";
+  if (
+    chat.ingest_mode === "external_push"
+    && !chat.last_sync_at
+    && new Date(chat.next_sync_at).getUTCFullYear() === 9999
+  ) {
+    return "Awaiting first sync";
+  }
+  return formatDate(chat.next_sync_at);
 }
 
 function scheduleIntervalLabel(days) {
@@ -364,6 +375,7 @@ function AddChatSection({
               <option value={60}>Hourly</option>
               <option value={360}>Every 6 hours</option>
               <option value={1440}>Daily</option>
+              <option value={0}>Automatic sync off</option>
             </select>
           </label>
           <button className="button button-primary" type="button" onClick={onAddChat} disabled={busy}>
@@ -382,9 +394,23 @@ function AddChatSection({
 
 function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }) {
   const [showArchived, setShowArchived] = useState(false);
+  const [pendingIntervals, setPendingIntervals] = useState({});
   const archivedCount = chats.filter((chat) => chat.status === "archived").length;
   const activeCount = chats.length - archivedCount;
   const visibleChats = showArchived ? chats : chats.filter((chat) => chat.status !== "archived");
+
+  const updateInterval = async (chatId, value) => {
+    setPendingIntervals((current) => ({ ...current, [chatId]: value }));
+    try {
+      await onUpdate(chatId, { sync_interval_minutes: Number(value) });
+    } finally {
+      setPendingIntervals((current) => {
+        const next = { ...current };
+        delete next[chatId];
+        return next;
+      });
+    }
+  };
 
   return (
     <section className="surface telegram-card collected-chats-card">
@@ -411,8 +437,7 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
           <table className="telegram-table">
             <thead>
               <tr>
-                <th>Chat</th>
-                <th>Health</th>
+                <th><span className="sr-only">Health</span>Chat</th>
                 <th>Synchronization</th>
                 <th>Frequency</th>
                 <th><span className="sr-only">Actions</span></th>
@@ -429,7 +454,15 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
                   <tr key={chat.id} className={chat.status === "archived" ? "is-archived" : ""}>
                     <td>
                       <div className="chat-identity">
-                        <span className="chat-avatar"><TelegramIcon name="chat" /></span>
+                        <span className="chat-avatar chat-avatar-with-health">
+                          <TelegramIcon name="chat" />
+                          <span
+                            className={`chat-health-dot status-dot status-dot-${needsAttention ? "error" : chat.status}`}
+                            role="img"
+                            aria-label={`Health: ${displayStatus}`}
+                            title={displayStatus}
+                          />
+                        </span>
                         <div>
                           <strong title={chat.title}>{chat.title}</strong>
                           <span className="chat-meta">
@@ -442,23 +475,17 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
                       {chat.last_error && <span className="table-error">{chat.last_error}</span>}
                     </td>
                     <td>
-                      <span className={`table-status table-status-${needsAttention ? "error" : chat.status}`}>
-                        <span className={`status-dot status-dot-${needsAttention ? "error" : chat.status}`} />
-                        {displayStatus}
-                      </span>
-                    </td>
-                    <td>
                       <span className="sync-date"><strong>Last</strong>{formatDate(chat.last_sync_at)}</span>
                       <span className="sync-date sync-date-secondary">
                         <strong>Next</strong>
-                        {chat.status === "syncing" || chat.status === "archived" ? "-" : formatDate(chat.next_sync_at)}
+                        {nextSyncLabel(chat)}
                       </span>
                     </td>
                     <td>
                       <select
                         className="table-select"
-                        value={chat.sync_interval_minutes}
-                        onChange={(event) => onUpdate(chat.id, { sync_interval_minutes: Number(event.target.value) })}
+                        value={pendingIntervals[chat.id] ?? syncIntervalValue(chat)}
+                        onChange={(event) => updateInterval(chat.id, event.target.value)}
                         disabled={busy || chat.status === "archived"}
                         aria-label={`Sync interval for ${chat.title}`}
                       >
@@ -466,6 +493,7 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
                         <option value={60}>Hourly</option>
                         <option value={360}>Every 6 hours</option>
                         <option value={1440}>Daily</option>
+                        <option value={0}>Automatic sync off</option>
                       </select>
                     </td>
                     <td>
@@ -527,8 +555,7 @@ function ScheduledReportsSection({
   const [chatId, setChatId] = useState("");
   const [questionSetId, setQuestionSetId] = useState("");
   const [runTime, setRunTime] = useState("05:00");
-  const [timezone, setTimezone] = useState(browserTimezone);
-  const [rollingWindowDays, setRollingWindowDays] = useState(1);
+  const [rollingWindowDays, setRollingWindowDays] = useState("1");
   const [enabled, setEnabled] = useState(true);
   const [allowPartialTelegramSync, setAllowPartialTelegramSync] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -552,8 +579,7 @@ function ScheduledReportsSection({
     setChatId(activeChats[0]?.id || "");
     setQuestionSetId(questionSets[0]?.id || "");
     setRunTime("05:00");
-    setTimezone(browserTimezone());
-    setRollingWindowDays(1);
+    setRollingWindowDays("1");
     setEnabled(true);
     setAllowPartialTelegramSync(false);
     setFormOpen(false);
@@ -564,8 +590,7 @@ function ScheduledReportsSection({
     setChatId(activeChats[0]?.id || "");
     setQuestionSetId(questionSets[0]?.id || "");
     setRunTime("05:00");
-    setTimezone(browserTimezone());
-    setRollingWindowDays(1);
+    setRollingWindowDays("1");
     setEnabled(true);
     setAllowPartialTelegramSync(false);
     setFormOpen(true);
@@ -576,8 +601,7 @@ function ScheduledReportsSection({
     setChatId(schedule.telegram_chat_id);
     setQuestionSetId(schedule.question_set_id);
     setRunTime(schedule.run_time_local);
-    setTimezone(schedule.timezone);
-    setRollingWindowDays(schedule.rolling_window_days);
+    setRollingWindowDays(String(schedule.rolling_window_days));
     setEnabled(schedule.enabled);
     setAllowPartialTelegramSync(Boolean(schedule.allow_partial_telegram_sync));
     setFormOpen(true);
@@ -588,7 +612,7 @@ function ScheduledReportsSection({
       telegram_chat_id: chatId,
       question_set_id: questionSetId,
       run_time_local: runTime,
-      timezone,
+      timezone: REPORT_TIMEZONE,
       rolling_window_days: Number(rollingWindowDays),
       enabled,
       allow_partial_telegram_sync: allowPartialTelegramSync,
@@ -598,7 +622,11 @@ function ScheduledReportsSection({
 
   const chatTitle = (id) => chats.find((chat) => chat.id === id)?.title || "Telegram chat";
   const questionSetName = (id) => questionSets.find((set) => set.id === id)?.name || "Question set";
-  const formReady = Boolean(activeChats.length && questionSets.length && chatId && questionSetId && runTime && timezone);
+  const parsedWindowDays = Number(rollingWindowDays);
+  const validWindowDays = Number.isSafeInteger(parsedWindowDays) && parsedWindowDays >= 1;
+  const formReady = Boolean(
+    activeChats.length && questionSets.length && chatId && questionSetId && runTime && validWindowDays
+  );
 
   return (
     <section className="surface telegram-card scheduled-reports-card">
@@ -675,18 +703,22 @@ function ScheduledReportsSection({
                 <span>Run time</span>
                 <input type="time" value={runTime} onChange={(event) => setRunTime(event.target.value)} />
               </label>
-              <label className="field">
-                <FieldLabel help="The report runs at this local time in the selected timezone.">Timezone</FieldLabel>
-                <input value={timezone} onChange={(event) => setTimezone(event.target.value)} />
-              </label>
               <label className="field schedule-window-field">
                 <FieldLabel help="This controls both how often the report runs and how far back it looks.">Frequency and range</FieldLabel>
-                <select value={rollingWindowDays} onChange={(event) => setRollingWindowDays(Number(event.target.value))}>
-                  <option value={1}>Daily · previous day</option>
-                  <option value={7}>Every 7 days · previous 7 days</option>
-                  <option value={14}>Every 14 days · previous 14 days</option>
-                  <option value={30}>Every 30 days · previous 30 days</option>
-                </select>
+                <div className="schedule-days-input">
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={rollingWindowDays}
+                    onChange={(event) => setRollingWindowDays(event.target.value)}
+                    aria-describedby="schedule-days-hint"
+                  />
+                  <span>days</span>
+                </div>
+                <small id="schedule-days-hint">
+                  Runs every {validWindowDays ? rollingWindowLabel(parsedWindowDays) : "chosen number of days"} and includes the same period.
+                </small>
               </label>
             </fieldset>
 
@@ -741,7 +773,7 @@ function ScheduledReportsSection({
                     <span>{questionSetName(schedule.question_set_id)}</span>
                     {schedule.last_error && <span className="table-error">{schedule.last_error}</span>}
                   </td>
-                  <td>{schedule.run_time_local} <span className="muted-inline">{schedule.timezone}</span></td>
+                  <td>{schedule.run_time_local}</td>
                   <td>
                     <span>{scheduleIntervalLabel(schedule.rolling_window_days)}</span>
                     {schedule.allow_partial_telegram_sync && (

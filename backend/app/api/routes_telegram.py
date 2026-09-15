@@ -46,6 +46,7 @@ from app.services.telegram_accounts import (
 )
 from app.services.telegram_chat_access import ensure_chat_sync_source_available
 from app.services.auth_rate_limit import enforce_auth_rate_limit
+from app.services.telegram_sync import next_periodic_sync_at
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
@@ -292,7 +293,11 @@ async def create_chat(
         existing.initial_sync_from = payload.initial_sync_from
         existing.sync_interval_minutes = payload.sync_interval_minutes
         existing.status = TelegramChatStatus.active
-        existing.next_sync_at = utc_now()
+        existing.next_sync_at = (
+            utc_now()
+            if payload.sync_interval_minutes > 0
+            else next_periodic_sync_at(payload.sync_interval_minutes)
+        )
         existing.updated_at = utc_now()
         chat = existing
     else:
@@ -307,7 +312,11 @@ async def create_chat(
             ingest_mode=TelegramIngestMode.backend_pull,
             initial_sync_from=payload.initial_sync_from,
             sync_interval_minutes=payload.sync_interval_minutes,
-            next_sync_at=utc_now(),
+            next_sync_at=(
+                utc_now()
+                if payload.sync_interval_minutes > 0
+                else next_periodic_sync_at(payload.sync_interval_minutes)
+            ),
         )
         session.add(chat)
     await session.commit()
@@ -325,11 +334,19 @@ async def update_chat(
     chat = await owned_chat(session, user.id, chat_id)
     if payload.sync_interval_minutes is not None:
         chat.sync_interval_minutes = payload.sync_interval_minutes
-        chat.next_sync_at = utc_now()
+        chat.next_sync_at = (
+            utc_now()
+            if payload.sync_interval_minutes > 0
+            else next_periodic_sync_at(payload.sync_interval_minutes)
+        )
     if payload.archived is not None:
         chat.status = TelegramChatStatus.archived if payload.archived else TelegramChatStatus.active
         if not payload.archived:
-            chat.next_sync_at = utc_now()
+            chat.next_sync_at = (
+                utc_now()
+                if chat.sync_interval_minutes > 0
+                else next_periodic_sync_at(chat.sync_interval_minutes)
+            )
     chat.updated_at = utc_now()
     await session.commit()
     return chat_response(chat)

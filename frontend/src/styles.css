@@ -2560,12 +2560,39 @@ select:focus {
 
 .schedule-form-timing {
   display: grid;
-  grid-template-columns: 0.75fr 1.25fr;
+  grid-template-columns: minmax(115px, 0.65fr) minmax(180px, 1.35fr);
   gap: 0 0.7rem;
 }
 
-.schedule-window-field {
-  grid-column: 1 / -1;
+.schedule-days-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.schedule-days-input input {
+  border-radius: 8px 0 0 8px;
+}
+
+.schedule-days-input span {
+  display: grid;
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.schedule-window-field small {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.67rem;
 }
 
 .schedule-form-options {
@@ -2607,13 +2634,6 @@ select:focus {
   flex-wrap: wrap;
 }
 
-.muted-inline {
-  display: inline;
-  margin-left: 0.25rem;
-  color: var(--muted);
-  font-size: 0.68rem;
-}
-
 .partial-badge {
   display: table;
   margin-top: 0.3rem;
@@ -2639,6 +2659,10 @@ select:focus {
   overflow: auto;
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
+}
+
+.collected-chats-card .telegram-table-wrap {
+  max-height: min(520px, 55vh);
 }
 
 .telegram-table {
@@ -4997,4 +5021,82 @@ summary:focus-visible {
   .tutorial-overview-flow {
     justify-content: flex-start;
   }
+}
+
+/* Requested status, authentication, and table refinements */
+
+.analysis-list-item-success { background: rgba(67, 201, 149, 0.045); }
+.analysis-list-item-warning { background: rgba(225, 174, 84, 0.05); }
+.analysis-list-item-danger { background: rgba(239, 107, 117, 0.05); }
+
+.analysis-list-item-success.is-selected {
+  background: linear-gradient(105deg, rgba(67, 201, 149, 0.13), rgba(91, 140, 255, 0.07));
+}
+
+.analysis-list-item-warning.is-selected {
+  background: linear-gradient(105deg, rgba(225, 174, 84, 0.14), rgba(91, 140, 255, 0.07));
+}
+
+.analysis-list-item-danger.is-selected {
+  background: linear-gradient(105deg, rgba(239, 107, 117, 0.13), rgba(91, 140, 255, 0.07));
+}
+
+.collected-chats-card .telegram-table th:nth-child(1) { width: 45%; }
+.collected-chats-card .telegram-table th:nth-child(2) { width: 24%; }
+.collected-chats-card .telegram-table th:nth-child(3) { width: 14%; }
+.collected-chats-card .telegram-table th:nth-child(4) { width: 17%; }
+
+.chat-avatar-with-health { position: relative; }
+
+.chat-health-dot {
+  position: absolute;
+  right: -0.12rem;
+  bottom: -0.12rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border: 2px solid #141c25;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.monitor-metric > .monitor-metric-icon {
+  display: grid;
+  place-items: center;
+}
+
+.monitor-metric-icon svg { display: block; }
+
+.auth-message-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem 0.8rem;
+  border: 1px solid rgba(239, 107, 117, 0.32);
+  border-radius: 10px;
+  color: #ffd5d9;
+  background: rgba(239, 107, 117, 0.08);
+}
+
+.auth-message-error > span {
+  display: grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: #1a0d10;
+  background: var(--red);
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.auth-message-error strong,
+.auth-message-error p { display: block; }
+
+.auth-message-error strong { font-size: 0.78rem; }
+
+.auth-message-error p {
+  margin: 0.12rem 0 0;
+  color: #f6bdc2;
+  font-size: 0.76rem;
+  line-height: 1.4;
 }

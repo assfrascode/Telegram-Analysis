@@ -22,6 +22,8 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "Scheduled reports" in panel
     assert "/telegram/report-schedules" in panel
     assert "allow_partial_telegram_sync" in panel
+    assert "Automatic sync off" in panel
+    assert 'type="number"' in panel
     assert "Scheduled:" in (root / "components/AppSidebar.jsx").read_text()
     assert 'activeView === "telegram"' in app
     assert 'request("/jobs/telegram"' in app

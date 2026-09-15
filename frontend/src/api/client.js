@@ -29,6 +29,35 @@ export function authHeaders(token, extra = {}) {
   };
 }
 
+export class ApiError extends Error {
+  constructor(message, { status = 0, detail = null } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function responseError(response) {
+  const raw = await response.text();
+  let detail = raw.trim();
+
+  if (detail) {
+    try {
+      const parsed = JSON.parse(detail);
+      if (typeof parsed?.detail === "string") detail = parsed.detail;
+      else if (Array.isArray(parsed?.detail)) {
+        detail = parsed.detail.map((item) => item?.msg).filter(Boolean).join(" ");
+      }
+    } catch {
+      // Plain-text API errors are already suitable for display.
+    }
+  }
+
+  const message = detail || response.statusText || "The request could not be completed";
+  return new ApiError(message, { status: response.status, detail });
+}
+
 export async function apiJson(path, { token, method = "GET", body, headers = {} } = {}) {
   const requestHeaders = authHeaders(token, { "Content-Type": "application/json", ...headers });
   const response = await fetch(buildApiUrl(path), {
@@ -38,8 +67,7 @@ export async function apiJson(path, { token, method = "GET", body, headers = {} 
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`${response.status} ${detail}`);
+    throw await responseError(response);
   }
 
   if (response.status === 204) return null;
@@ -48,7 +76,7 @@ export async function apiJson(path, { token, method = "GET", body, headers = {} 
 
 export async function downloadBlob(path, { token } = {}) {
   const response = await fetch(buildApiUrl(path), { headers: authHeaders(token) });
-  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+  if (!response.ok) throw await responseError(response);
   const contentDisposition = response.headers.get("Content-Disposition") || "";
   const encodedMatch = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
   const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);

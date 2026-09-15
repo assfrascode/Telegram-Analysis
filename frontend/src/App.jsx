@@ -30,6 +30,16 @@ function requestErrorMessage(reason) {
   return reason?.message || String(reason);
 }
 
+function authenticationErrorMessage(action, error) {
+  if (error?.status === 429) return "Too many attempts. Please wait a moment and try again.";
+  if (action === "login" && error?.status === 401) return "The email or password is incorrect.";
+  if (action === "register" && error?.status === 409) return "An account with this email already exists. Try signing in instead.";
+  if (action === "register" && error?.status === 403) return error.message || "New account registration is currently unavailable.";
+  if (error?.status === 422) return "Please check the email and password fields and try again.";
+  if (!error?.status) return "We couldn’t reach the server. Check your connection and try again.";
+  return error?.message || "Something went wrong. Please try again.";
+}
+
 function saveDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -120,6 +130,7 @@ export default function App() {
   const [activeView, setActiveView] = useState(() => (sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "analysis"));
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [authError, setAuthError] = useState("");
   const [capacity, setCapacity] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [currentJob, setCurrentJob] = useState(null);
@@ -149,6 +160,7 @@ export default function App() {
 
   const eventIdsRef = useRef(new Set());
   const lastEventIdRef = useRef(0);
+  const sessionExpiryHandledRef = useRef(false);
 
   const showToast = useCallback((message, kind = "info") => {
     setToast({ message, kind, createdAt: Date.now() });
@@ -160,7 +172,32 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const request = useCallback((path, config = {}) => apiJson(path, { ...config, token }), [token]);
+  const expireSession = useCallback(() => {
+    if (sessionExpiryHandledRef.current) return;
+    sessionExpiryHandledRef.current = true;
+    setToken(null);
+    setCurrentJobId(null);
+    setCurrentJob(null);
+    setJobs([]);
+    setCapacity(null);
+    setTelegramConnection(null);
+    setTelegramChats([]);
+    setTelegramReportSchedules([]);
+    setToast(null);
+    sessionStorage.removeItem(STORAGE_TOKEN);
+    sessionStorage.removeItem(STORAGE_JOB);
+    setActiveView("analysis");
+    setAuthError("Your session has expired. Please sign in again to continue.");
+  }, []);
+
+  const request = useCallback(async (path, config = {}) => {
+    try {
+      return await apiJson(path, { ...config, token });
+    } catch (error) {
+      if (error?.status === 401) expireSession();
+      throw error;
+    }
+  }, [expireSession, token]);
 
   const appendEvent = useCallback((event) => {
     const normalized = normalizeEvent(event);
@@ -337,14 +374,16 @@ export default function App() {
 
   const login = async ({ email, password }) => {
     setBusy(true);
+    setAuthError("");
     try {
       const data = await apiJson("/auth/login", { method: "POST", body: { email, password } });
+      sessionExpiryHandledRef.current = false;
       setToken(data.access_token);
       sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
       addLocalLog("Signed in");
       setActiveView(currentJobId ? "monitor" : "analysis");
     } catch (error) {
-      showToast("Sign-in failed", "error");
+      setAuthError(authenticationErrorMessage("login", error));
       addLocalLog(`Sign-in failed: ${error.message}`, "error");
     } finally {
       setBusy(false);
@@ -353,15 +392,17 @@ export default function App() {
 
   const register = async ({ email, password }) => {
     setBusy(true);
+    setAuthError("");
     try {
       const data = await apiJson("/auth/register", { method: "POST", body: { email, password } });
+      sessionExpiryHandledRef.current = false;
       setToken(data.access_token);
       sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
       addLocalLog("Account created");
       showToast("Account created");
       setActiveView(currentJobId ? "monitor" : "analysis");
     } catch (error) {
-      showToast("Registration failed", "error");
+      setAuthError(authenticationErrorMessage("register", error));
       addLocalLog(`Registration failed: ${error.message}`, "error");
     } finally {
       setBusy(false);
@@ -369,6 +410,8 @@ export default function App() {
   };
 
   const logout = () => {
+    sessionExpiryHandledRef.current = false;
+    setAuthError("");
     setToken(null);
     setCurrentJobId(null);
     setCurrentJob(null);
@@ -595,6 +638,10 @@ export default function App() {
       saveDownload(blob, filename);
       addLocalLog(includeOriginal ? "Complete chat download started" : "Report download started");
     } catch (error) {
+      if (error?.status === 401) {
+        expireSession();
+        return;
+      }
       const message = includeOriginal ? "Could not download the complete chat" : "Could not download reports";
       showToast(`${message}: ${error.message}`, "error");
       addLocalLog(`${message}: ${error.message}`, "error");
@@ -610,7 +657,13 @@ export default function App() {
   if (!isLoggedIn) {
     return (
       <>
-        <LoginView onLogin={login} onRegister={register} busy={busy} />
+        <LoginView
+          onLogin={login}
+          onRegister={register}
+          busy={busy}
+          errorMessage={authError}
+          onDismissError={() => setAuthError("")}
+        />
         <Toast toast={toast} />
       </>
     );

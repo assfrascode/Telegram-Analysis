@@ -19,7 +19,12 @@ from app.models import (
     TelegramSyncStatus,
 )
 from app.services.telegram_ingest import ensure_utc, report_job_needing_coverage
-from app.services.telegram_sync import missing_sync_range, periodic_sync_start, synchronize_chat
+from app.services.telegram_sync import (
+    missing_sync_range,
+    next_periodic_sync_at,
+    periodic_sync_start,
+    synchronize_chat,
+)
 from app.observability.context import correlation_context
 from app.observability.logging import configure_logging
 from app.observability.metrics import start_metrics_server
@@ -203,8 +208,10 @@ async def record_collection_failure(chat_id: uuid.UUID, exc: Exception) -> None:
 
         chat.status = TelegramChatStatus.error
         chat.last_error = error_message[:4000]
-        chat.next_sync_at = now + timedelta(
-            minutes=settings.telegram_sync_retry_minutes
+        sync_interval_minutes = getattr(chat, "sync_interval_minutes", 60)
+        chat.next_sync_at = next_periodic_sync_at(
+            settings.telegram_sync_retry_minutes if sync_interval_minutes > 0 else 0,
+            now=now,
         )
         chat.lease_owner = None
         chat.lease_expires_at = None

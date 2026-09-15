@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-export function LoginView({ onLogin, onRegister, busy }) {
+export function LoginView({ onLogin, onRegister, busy, errorMessage, onDismissError }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -14,6 +14,7 @@ export function LoginView({ onLogin, onRegister, busy }) {
     setPassword("");
     setConfirmPassword("");
     setMessage("");
+    onDismissError?.();
   };
 
   const submit = (event) => {
@@ -39,6 +40,7 @@ export function LoginView({ onLogin, onRegister, busy }) {
     : isRegistering
       ? "Create account"
       : "Sign in";
+  const visibleMessage = message || errorMessage;
 
   return (
     <main className="login-view">
@@ -110,7 +112,10 @@ export function LoginView({ onLogin, onRegister, busy }) {
               autoComplete="username"
               placeholder="you@example.com"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                onDismissError?.();
+              }}
             />
           </label>
           <label className="field">
@@ -120,7 +125,10 @@ export function LoginView({ onLogin, onRegister, busy }) {
               autoComplete={isRegistering ? "new-password" : "current-password"}
               placeholder="Enter your password"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                onDismissError?.();
+              }}
             />
           </label>
           {isRegistering ? (
@@ -135,7 +143,12 @@ export function LoginView({ onLogin, onRegister, busy }) {
               />
             </label>
           ) : null}
-          {message ? <p className="auth-message auth-message-error" role="alert">{message}</p> : null}
+          {visibleMessage ? (
+            <div className="auth-message auth-message-error" role="alert">
+              <span aria-hidden="true">!</span>
+              <div><strong>We couldn’t continue</strong><p>{visibleMessage}</p></div>
+            </div>
+          ) : null}
           <button className="button button-primary button-full login-submit" type="submit" disabled={busy}>
             {busy && <span className="button-spinner" aria-hidden="true" />}
             {primaryLabel}

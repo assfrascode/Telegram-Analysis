@@ -643,7 +643,18 @@ class ReportWorker(Worker):
         return {row.message_id: row for row in rows if row.translated_text.strip()}
 
     async def _load_stats(self, session: AsyncSession, job: Job) -> dict[str, Any]:
-        messages_total = await self._count(session, select(func.count()).select_from(TelegramMessage).where(TelegramMessage.job_id == job.id))
+        message_stats = (
+            await session.execute(
+                select(
+                    func.count(),
+                    func.min(TelegramMessage.timestamp),
+                    func.max(TelegramMessage.timestamp),
+                ).where(TelegramMessage.job_id == job.id)
+            )
+        ).one()
+        messages_total = int(message_stats[0] or 0)
+        report_start_at = job.report_start_at or message_stats[1]
+        report_end_at = job.report_end_at or message_stats[2]
         chunks_total = await self._count(session, select(func.count()).select_from(MessageChunk).where(MessageChunk.job_id == job.id))
         questions_total = await self._count(session, select(func.count()).select_from(Question).where(Question.job_id == job.id))
         media_total = await self._count(session, select(func.count()).select_from(TelegramMedia).where(TelegramMedia.job_id == job.id))
@@ -677,6 +688,8 @@ class ReportWorker(Worker):
         )
         return {
             "messages_total": messages_total,
+            "report_start_at": report_start_at,
+            "report_end_at": report_end_at,
             "chunks_total": chunks_total,
             "questions_total": questions_total,
             "media_total": media_total,

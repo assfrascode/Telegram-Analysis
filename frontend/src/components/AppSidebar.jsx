@@ -72,9 +72,12 @@ function AnalysisList({ jobs, chats, currentJobId, onSelectJob }) {
     <div className="analysis-list">
       {jobs.map((job) => {
         const label = statusLabel(job.status);
+        const tone = job.status === "completed"
+          ? "success"
+          : ["failed", "cancelled"].includes(job.status) ? "danger" : "warning";
         return (
           <button
-            className={`analysis-list-item status-border-${job.status}${job.id === currentJobId ? " is-selected" : ""}`}
+            className={`analysis-list-item analysis-list-item-${tone} status-border-${job.status}${job.id === currentJobId ? " is-selected" : ""}`}
             key={job.id}
             type="button"
             onClick={() => onSelectJob(job.id)}

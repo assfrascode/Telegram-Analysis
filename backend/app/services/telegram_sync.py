@@ -42,6 +42,7 @@ from app.services.telegram_accounts import connected_client
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+SYNC_DISABLED_UNTIL = datetime.max.replace(tzinfo=timezone.utc)
 
 
 class TelegramSyncError(RuntimeError):
@@ -56,6 +57,13 @@ def ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def next_periodic_sync_at(sync_interval_minutes: int, *, now: datetime | None = None) -> datetime:
+    """Return the next automatic run, or a durable sentinel for manual-only chats."""
+    if sync_interval_minutes <= 0:
+        return SYNC_DISABLED_UNTIL
+    return ensure_utc(now or utc_now()) + timedelta(minutes=sync_interval_minutes)
 
 
 def chat_covers_interval(
@@ -515,7 +523,7 @@ async def synchronize_chat(
                 getattr(chat, "last_collected_message_id", None) or highest_message_id,
                 highest_message_id,
             )
-        chat.next_sync_at = now + timedelta(minutes=chat.sync_interval_minutes)
+        chat.next_sync_at = next_periodic_sync_at(chat.sync_interval_minutes, now=now)
         chat.coverage_start = min(
             [value for value in (chat.coverage_start, requested_start) if value is not None]
         )
@@ -533,7 +541,11 @@ async def synchronize_chat(
         run.completed_at = utc_now()
         chat.status = TelegramChatStatus.error
         chat.last_error = run.error_message
-        chat.next_sync_at = utc_now() + timedelta(seconds=exc.seconds)
+        chat.next_sync_at = (
+            utc_now() + timedelta(seconds=exc.seconds)
+            if chat.sync_interval_minutes > 0
+            else SYNC_DISABLED_UNTIL
+        )
         chat.lease_owner = None
         chat.lease_expires_at = None
         await session.commit()
@@ -557,8 +569,8 @@ async def synchronize_chat(
         run.completed_at = utc_now()
         chat.status = TelegramChatStatus.error
         chat.last_error = run.error_message
-        chat.next_sync_at = utc_now() + timedelta(
-            minutes=settings.telegram_sync_retry_minutes
+        chat.next_sync_at = next_periodic_sync_at(
+            settings.telegram_sync_retry_minutes if chat.sync_interval_minutes > 0 else 0
         )
         chat.lease_owner = None
         chat.lease_expires_at = None

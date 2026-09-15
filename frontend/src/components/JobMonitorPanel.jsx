@@ -145,6 +145,9 @@ export function JobMonitorPanel({
             </div>
             <div className="progressbar"><div style={{ width: `${percent}%` }} /></div>
             <div className="monitor-progress-dates">
+              {currentJob.report_start_at && currentJob.report_end_at && (
+                <span>Report period {formatDate(currentJob.report_start_at)} – {formatDate(currentJob.report_end_at)}</span>
+              )}
               <span>Started {formatDate(currentJob.created_at)}</span>
               {currentJob.completed_at && <span>Completed {formatDate(currentJob.completed_at)}</span>}
             </div>
