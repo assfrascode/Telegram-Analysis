@@ -1,13 +1,18 @@
+import json
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from app.services import report_bundle
 from app.services.report_bundle import (
+    CollectedExportMedia,
     ReportBundleConflictError,
+    ReportBundleError,
     append_report_to_archive,
+    build_collected_chat_bundle,
     build_report_bundle,
     remove_temp_file,
 )
@@ -155,3 +160,84 @@ def test_build_bundle_keeps_stored_upload_unchanged_and_cleans_report_temp(
 
     remove_temp_file(str(bundle_path))
     assert not bundle_path.exists()
+
+
+def test_collected_bundle_recreates_json_media_and_report(tmp_path: Path) -> None:
+    report_bytes = _zip_bytes(
+        tmp_path,
+        "generated-report.zip",
+        {"report/index.html": "main", "report/questions/q_001.html": "sub"},
+    )
+    client = _FakeMinio({"report": report_bytes, "media/photo.jpg": b"photo-bytes"})
+
+    bundle_path = Path(
+        build_collected_chat_bundle(
+            client=client,
+            bucket="bucket",
+            report_object_key="report",
+            chat_title="Collected chat",
+            chat_type="channel",
+            telegram_chat_id=1234,
+            messages=[
+                {
+                    "telegram_message_id": 7,
+                    "timestamp": datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
+                    "sender_id": "user1",
+                    "sender_name": "Alice",
+                    "message_type": "message",
+                    "text": "hello",
+                    "reactions": [],
+                }
+            ],
+            media=[
+                CollectedExportMedia(
+                    message_id=7,
+                    path="telegram/media-id/photo.jpg",
+                    object_key="media/photo.jpg",
+                    media_type="image",
+                    mime_type="image/jpeg",
+                )
+            ],
+        )
+    )
+
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            assert set(archive.namelist()) == {
+                "result.json",
+                "telegram/media-id/photo.jpg",
+                "report/index.html",
+                "report/questions/q_001.html",
+            }
+            export = json.loads(archive.read("result.json"))
+            assert export["name"] == "Collected chat"
+            assert export["messages"][0]["photo"] == "telegram/media-id/photo.jpg"
+            assert archive.read("telegram/media-id/photo.jpg") == b"photo-bytes"
+    finally:
+        remove_temp_file(str(bundle_path))
+
+
+def test_collected_bundle_rejects_unsafe_media_path(tmp_path: Path) -> None:
+    report_bytes = _zip_bytes(
+        tmp_path, "generated-report.zip", {"report/index.html": "main"}
+    )
+    client = _FakeMinio({"report": report_bytes})
+
+    with pytest.raises(ReportBundleError, match="unsafe.*path|not allowed"):
+        build_collected_chat_bundle(
+            client=client,
+            bucket="bucket",
+            report_object_key="report",
+            chat_title="Chat",
+            chat_type="group",
+            telegram_chat_id=1,
+            messages=[],
+            media=[
+                CollectedExportMedia(
+                    message_id=1,
+                    path="../secret",
+                    object_key=None,
+                    media_type="document",
+                )
+            ],
+        )

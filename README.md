@@ -24,7 +24,7 @@ See [TODO.md](TODO.md) for the prioritized project backlog.
 - Scheduled Telegram reports from collected chats and saved question sets. A selected 1, 7, 14, or 30-day interval controls both the recurrence and rolling report window while preserving the configured local run time and timezone.
 - Live job monitoring through WebSocket events with polling fallback.
 - Job history, pipeline stage view, event log filtering, cancellation, capacity checks, retry tracking, and dead-letter visibility.
-- Report-only ZIP downloads plus a combined download that adds the static `report/` folder to the original uploaded Telegram export.
+- Two finished-report downloads: a report-only ZIP and a complete chat package with available attachments. Uploaded exports are preserved byte-for-byte; collected chats are recreated as Telegram-style JSON exports.
 - Mock LLM mode for local development without GPU-backed model services.
 
 ## Architecture
@@ -324,9 +324,9 @@ report.zip
 
 Answers and summaries render sanitized Markdown; model-authored HTML is displayed as text so it cannot break the surrounding report. Every page includes a persistent dark/light theme switch, with a Telegram-inspired pale chat canvas and white message bubbles in light mode. Question pages show media inline and expose generated descriptions/transcriptions from a compact info control. Repeated raw chunk text is not included in the rendered pages. The media gallery provides an inline image/video/audio library with fallback cards for files the browser cannot preview.
 
-Original Telegram media is not duplicated in the report ZIP. Previews and links are relative, so the `report/` folder is intended to be extracted next to the original Telegram export files when media references should resolve locally.
+Original Telegram media is not duplicated in the report-only ZIP. It contains the main report, question sub-reports, media gallery, and the CSS/JavaScript they need. Media previews and links are relative and resolve when the report is extracted from the complete chat package.
 
-For completed upload jobs, **Download all** creates a second archive named `<original-stem>-with-report.zip`. It preserves the original export contents and adds `report/` beside the selected `result.json` or `messages.html`, so the report and its relative media links work after one extraction. Direct Telegram jobs continue to offer the report-only download because they have no original uploaded ZIP.
+Every completed job offers two choices. **Complete chat + files** preserves an uploaded ZIP's contents and adds `report/` beside its `result.json` or `messages.html`. For backend- and externally-collected chats, it recreates a Telegram Desktop-style `result.json`, includes every available attachment from the report snapshot at its original report-relative path, and adds the same `report/` folder. **Main + sub-reports only** downloads the smaller generated report archive without duplicating source media.
 
 ## Operational Notes
 

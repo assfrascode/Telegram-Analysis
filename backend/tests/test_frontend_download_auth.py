@@ -6,8 +6,8 @@ def test_frontend_download_uses_authorization_header():
     assert 'Report-Download gestartet' in js
     assert 'Authorization": `Bearer ${token}`' in js or 'Authorization": `Bearer ${token}`' in js
     assert 'fetch(`/jobs/${currentJobId}/report/${downloadPath}`' in js
-    assert 'includeOriginal ? "download-all" : "download"' in js
-    assert 'id="downloadAll"' not in Path('backend/app/static/app/index.html').read_text()
+    assert 'downloadKind === "complete"' in js
+    assert 'id="downloadReports"' in Path('backend/app/static/app/index.html').read_text()
     assert "downloadFilenameFromResponse(res)" in js
 
 
@@ -20,7 +20,9 @@ def test_react_download_uses_content_disposition_filename():
     assert "filename*=UTF-8" not in app
     assert "const { blob, filename } = await downloadBlob" in app
     assert "anchor.download = filename" in app
-    assert 'includeOriginal ? "download-all" : "download"' in app
+    assert 'downloadKind === "complete"' in app
     assert '`/jobs/${currentJobId}/report/${downloadPath}`' in app
-    assert "onDownloadAll" not in monitor
-    assert 'currentJob.source_type === "upload" ? "Download all" : "Download report"' in monitor
+    assert 'onDownload("complete")' in monitor
+    assert 'onDownload("reports")' in monitor
+    assert "Complete chat + files" in monitor
+    assert "Main + sub-reports only" in monitor

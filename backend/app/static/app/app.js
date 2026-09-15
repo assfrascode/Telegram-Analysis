@@ -1020,6 +1020,7 @@ function renderActiveJob() {
     $("cancel").hidden = true;
     $("retry").hidden = true;
     $("download").hidden = true;
+    $("downloadReports").hidden = true;
     renderJobDashboard([]);
     return;
   }
@@ -1033,12 +1034,13 @@ function renderActiveJob() {
   $("cancel").hidden = TERMINAL_STATUSES.has(job.status);
   $("retry").hidden = job.status !== "failed";
   $("download").hidden = job.status !== "completed";
+  $("downloadReports").hidden = job.status !== "completed";
   $("download").disabled = Boolean(state.downloadInProgress);
+  $("downloadReports").disabled = Boolean(state.downloadInProgress);
   $("download").textContent = state.downloadInProgress
     ? "Download wird vorbereitet…"
-    : job.source_type === "upload"
-      ? "Alles herunterladen"
-      : "Report herunterladen";
+    : "Kompletter Chat + Dateien";
+  $("downloadReports").textContent = "Nur Haupt- und Unterberichte";
 
   const error = $("jobError");
   if (job.error_message) {
@@ -1297,9 +1299,9 @@ async function retryJob() {
   }
 }
 
-async function downloadResult() {
+async function downloadResult(downloadKind = "reports") {
   if (!state.token || !state.currentJobId) return;
-  const includeOriginal = state.currentJob?.source_type === "upload";
+  const includeOriginal = downloadKind === "complete";
   const downloadPath = includeOriginal ? "download-all" : "download";
   const successMessage = includeOriginal ? "Gesamt-Download gestartet" : "Report-Download gestartet";
   const failureMessage = includeOriginal ? "Gesamt-Download fehlgeschlagen" : "Report-Download fehlgeschlagen";
@@ -1391,7 +1393,8 @@ function bindEvents() {
   $("start").addEventListener("click", startJob);
   $("cancel").addEventListener("click", cancelJob);
   $("retry").addEventListener("click", retryJob);
-  $("download").addEventListener("click", downloadResult);
+  $("download").addEventListener("click", () => downloadResult("complete"));
+  $("downloadReports").addEventListener("click", () => downloadResult("reports"));
   $("refreshJobs").addEventListener("click", refreshJobs);
   $("refreshJob").addEventListener("click", () => Promise.allSettled([refreshJobStatus(), loadEventBacklog()]));
   $("clearLog").addEventListener("click", () => {

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import mimetypes
 import uuid
 from io import BytesIO
 
@@ -17,6 +18,9 @@ from app.models import (
     JobSourceType,
     JobStatus,
     Report,
+    TelegramChat,
+    TelegramMedia,
+    TelegramMessage,
     Upload,
     User,
     WorkerDeadLetter,
@@ -49,11 +53,14 @@ from app.services.minio_store import get_bytes, minio_client
 from app.services.report_bundle import (
     ReportBundleConflictError,
     ReportBundleError,
+    CollectedExportMedia,
+    build_collected_chat_bundle,
     build_report_bundle,
     remove_temp_file,
 )
 from app.services.report_naming import (
     attachment_content_disposition,
+    build_collected_download_filename,
     build_download_all_filename,
     build_report_filename,
     report_date_for_job,
@@ -336,44 +343,120 @@ async def download_all(
     job = await get_owned_job_or_404(session, job_id=job_id, user=user)
     if job.status != JobStatus.completed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
-    if job.source_type != JobSourceType.upload or job.upload_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Download all is only available for uploaded ZIP jobs",
-        )
-
     report = (
         await session.execute(select(Report).where(Report.job_id == job.id))
     ).scalar_one_or_none()
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not available")
 
-    upload = (
-        await session.execute(
-            select(Upload).where(
-                Upload.id == job.upload_id,
-                Upload.owner_user_id == user.id,
-            )
-        )
-    ).scalar_one_or_none()
-    if upload is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original upload not available")
-
     try:
-        bundle_path = await asyncio.to_thread(
-            build_report_bundle,
-            client=minio_client(),
-            bucket=settings.minio_bucket,
-            upload_object_key=upload.object_key,
-            report_object_key=report.object_key,
-        )
+        if job.source_type == JobSourceType.upload and job.upload_id is not None:
+            upload = (
+                await session.execute(
+                    select(Upload).where(
+                        Upload.id == job.upload_id,
+                        Upload.owner_user_id == user.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if upload is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Original upload not available",
+                )
+            bundle_path = await asyncio.to_thread(
+                build_report_bundle,
+                client=minio_client(),
+                bucket=settings.minio_bucket,
+                upload_object_key=upload.object_key,
+                report_object_key=report.object_key,
+            )
+            filename = build_download_all_filename(upload.filename)
+        elif job.source_type == JobSourceType.telegram_chat and job.telegram_chat_id is not None:
+            chat = (
+                await session.execute(
+                    select(TelegramChat).where(
+                        TelegramChat.id == job.telegram_chat_id,
+                        TelegramChat.owner_user_id == user.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if chat is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Telegram chat not available"
+                )
+            message_rows = list(
+                (
+                    await session.execute(
+                        select(TelegramMessage)
+                        .where(TelegramMessage.job_id == job.id)
+                        .order_by(TelegramMessage.timestamp, TelegramMessage.telegram_message_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            media_rows = list(
+                (
+                    await session.execute(
+                        select(TelegramMedia).where(TelegramMedia.job_id == job.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            messages = [
+                {
+                    "telegram_message_id": row.telegram_message_id,
+                    "timestamp": row.timestamp,
+                    "edited_timestamp": row.edited_timestamp,
+                    "sender_id": row.sender_id,
+                    "sender_name": row.sender_name,
+                    "message_type": row.message_type,
+                    "reply_to_message_id": row.reply_to_message_id,
+                    "forwarded_from": row.forwarded_from,
+                    "reactions": row.reactions,
+                    "text": row.text,
+                }
+                for row in message_rows
+            ]
+            message_ids = {row.id: row.telegram_message_id for row in message_rows}
+            media = [
+                CollectedExportMedia(
+                    message_id=message_ids[row.message_id],
+                    path=row.original_path,
+                    object_key=row.minio_object_key,
+                    media_type=row.media_type,
+                    mime_type=mimetypes.guess_type(row.original_path)[0],
+                )
+                for row in media_rows
+                if row.message_id in message_ids
+            ]
+            bundle_path = await asyncio.to_thread(
+                build_collected_chat_bundle,
+                client=minio_client(),
+                bucket=settings.minio_bucket,
+                report_object_key=report.object_key,
+                chat_title=chat.title,
+                chat_type=chat.chat_type,
+                telegram_chat_id=chat.telegram_chat_id,
+                messages=messages,
+                media=media,
+            )
+            filename = build_collected_download_filename(
+                chat.title, report_date_for_job(job, report.created_at)
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Complete download is not available for this job source",
+            )
     except ReportBundleConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ReportBundleError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     background_tasks.add_task(remove_temp_file, bundle_path)
-    filename = build_download_all_filename(upload.filename)
     headers = {"Content-Disposition": attachment_content_disposition(filename)}
     return FileResponse(
         bundle_path,

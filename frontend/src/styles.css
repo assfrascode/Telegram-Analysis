@@ -4216,7 +4216,11 @@ summary:focus-visible {
 .report-ready-copy h3 { margin-bottom: 0.18rem; }
 .report-ready-copy p { margin: 0; font-size: 0.76rem; }
 
-.report-ready-actions { flex: 0 0 auto; }
+.report-ready-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 
 @keyframes app-spin { to { transform: rotate(360deg); } }
 

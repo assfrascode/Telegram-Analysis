@@ -221,10 +221,10 @@ export function TutorialPage() {
           <GuideStep
             number="7"
             title="Download and open the report"
-            path={["Download all", "Unzip the download", "report", "index.html"]}
-            pathLabel="Click Download all, unzip the download, open the report folder, then open index.html"
+            path={["Complete chat + files", "Unzip", "report", "index.html"]}
+            pathLabel="Download the complete chat package, unzip it, open the report folder, then open index.html"
           >
-            Click “Download all”. Unzip the downloaded file, open the report folder, and double-click index.html to read the report in your web browser.
+            Download all source data and report output with “Complete chat + files”, or choose “Main + sub-reports only” for the smaller report archive. Unzip it, open the report folder, and double-click index.html.
           </GuideStep>
         </ol>
       </section>
@@ -244,7 +244,7 @@ export function TutorialPage() {
         <div className="tutorial-alternative-copy">
           <p>
             Choose the group or channel and a reporting period of 30 days or less. You can click “Use the last 30 days”
-            for the quickest setup. Define the questions, start the analysis, wait for “Report ready”, and click “Download report”.
+            for the quickest setup. Define the questions, start the analysis, wait for “Report ready”, then choose either download option.
           </p>
           <p>
             If no chats are listed, open “Telegram Setup”. A Telegram account or external collector must be configured before this option can be used.

@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,12 @@ class _Result:
     def scalar_one_or_none(self):
         return self.value
 
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.value
+
 
 class _Session:
     def __init__(self, *values) -> None:
@@ -41,8 +48,10 @@ def _job(*, status_value=JobStatus.completed, source_type=JobSourceType.upload):
         id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         upload_id=uuid.uuid4() if source_type == JobSourceType.upload else None,
+        telegram_chat_id=uuid.uuid4() if source_type == JobSourceType.telegram_chat else None,
         source_type=source_type,
         status=status_value,
+        report_end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
     )
 
 
@@ -94,17 +103,8 @@ def test_download_all_returns_file_response_and_removes_temp_file(
     assert not bundle_path.exists()
 
 
-@pytest.mark.parametrize(
-    ("job", "expected_detail"),
-    [
-        (_job(status_value=JobStatus.running), "Job is not completed"),
-        (
-            _job(source_type=JobSourceType.telegram_chat),
-            "Download all is only available for uploaded ZIP jobs",
-        ),
-    ],
-)
-def test_download_all_rejects_unsupported_jobs(monkeypatch, job, expected_detail: str) -> None:
+def test_download_all_rejects_unfinished_job(monkeypatch) -> None:
+    job = _job(status_value=JobStatus.running)
     _install_owned_job(monkeypatch, job)
 
     with pytest.raises(HTTPException) as raised:
@@ -118,7 +118,73 @@ def test_download_all_rejects_unsupported_jobs(monkeypatch, job, expected_detail
         )
 
     assert raised.value.status_code == status.HTTP_409_CONFLICT
-    assert raised.value.detail == expected_detail
+    assert raised.value.detail == "Job is not completed"
+
+
+def test_download_all_builds_collected_chat_export(monkeypatch, tmp_path: Path) -> None:
+    job = _job(source_type=JobSourceType.telegram_chat)
+    user = SimpleNamespace(id=job.owner_user_id)
+    report = SimpleNamespace(
+        object_key="reports/report.zip",
+        created_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+    chat = SimpleNamespace(
+        id=job.telegram_chat_id,
+        owner_user_id=user.id,
+        title="External chat",
+        chat_type="channel",
+        telegram_chat_id=123,
+    )
+    message_db_id = uuid.uuid4()
+    message = SimpleNamespace(
+        id=message_db_id,
+        telegram_message_id=42,
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        edited_timestamp=None,
+        sender_id="user1",
+        sender_name="Alice",
+        message_type="message",
+        reply_to_message_id=None,
+        forwarded_from=None,
+        reactions=[],
+        text="hello",
+    )
+    media = SimpleNamespace(
+        message_id=message_db_id,
+        original_path="telegram/media/photo.jpg",
+        minio_object_key="media/photo.jpg",
+        media_type="image",
+    )
+    bundle_path = tmp_path / "collected.zip"
+    with zipfile.ZipFile(bundle_path, mode="w") as archive:
+        archive.writestr("result.json", "{}")
+
+    captured = {}
+    _install_owned_job(monkeypatch, job)
+    monkeypatch.setattr(routes_jobs, "minio_client", lambda: object())
+
+    def build_bundle(**kwargs):
+        captured.update(kwargs)
+        return str(bundle_path)
+
+    monkeypatch.setattr(routes_jobs, "build_collected_chat_bundle", build_bundle)
+
+    response = asyncio.run(
+        routes_jobs.download_all(
+            job.id,
+            BackgroundTasks(),
+            user=user,
+            session=_Session(report, chat, [message], [media]),
+        )
+    )
+
+    assert response.path == str(bundle_path)
+    assert captured["chat_title"] == "External chat"
+    assert captured["messages"][0]["telegram_message_id"] == 42
+    assert captured["media"][0].path == "telegram/media/photo.jpg"
+    assert "telegram-export-external-chat-2026-01-02-with-report.zip" in response.headers[
+        "content-disposition"
+    ]
 
 
 def test_download_all_returns_not_found_when_original_upload_is_missing(monkeypatch) -> None:

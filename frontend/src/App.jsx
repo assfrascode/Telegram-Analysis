@@ -585,17 +585,17 @@ export default function App() {
     }
   };
 
-  const downloadResult = async () => {
+  const downloadResult = async (downloadKind = "reports") => {
     if (!token || !currentJobId) return;
-    const includeOriginal = currentJob?.source_type === "upload";
+    const includeOriginal = downloadKind === "complete";
     const downloadPath = includeOriginal ? "download-all" : "download";
     setDownloadInProgress(true);
     try {
       const { blob, filename } = await downloadBlob(`/jobs/${currentJobId}/report/${downloadPath}`, { token });
       saveDownload(blob, filename);
-      addLocalLog(includeOriginal ? "Combined download started" : "Report download started");
+      addLocalLog(includeOriginal ? "Complete chat download started" : "Report download started");
     } catch (error) {
-      const message = includeOriginal ? "Could not download all files" : "Could not download report";
+      const message = includeOriginal ? "Could not download the complete chat" : "Could not download reports";
       showToast(`${message}: ${error.message}`, "error");
       addLocalLog(`${message}: ${error.message}`, "error");
     } finally {

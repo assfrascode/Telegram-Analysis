@@ -51,6 +51,11 @@ def build_download_all_filename(upload_filename: str | None) -> str:
     return f"{stem or 'telegram-export'}-with-report.zip"
 
 
+def build_collected_download_filename(source_name: str | None, report_date: date) -> str:
+    source_component = sanitize_report_source_name(source_name)
+    return f"telegram-export-{source_component}-{report_date.isoformat()}-with-report.zip"
+
+
 def report_date_for_job(job: Job, fallback: datetime) -> date:
     value = fallback
     if job.source_type == JobSourceType.telegram_chat and job.report_end_at is not None:

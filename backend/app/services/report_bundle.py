@@ -1,8 +1,12 @@
+import json
 import os
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
+from typing import Any
 
 from minio import Minio
 
@@ -16,6 +20,156 @@ class ReportBundleError(ValueError):
 
 class ReportBundleConflictError(ReportBundleError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class CollectedExportMedia:
+    message_id: int
+    path: str
+    object_key: str | None
+    media_type: str
+    mime_type: str | None = None
+
+
+def _desktop_message(message: dict[str, Any], media: list[CollectedExportMedia]) -> dict[str, Any]:
+    timestamp = message.get("timestamp")
+    if isinstance(timestamp, datetime):
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.astimezone(timezone.utc)
+        date = timestamp.isoformat()
+        date_unixtime = str(int(timestamp.timestamp()))
+    else:
+        date = str(timestamp or "")
+        date_unixtime = ""
+
+    text = str(message.get("text") or "")
+    source_type = str(message.get("message_type") or "message")
+    result: dict[str, Any] = {
+        "id": int(message["telegram_message_id"]),
+        # Telegram Desktop represents photos/documents as ordinary messages;
+        # their media fields below carry the attachment type.
+        "type": "service" if source_type == "service" else "message",
+        "date": date,
+        "date_unixtime": date_unixtime,
+        "from": message.get("sender_name"),
+        "from_id": message.get("sender_id"),
+        "text": text,
+        "text_entities": [{"type": "plain", "text": text}] if text else [],
+    }
+    optional_fields = {
+        "edited": message.get("edited_timestamp"),
+        "reply_to_message_id": message.get("reply_to_message_id"),
+        "forwarded_from": message.get("forwarded_from"),
+        "reactions": message.get("reactions"),
+    }
+    for key, value in optional_fields.items():
+        if value not in (None, "", []):
+            result[key] = value.isoformat() if isinstance(value, datetime) else value
+
+    available_media = [item for item in media if item.object_key]
+    if available_media:
+        first = available_media[0]
+        if first.media_type == "image":
+            result["photo"] = first.path
+        else:
+            result["file"] = first.path
+            if first.mime_type:
+                result["mime_type"] = first.mime_type
+        if len(available_media) > 1:
+            result["files"] = [item.path for item in available_media]
+    return result
+
+
+def build_collected_chat_bundle(
+    *,
+    client: Minio,
+    bucket: str,
+    report_object_key: str,
+    chat_title: str,
+    chat_type: str,
+    telegram_chat_id: int,
+    messages: list[dict[str, Any]],
+    media: list[CollectedExportMedia],
+) -> str:
+    """Recreate a portable Telegram JSON export and add the static report.
+
+    Collector data is normalized rather than being a byte-for-byte Telegram
+    Desktop export. The generated result.json follows Desktop's useful fields,
+    while media paths deliberately match the paths embedded in the report.
+    """
+    bundle_temp = tempfile.NamedTemporaryFile(
+        prefix="chat-analyse-collected-chat-", suffix=".zip", delete=False
+    )
+    report_temp = tempfile.NamedTemporaryFile(
+        prefix="chat-analyse-report-", suffix=".zip", delete=False
+    )
+    bundle_temp.close()
+    report_temp.close()
+    try:
+        media_by_message: dict[int, list[CollectedExportMedia]] = {}
+        normalized_media: list[tuple[CollectedExportMedia, str]] = []
+        used_paths = {"result.json"}
+        for item in media:
+            try:
+                path = normalize_zip_member_path(item.path)
+            except ZipSecurityError as exc:
+                raise ReportBundleError(str(exc)) from exc
+            if path == "report" or path.startswith("report/"):
+                raise ReportBundleConflictError("Collected media conflicts with the report directory")
+            if path in used_paths:
+                raise ReportBundleConflictError(f"Duplicate collected media path: {path}")
+            used_paths.add(path)
+            normalized = CollectedExportMedia(
+                message_id=item.message_id,
+                path=path,
+                object_key=item.object_key,
+                media_type=item.media_type,
+                mime_type=item.mime_type,
+            )
+            normalized_media.append((normalized, path))
+            media_by_message.setdefault(item.message_id, []).append(normalized)
+
+        export = {
+            "name": chat_title,
+            "type": chat_type,
+            "id": telegram_chat_id,
+            "messages": [
+                _desktop_message(
+                    message,
+                    media_by_message.get(int(message["telegram_message_id"]), []),
+                )
+                for message in messages
+            ],
+        }
+        with zipfile.ZipFile(
+            bundle_temp.name, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+        ) as bundle:
+            bundle.writestr(
+                "result.json",
+                json.dumps(export, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
+            )
+            for item, path in normalized_media:
+                if not item.object_key:
+                    continue
+                media_temp = tempfile.NamedTemporaryFile(
+                    prefix="chat-analyse-media-", delete=False
+                )
+                media_temp.close()
+                try:
+                    client.fget_object(bucket, item.object_key, media_temp.name)
+                    bundle.write(media_temp.name, arcname=path)
+                finally:
+                    remove_temp_file(media_temp.name)
+
+        client.fget_object(bucket, report_object_key, report_temp.name)
+        append_report_to_archive(bundle_temp.name, report_temp.name)
+        return bundle_temp.name
+    except Exception:
+        remove_temp_file(bundle_temp.name)
+        raise
+    finally:
+        remove_temp_file(report_temp.name)
 
 
 def _normalized_member_path(info: zipfile.ZipInfo) -> str:

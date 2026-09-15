@@ -177,11 +177,14 @@ export function JobMonitorPanel({
               <div className="report-ready-copy">
                 <span className="section-kicker">Downloads</span>
                 <h3>Your report is ready</h3>
-                <p>{currentJob.source_type === "upload" ? "Download the report together with the original export." : "Download the finished analysis report."}</p>
+                <p>Choose the complete chat package with its available files, or download only the main and sub-reports.</p>
               </div>
-              <div className="actions-row report-ready-actions">
-                <button className="button button-primary button-large" type="button" onClick={onDownload} disabled={downloadInProgress}>
-                  {downloadInProgress ? "Preparing download…" : currentJob.source_type === "upload" ? "Download all" : "Download report"}
+              <div className="actions-row report-ready-actions" aria-label={currentJob.source_type === "upload" ? "Download all" : "Download report"}>
+                <button className="button button-primary button-large" type="button" onClick={() => onDownload("complete")} disabled={downloadInProgress}>
+                  {downloadInProgress ? "Preparing download…" : "Complete chat + files"}
+                </button>
+                <button className="button button-secondary button-large" type="button" onClick={() => onDownload("reports")} disabled={downloadInProgress}>
+                  Main + sub-reports only
                 </button>
               </div>
             </section>
