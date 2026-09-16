@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { formatDate } from "../lib/format";
+import { WorkspaceRail, WorkspaceTopbar } from "./WorkspaceChrome";
 
 function TelegramIcon({ name }) {
   if (name === "chat") {
@@ -119,58 +120,6 @@ function SourceBadge({ chat }) {
   );
 }
 
-function CollectorOverview({ state, sourceLabel, activeChatCount, enabledScheduleCount }) {
-  const copy = {
-    ready: {
-      badge: "Ready",
-      title: "Chats are ready for analysis",
-      description: "Collection is active and reports can use the stored messages.",
-    },
-    attention: {
-      badge: "Attention needed",
-      title: "Collection needs attention",
-      description: "Check the highlighted chat issue before relying on new messages.",
-    },
-    setup: {
-      badge: "Setup needed",
-      title: sourceLabel === "Not connected" ? "Connect a Telegram source" : "Add a chat to begin",
-      description: sourceLabel === "Not connected"
-        ? "Connect an account, or start an external collector."
-        : "Your source is connected and ready for a group or channel.",
-    },
-  }[state];
-
-  return (
-    <section className={`collector-overview collector-overview-${state}`}>
-      <div className="collector-readiness">
-        <span className="collector-hero-icon"><TelegramIcon name={state === "attention" ? "pulse" : "telegram"} /></span>
-        <div>
-          <span className={`readiness-badge readiness-badge-${state}`}>
-            <span className="status-dot" />
-            {copy.badge}
-          </span>
-          <h2>{copy.title}</h2>
-          <p>{copy.description}</p>
-        </div>
-      </div>
-      <div className="collector-metrics" aria-label="Telegram collector summary">
-        <div>
-          <span>Collection source</span>
-          <strong>{sourceLabel}</strong>
-        </div>
-        <div>
-          <span>Active chats</span>
-          <strong>{activeChatCount}</strong>
-        </div>
-        <div>
-          <span>Auto reports</span>
-          <strong>{enabledScheduleCount}</strong>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function ConnectionSetup({
   apiId,
   setApiId,
@@ -264,38 +213,39 @@ function ConnectionSetup({
 function ExternalCollectorState({ chats, connection, onShowBackendSetup, showBackendSetup }) {
   const hasChats = chats.length > 0;
   const online = Boolean(connection?.connected);
+  const hasSource = hasChats || online;
   const stateLabel = online ? "Connected" : connection ? "Not reachable" : "Checking connection";
   const offlineDetail = connection?.last_seen_at
     ? ` Last contact: ${formatDate(connection.last_seen_at)}.`
     : " The collector has not contacted the application yet.";
 
   return (
-    <section className={`surface telegram-card external-collector-card${hasChats ? " has-source" : ""}`}>
+    <section className={`surface telegram-card external-collector-card${hasSource ? " has-source" : ""}`}>
       <div className="telegram-heading-copy">
         <span className="telegram-section-icon telegram-section-icon-large"><TelegramIcon name="telegram" /></span>
         <div>
           <span className="telegram-section-kicker">
             Collection source
-            {hasChats && (
+            {hasSource && (
               <InfoTooltip label="About external collectors">
                 A separate collector sends messages here, so no Telegram account needs to be stored in this application.
               </InfoTooltip>
             )}
           </span>
-          <h2>{hasChats ? `External collector ${online ? "connected" : "not reachable"}` : "No collection source yet"}</h2>
-          <p>{hasChats ? `${chats.length} active collector chat${chats.length === 1 ? "" : "s"}. ${online ? "The collector is polling for work. No backend account required." : `New messages will not be collected until it reconnects.${offlineDetail}`}` : "Connect Telegram to add groups and channels here."}</p>
+          <h2>{hasSource ? `External collector ${online ? "connected" : "not reachable"}` : "No collection source yet"}</h2>
+          <p>{hasSource ? `${chats.length} active collector chat${chats.length === 1 ? "" : "s"}. ${online ? "The collector is polling for work. No backend account required." : `New messages will not be collected until it reconnects.${offlineDetail}`}` : "Connect Telegram to add groups and channels here."}</p>
         </div>
       </div>
       <div className="external-collector-actions">
-        {hasChats && (
+        {hasSource && (
           <span className={`connection-state connection-state-${online ? "ready" : "offline"}`}>
             <span className={`status-dot status-dot-${online ? "completed" : "error"}`} />
             {stateLabel}
           </span>
         )}
         {!showBackendSetup && (
-          <button className={`button ${hasChats ? "button-secondary" : "button-primary"}`} type="button" onClick={onShowBackendSetup}>
-            {hasChats ? "Connect another account" : "Connect Telegram"}
+          <button className={`button ${hasSource ? "button-secondary" : "button-primary"}`} type="button" onClick={onShowBackendSetup}>
+            {hasSource ? "Connect another account" : "Connect Telegram"}
           </button>
         )}
       </div>
@@ -890,13 +840,26 @@ export function TelegramSourcesPanel({
   const hasCollectionIssues = unavailableBackendChats.length > 0
     || (activeExternalChats.length > 0 && !isExternalCollectorConnected)
     || chatsWithIssues.length > 0;
-  const hasExternalSource = activeExternalChats.length > 0;
+  const hasExternalSource = isExternalCollectorConnected || activeExternalChats.length > 0;
   const sourceLabel = isBackendConnected && hasExternalSource
     ? "Backend + external"
     : isBackendConnected ? "Backend account" : hasExternalSource ? "External collector" : "Not connected";
+  const enabledScheduleCount = schedules.filter((schedule) => schedule.enabled).length;
+  const sourceHasIssues = unavailableBackendChats.length > 0
+    || (activeExternalChats.length > 0 && !isExternalCollectorConnected);
+  const chatsHaveIssues = chatsWithIssues.length > 0
+    || (activeChats.length > 0 && usableActiveChats.length === 0);
   const readinessState = hasCollectionIssues
     ? "attention"
     : usableActiveChats.length > 0 ? "ready" : "setup";
+  const readinessBadge = readinessState === "ready"
+    ? "Ready"
+    : readinessState === "attention" ? "Attention needed" : "Setup needed";
+  const workspaceSubtitle = readinessState === "attention"
+    ? `${sourceLabel} · collection needs attention`
+    : readinessState === "ready"
+      ? `${sourceLabel} · ${usableActiveChats.length} usable chat${usableActiveChats.length === 1 ? "" : "s"}`
+      : sourceLabel === "Not connected" ? "Connect a collection source to begin" : "Add a chat to begin collecting";
   const shouldShowBackendSetup = showBackendSetup || Boolean(challengeId);
 
   const run = async (action) => {
@@ -1019,94 +982,134 @@ export function TelegramSourcesPanel({
     showToast(schedule.enabled ? "Report schedule paused" : "Report schedule enabled");
   });
 
+  const refreshCollector = () => run(async () => {
+    await onRefresh();
+    showToast("Telegram status refreshed");
+  });
+
   return (
-    <section className="page telegram-page">
-      <header className="page-header">
-        <div>
-          <span className="page-kicker">Telegram setup</span>
-          <h1>Telegram collector</h1>
-          <p>Keep groups and channels ready for analysis.</p>
-        </div>
-      </header>
-
-      <CollectorOverview
-        state={readinessState}
-        sourceLabel={sourceLabel}
-        activeChatCount={usableActiveChats.length}
-        enabledScheduleCount={schedules.filter((schedule) => schedule.enabled).length}
+    <section className={`page workspace-page workspace-page-${readinessState} telegram-page telegram-page-${readinessState}`}>
+      <WorkspaceTopbar
+        tone={readinessState}
+        badge={readinessBadge}
+        title="Telegram Collector"
+        subtitle={workspaceSubtitle}
+        actions={(
+          <button className="button button-secondary" type="button" onClick={refreshCollector} disabled={busy}>
+            Manual refresh
+          </button>
+        )}
       />
 
-      {isBackendConnected ? (
-        <div className="telegram-setup-grid">
-          <ConnectedAccount
-            connection={connection}
-            externalChatCount={activeExternalChats.length}
-            busy={busy}
-            onDisconnect={disconnect}
-          />
-          <AddChatSection
-            dialogs={dialogs}
-            selectedDialogId={selectedDialogId}
-            setSelectedDialogId={setSelectedDialogId}
-            initialSyncFrom={initialSyncFrom}
-            setInitialSyncFrom={setInitialSyncFrom}
-            interval={interval}
-            setInterval={setInterval}
-            busy={busy}
-            onLoadDialogs={loadDialogs}
-            onAddChat={addChat}
-          />
-        </div>
-      ) : (
-        <div className="telegram-source-stack">
-          <ExternalCollectorState
-            chats={activeExternalChats}
-            connection={collectorConnection}
-            onShowBackendSetup={() => setShowBackendSetup(true)}
-            showBackendSetup={shouldShowBackendSetup}
-          />
-          {shouldShowBackendSetup && (
-            <ConnectionSetup
-              apiId={apiId}
-              setApiId={setApiId}
-              apiHash={apiHash}
-              setApiHash={setApiHash}
-              phone={phone}
-              setPhone={setPhone}
-              challengeId={challengeId}
-              requiresPassword={requiresPassword}
-              code={code}
-              setCode={setCode}
-              password={password}
-              setPassword={setPassword}
+      <WorkspaceRail
+        className="telegram-readiness-rail"
+        ariaLabel="Telegram collector readiness"
+        items={[
+          {
+            key: "source",
+            label: "Source",
+            status: sourceHasIssues ? "failed" : sourceLabel !== "Not connected" ? "completed" : "active",
+            detail: sourceHasIssues ? "Connection unavailable" : sourceLabel,
+            progress: sourceHasIssues ? 20 : sourceLabel !== "Not connected" ? 100 : 0,
+          },
+          {
+            key: "chats",
+            label: "Chats",
+            status: chatsHaveIssues ? "failed" : usableActiveChats.length > 0 ? "completed" : "active",
+            detail: chatsHaveIssues
+              ? "Collection issue"
+              : usableActiveChats.length > 0
+                ? `${usableActiveChats.length} usable`
+                : "Add at least one chat",
+            progress: chatsHaveIssues ? 20 : usableActiveChats.length > 0 ? 100 : 0,
+          },
+          {
+            key: "automation",
+            label: "Automation",
+            status: enabledScheduleCount > 0 ? "completed" : "optional",
+            detail: enabledScheduleCount > 0
+              ? `${enabledScheduleCount} enabled`
+              : "Optional",
+            progress: enabledScheduleCount > 0 ? 100 : 0,
+          },
+        ]}
+      />
+
+      <div className="telegram-primary-workspace">
+        {isBackendConnected ? (
+          <div className="telegram-setup-grid">
+            <ConnectedAccount
+              connection={connection}
+              externalChatCount={activeExternalChats.length}
               busy={busy}
-              onStart={startLogin}
-              onVerifyCode={verifyCode}
-              onVerifyPassword={verifyPassword}
-              onCancel={() => setShowBackendSetup(false)}
+              onDisconnect={disconnect}
             />
-          )}
-        </div>
-      )}
-      <CollectedChatsTable
-        chats={chats}
-        busy={busy}
-        backendConnected={isBackendConnected}
-        externalCollectorConnected={isExternalCollectorConnected}
-        onSync={syncChat}
-        onUpdate={updateChat}
-      />
-      <ScheduledReportsSection
-        chats={chats}
-        questionSets={questionSets}
-        schedules={schedules}
-        backendConnected={isBackendConnected}
-        busy={busy}
-        onSave={saveSchedule}
-        onDelete={deleteSchedule}
-        onToggle={toggleSchedule}
-        onOpenJob={onSelectJob}
-      />
+            <AddChatSection
+              dialogs={dialogs}
+              selectedDialogId={selectedDialogId}
+              setSelectedDialogId={setSelectedDialogId}
+              initialSyncFrom={initialSyncFrom}
+              setInitialSyncFrom={setInitialSyncFrom}
+              interval={interval}
+              setInterval={setInterval}
+              busy={busy}
+              onLoadDialogs={loadDialogs}
+              onAddChat={addChat}
+            />
+          </div>
+        ) : (
+          <div className="telegram-source-stack">
+            <ExternalCollectorState
+              chats={activeExternalChats}
+              connection={collectorConnection}
+              onShowBackendSetup={() => setShowBackendSetup(true)}
+              showBackendSetup={shouldShowBackendSetup}
+            />
+            {shouldShowBackendSetup && (
+              <ConnectionSetup
+                apiId={apiId}
+                setApiId={setApiId}
+                apiHash={apiHash}
+                setApiHash={setApiHash}
+                phone={phone}
+                setPhone={setPhone}
+                challengeId={challengeId}
+                requiresPassword={requiresPassword}
+                code={code}
+                setCode={setCode}
+                password={password}
+                setPassword={setPassword}
+                busy={busy}
+                onStart={startLogin}
+                onVerifyCode={verifyCode}
+                onVerifyPassword={verifyPassword}
+                onCancel={() => setShowBackendSetup(false)}
+              />
+            )}
+          </div>
+        )}
+      </div>
+      <div className="telegram-data-grid">
+        <CollectedChatsTable
+          chats={chats}
+          busy={busy}
+          backendConnected={isBackendConnected}
+          externalCollectorConnected={isExternalCollectorConnected}
+          onSync={syncChat}
+          onUpdate={updateChat}
+        />
+        <ScheduledReportsSection
+          chats={chats}
+          questionSets={questionSets}
+          schedules={schedules}
+          backendConnected={isBackendConnected}
+          busy={busy}
+          onSave={saveSchedule}
+          onDelete={deleteSchedule}
+          onToggle={toggleSchedule}
+          onOpenJob={onSelectJob}
+        />
+      </div>
     </section>
   );
 }

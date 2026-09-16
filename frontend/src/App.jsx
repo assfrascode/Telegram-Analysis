@@ -341,6 +341,7 @@ export default function App() {
 
   const selectJob = useCallback(async (jobId) => {
     setCurrentJobId(jobId);
+    setCurrentJob(null);
     setActiveView("monitor");
     sessionStorage.setItem(STORAGE_JOB, jobId);
     resetJobEvents();
@@ -697,12 +698,13 @@ export default function App() {
         onLogout={logout}
       />
 
-      <main className="app-content">
+      <main className={`app-content app-content-${showMonitor ? "monitor" : activeView}`}>
         {showMonitor ? (
             <JobMonitorPanel
               currentJobId={currentJobId}
               currentJob={currentJob}
               stageStates={stageStates}
+              events={events}
               onRefresh={pollLatest}
               onCancel={cancelJob}
               onRetry={retryJob}

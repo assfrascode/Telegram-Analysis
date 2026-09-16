@@ -1,5 +1,33 @@
 import { BAD_STATUSES, TERMINAL_STATUSES } from "../lib/constants";
-import { badgeClassForStatus, formatDate, formatProgressPayload, statusLabel } from "../lib/format";
+import { formatDate, formatProgressPayload } from "../lib/format";
+import { WorkspaceRail, WorkspaceTopbar } from "./WorkspaceChrome";
+
+const MONITOR_PHASES = [
+  { key: "prepare", label: "Prepare", stages: ["telegram_sync", "upload", "validate", "extract", "parse"] },
+  { key: "understand", label: "Understand", stages: ["media", "transcription", "translation", "chunk"] },
+  { key: "search", label: "Search", stages: ["embedding", "retrieval", "reranking"] },
+  { key: "report", label: "Report", stages: ["answers", "report"] },
+];
+
+const EVENT_STAGE_PREFIXES = [
+  ["telegram.sync", "telegram_sync"],
+  ["telegram.snapshot", "telegram_sync"],
+  ["upload.", "upload"],
+  ["zip.scan", "validate"],
+  ["zip.extract", "extract"],
+  ["telegram.parse", "parse"],
+  ["media.analysis", "media"],
+  ["media.transcription", "transcription"],
+  ["translation.", "translation"],
+  ["chunking.", "chunk"],
+  ["embedding.", "embedding"],
+  ["retrieval.", "retrieval"],
+  ["reranking.", "reranking"],
+  ["answer.", "answers"],
+  ["question.answer", "answers"],
+  ["report.", "report"],
+  ["job.completed", "report"],
+];
 
 function MonitorIcon({ name }) {
   if (name === "check") {
@@ -17,23 +45,13 @@ function MonitorIcon({ name }) {
   if (name === "refresh") {
     return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8a7.5 7.5 0 1 0 .2 7.6M19 4.5V8h-3.5" /></svg>;
   }
+  if (name === "activity") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12h4l2.2-5.5 4.1 11 2.1-5.5h4.6" /></svg>;
+  }
+  if (name === "source") {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4v13H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z" /><path d="M14 3.5v4h4M8 12h7M8 15.5h5" /></svg>;
+  }
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.75h14v10.5H9l-4 3z" /><path d="M8 9.25h8M8 12.75h5" /></svg>;
-}
-
-function stageStatusText(status) {
-  if (status === "completed") return "Completed";
-  if (status === "running") return "Active";
-  if (status === "failed") return "Failed";
-  return "Pending";
-}
-
-function userProgressMessage(currentJob, current) {
-  if (!currentJob) return "No analysis selected.";
-  if (currentJob.status === "completed") return "The analysis is complete and the report is ready to download.";
-  if (currentJob.status === "failed") return "The analysis could not be completed.";
-  if (currentJob.status === "cancelled") return "The analysis was cancelled.";
-  if (current?.status === "running") return `Current step: ${current.stage.label}.`;
-  return "The analysis is waiting for the next processing step.";
 }
 
 function monitorState(currentJob) {
@@ -43,27 +61,195 @@ function monitorState(currentJob) {
   return "working";
 }
 
-function StageMarker({ status, index }) {
-  if (status === "completed") return <MonitorIcon name="check" />;
-  if (status === "failed") return <span aria-hidden="true">!</span>;
-  if (status === "running") return <span className="stage-spinner" aria-hidden="true" />;
-  return <span>{index + 1}</span>;
+function payloadRatio(payload = {}) {
+  if (!payload || typeof payload !== "object") return null;
+  const done = payload.done
+    ?? payload.completed
+    ?? payload.media_done
+    ?? payload.questions_done
+    ?? payload.chunks_done
+    ?? payload.texts_done
+    ?? payload.messages_done;
+  const total = payload.total
+    ?? payload.media_total
+    ?? payload.questions_total
+    ?? payload.chunks_total
+    ?? payload.texts_total
+    ?? payload.messages_total;
+  if (Number.isFinite(Number(done)) && Number.isFinite(Number(total)) && Number(total) > 0) {
+    return Math.min(1, Math.max(0, Number(done) / Number(total)));
+  }
+  if (Number.isFinite(Number(payload.progress))) {
+    return Math.min(1, Math.max(0, Number(payload.progress) / 100));
+  }
+  return null;
 }
 
-function StageCard({ item, index }) {
-  const { stage, status, latest } = item;
-  const payloadText = status === "running" ? formatProgressPayload(latest?.payload) : "";
-  const badgeClass = status === "completed" ? "badge-success" : status === "failed" ? "badge-error" : status === "running" ? "badge-warning" : "badge-muted";
+function aggregatePhases(stageStates, currentJob) {
+  return MONITOR_PHASES.map((phase) => {
+    const items = stageStates.filter((item) => phase.stages.includes(item.stage.key));
+    const completedCount = items.filter((item) => item.status === "completed").length;
+    const failed = items.find((item) => item.status === "failed");
+    const running = items.find((item) => item.status === "running");
+    let status = "pending";
+
+    if (currentJob?.status === "completed" || (items.length > 0 && completedCount === items.length)) status = "completed";
+    else if (failed) status = "failed";
+    else if (running) status = "running";
+
+    const activeItem = failed || running;
+    const activeRatio = payloadRatio(activeItem?.latest?.payload);
+    const progressUnits = completedCount + (activeItem ? activeRatio ?? 0.16 : 0);
+    const progress = items.length ? Math.min(100, (progressUnits / items.length) * 100) : 0;
+
+    return { ...phase, items, status, progress };
+  }).filter((phase) => phase.items.length > 0);
+}
+
+function activeStage(stageStates, currentJob) {
+  if (!currentJob || currentJob.status === "completed") return null;
+  return stageStates.find((item) => item.status === "failed")
+    || stageStates.find((item) => item.status === "running")
+    || stageStates.find((item) => item.status === "pending")
+    || [...stageStates].reverse().find((item) => item.status === "completed")
+    || null;
+}
+
+function phaseForStage(phases, stageKey) {
+  return phases.find((phase) => phase.stages.includes(stageKey));
+}
+
+function activityKind(event) {
+  if (event.level === "error" || event.event_type.includes("failed")) return "failed";
+  if (event.event_type.includes("cancel")) return "cancelled";
+  if (event.event_type.endsWith("completed")) return "completed";
+  if (event.event_type.includes("retry")) return "retrying";
+  if (event.event_type.endsWith("started")) return "started";
+  return "progress";
+}
+
+function stageForEvent(event, stageStates) {
+  const exact = stageStates.find((item) => item.stage.events.includes(event.event_type));
+  if (exact) return exact.stage;
+  const prefixMatch = EVENT_STAGE_PREFIXES.find(([prefix]) => event.event_type.startsWith(prefix));
+  return prefixMatch ? stageStates.find((item) => item.stage.key === prefixMatch[1])?.stage : null;
+}
+
+function normalizeActivity(events, stageStates) {
+  const seen = new Set();
+  const activity = [];
+
+  for (let index = events.length - 1; index >= 0 && activity.length < 4; index -= 1) {
+    const event = events[index];
+    if (!event?.event_type || event.event_type === "frontend") continue;
+    const stage = stageForEvent(event, stageStates);
+    if (!stage) continue;
+    const kind = activityKind(event);
+    const signature = `${stage.key}:${kind}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+
+    const count = formatProgressPayload(event.payload);
+    const suffix = {
+      failed: "needs attention",
+      cancelled: "cancelled",
+      completed: "completed",
+      retrying: "retrying",
+      started: "started",
+      progress: count || "in progress",
+    }[kind];
+
+    activity.push({
+      id: event.id || `${event.created_at}-${event.event_type}`,
+      kind,
+      message: `${stage.label} · ${suffix}`,
+      createdAt: event.created_at,
+    });
+  }
+
+  return activity.reverse();
+}
+
+function phaseStatusLabel(status, jobStatus) {
+  if (status === "completed") return "Complete";
+  if (status === "running") return "In progress";
+  if (status === "failed") return "Needs attention";
+  if (TERMINAL_STATUSES.has(jobStatus)) return "Not reached";
+  return "Waiting";
+}
+
+function focusContent(currentJob, current, currentPhase) {
+  if (!currentJob) {
+    return { kicker: "Analysis", title: "Loading analysis", detail: "Fetching the latest processing state." };
+  }
+  if (currentJob.status === "completed") {
+    return { kicker: "Complete", title: "Your report is ready", detail: "The analysis finished successfully. Choose a download package below." };
+  }
+  if (currentJob.status === "failed") {
+    return { kicker: currentPhase?.label || "Analysis", title: "Analysis stopped", detail: currentJob.error_message || "The current processing step could not be completed." };
+  }
+  if (currentJob.status === "cancelled") {
+    return { kicker: "Cancelled", title: "Analysis cancelled", detail: "Processing stopped at your request." };
+  }
+  if (currentJob.status === "cancelling") {
+    return { kicker: currentPhase?.label || "Analysis", title: "Stopping analysis", detail: "The current operation is being stopped safely." };
+  }
+
+  const progress = formatProgressPayload(current?.latest?.payload);
+  if (current?.status === "running") {
+    return { kicker: currentPhase?.label || "Processing", title: current.stage.label, detail: progress || "Processing is underway." };
+  }
+  return {
+    kicker: currentPhase?.label || "Queued",
+    title: current ? `Waiting for ${current.stage.label.toLowerCase()}` : "Waiting to begin",
+    detail: "The next processing step will start automatically.",
+  };
+}
+
+function ActivityPanel({ activity }) {
+  return (
+    <section className="monitor-support-panel monitor-activity-panel" aria-labelledby="monitor-activity-title">
+      <div className="monitor-support-heading">
+        <span className="monitor-support-icon"><MonitorIcon name="activity" /></span>
+        <div><span className="section-kicker">Live updates</span><h3 id="monitor-activity-title">Recent activity</h3></div>
+      </div>
+      {activity.length ? (
+        <ol className="monitor-activity-list" aria-live="polite">
+          {activity.map((item) => (
+            <li className={`monitor-activity-item monitor-activity-${item.kind}`} key={item.id}>
+              <span className="monitor-activity-marker" aria-hidden="true" />
+              <span>{item.message}</span>
+              <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</time>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="monitor-activity-empty"><span className="status-dot" /> Waiting for processing updates</div>
+      )}
+    </section>
+  );
+}
+
+function ContextPanel({ currentJob }) {
+  const sourceName = currentJob?.source_name
+    || (currentJob?.source_type === "telegram_chat" ? "Collected Telegram chat" : "Telegram Desktop export");
+  const sourceType = currentJob?.source_type === "telegram_chat" ? "Collected chat" : "ZIP export";
+  const period = currentJob?.report_start_at && currentJob?.report_end_at
+    ? `${formatDate(currentJob.report_start_at)} – ${formatDate(currentJob.report_end_at)}`
+    : "Full uploaded export";
 
   return (
-    <div className={`stage stage-${status}`} aria-current={status === "running" ? "step" : undefined}>
-      <div className="stage-number"><StageMarker status={status} index={index} /></div>
-      <div className="stage-copy">
-        <div className="stage-name">{stage.label}</div>
-        <div className="stage-message">{payloadText || stageStatusText(status)}</div>
+    <section className="monitor-support-panel monitor-context-panel" aria-labelledby="monitor-context-title">
+      <div className="monitor-support-heading">
+        <span className="monitor-support-icon"><MonitorIcon name="source" /></span>
+        <div><span className="section-kicker">Job context</span><h3 id="monitor-context-title">Analysis details</h3></div>
       </div>
-      <span className={`badge ${badgeClass}`}>{stageStatusText(status)}</span>
-    </div>
+      <dl className="monitor-context-list">
+        <div><dt>Source</dt><dd title={sourceName}>{sourceName}</dd><small>{sourceType}</small></div>
+        <div><dt>Report period</dt><dd>{period}</dd></div>
+        <div><dt>Started</dt><dd>{currentJob ? formatDate(currentJob.created_at) : "Loading…"}</dd></div>
+      </dl>
+    </section>
   );
 }
 
@@ -71,39 +257,36 @@ export function JobMonitorPanel({
   currentJobId,
   currentJob,
   stageStates,
+  events = [],
   onRefresh,
   onCancel,
   onRetry,
   onDownload,
   downloadInProgress,
 }) {
-  const completed = stageStates.filter((item) => item.status === "completed").length;
-  const running = stageStates.find((item) => item.status === "running");
-  const failed = stageStates.find((item) => item.status === "failed");
-  const current = failed || running || [...stageStates].reverse().find((item) => item.status === "completed") || stageStates[0];
-  const percent = stageStates.length ? Math.round((completed / stageStates.length) * 100) : 0;
-  const jobFinished = currentJob?.status === "completed";
   const state = monitorState(currentJob);
+  const phases = aggregatePhases(stageStates, currentJob);
+  const current = activeStage(stageStates, currentJob);
+  const currentPhase = phaseForStage(phases, current?.stage?.key);
+  const focus = focusContent(currentJob, current, currentPhase);
+  const activity = normalizeActivity(events, stageStates);
   const stateCopy = {
-    empty: { badge: "No selection", title: "Choose an analysis", icon: "chat" },
-    ready: { badge: "Report ready", title: "Analysis complete", icon: "check" },
-    attention: { badge: "Attention needed", title: currentJob?.status === "cancelled" ? "Analysis cancelled" : "Analysis stopped", icon: "error" },
-    working: { badge: "Processing", title: "Analysis in progress", icon: "clock" },
+    empty: { badge: "Loading", title: "Analysis" },
+    ready: { badge: "Report ready", title: "Analysis complete" },
+    attention: { badge: currentJob?.status === "cancelled" ? "Cancelled" : "Attention needed", title: "Analysis stopped" },
+    working: { badge: currentJob?.status === "queued" ? "Queued" : currentJob?.status === "cancelling" ? "Stopping" : "Processing", title: "Analysis in progress" },
   }[state];
 
   return (
-    <section className="monitor-page">
-      <header className={`monitor-overview monitor-overview-${state}`}>
-        <div className="monitor-readiness">
-          <span className="monitor-hero-icon"><MonitorIcon name={stateCopy.icon} /></span>
-          <div>
-            <span className={`monitor-state-badge monitor-state-badge-${state}`}><span className="status-dot" />{stateCopy.badge}</span>
-            <span className="section-kicker">Progress</span>
-            <h2>{stateCopy.title}</h2>
-            <p>{userProgressMessage(currentJob, current)}</p>
-          </div>
-        </div>
-        <div className="monitor-overview-actions">
+    <section className={`workspace-page workspace-page-${state} monitor-page monitor-page-${state}`}>
+      <WorkspaceTopbar
+        tone={state}
+        badge={stateCopy.badge}
+        title={currentJob?.source_name || stateCopy.title}
+        subtitle={stateCopy.title}
+        meta={currentJob?.scheduled_report ? <span className="monitor-scheduled-badge">Scheduled report</span> : null}
+        actions={(
+          <>
           <button className="button button-secondary button-small button-with-icon" type="button" onClick={onRefresh}>
             <MonitorIcon name="refresh" /> Refresh
           </button>
@@ -113,87 +296,56 @@ export function JobMonitorPanel({
           {currentJob && !TERMINAL_STATUSES.has(currentJob.status) && (
             <button className="button button-ghost button-small danger-text" type="button" onClick={onCancel}>Cancel analysis</button>
           )}
-        </div>
-      </header>
+          </>
+        )}
+      />
 
-      {!currentJobId || !currentJob ? (
-        <div className="surface monitor-empty-state">
-          <span className="monitor-empty-icon"><MonitorIcon name="chat" /></span>
-          <div><h3>No analysis selected</h3><p>Select a recent analysis from the sidebar or start a new one.</p></div>
-        </div>
-      ) : (
-        <>
-          <section className="monitor-metrics" aria-label="Analysis summary">
-            <div className="monitor-metric">
-              <span className="monitor-metric-icon"><MonitorIcon name="clock" /></span>
-              <div><span>Status</span><strong>{statusLabel(currentJob.status)}</strong></div>
-            </div>
-            <div className="monitor-metric">
-              <span className="monitor-metric-icon"><MonitorIcon name="refresh" /></span>
-              <div><span>Current step</span><strong>{jobFinished ? "Complete" : current?.stage?.label || "Waiting"}</strong></div>
-            </div>
-            <div className="monitor-metric">
-              <span className="monitor-metric-icon"><MonitorIcon name="check" /></span>
-              <div><span>Steps complete</span><strong>{completed} of {stageStates.length}</strong></div>
-            </div>
-          </section>
-
-          <section className="surface monitor-progress-card progress-summary-card">
-            <div className="monitor-progress-heading">
-              <div><span className="section-kicker">Overall progress</span><strong>{percent}%</strong></div>
-              <span className={badgeClassForStatus(currentJob.status)}>{statusLabel(currentJob.status)}</span>
-            </div>
-            <div className="progressbar"><div style={{ width: `${percent}%` }} /></div>
-            <div className="monitor-progress-dates">
-              {currentJob.report_start_at && currentJob.report_end_at && (
-                <span>Report period {formatDate(currentJob.report_start_at)} – {formatDate(currentJob.report_end_at)}</span>
-              )}
-              <span>Started {formatDate(currentJob.created_at)}</span>
-              {currentJob.completed_at && <span>Completed {formatDate(currentJob.completed_at)}</span>}
-            </div>
-          </section>
-
-          {currentJob.error_message && (
-            <div className="alert alert-error monitor-alert" role="alert">
-              <span className="alert-icon"><MonitorIcon name="error" /></span>
-              <div><strong>The analysis could not be completed.</strong><p>{currentJob.error_message}</p></div>
+      <div className="monitor-canvas">
+        <section className="monitor-focus" aria-live="polite">
+          <span className={`monitor-focus-icon monitor-focus-icon-${state}`}>
+            {state === "working" ? <span className="monitor-processing-ring" aria-hidden="true" /> : <MonitorIcon name={state === "ready" ? "check" : state === "attention" ? "error" : "clock"} />}
+          </span>
+          <div className="monitor-focus-copy">
+            <span className="section-kicker">{focus.kicker}</span>
+            <h1>{focus.title}</h1>
+            <p>{focus.detail}</p>
+          </div>
+          {currentJob?.status === "completed" && (
+            <div className="monitor-download-actions" aria-label={currentJob.source_type === "upload" ? "Download all" : "Download report"}>
+              <button className="button button-primary button-large button-with-icon" type="button" onClick={() => onDownload("complete")} disabled={downloadInProgress}>
+                <MonitorIcon name="download" /> {downloadInProgress ? "Preparing download…" : "Complete chat + files"}
+              </button>
+              <button className="button button-secondary button-large" type="button" onClick={() => onDownload("reports")} disabled={downloadInProgress}>
+                Main + sub-reports only
+              </button>
             </div>
           )}
+        </section>
 
-          {BAD_STATUSES.has(currentJob.status) && !currentJob.error_message && (
-            <div className="alert alert-warning monitor-alert"><span className="alert-icon">!</span><div>The analysis ended with status "{statusLabel(currentJob.status)}".</div></div>
-          )}
+        {currentJobId && currentJob ? (
+          <WorkspaceRail
+            className="monitor-progress-experience"
+            ariaLabel="Analysis progress"
+            value={stageStates.filter((item) => item.status === "completed").length}
+            max={stageStates.length}
+            valueText={`${focus.kicker}: ${focus.title}`}
+            items={phases.map((phase) => ({
+              key: phase.key,
+              label: phase.label,
+              status: phase.status,
+              detail: phaseStatusLabel(phase.status, currentJob.status),
+              progress: phase.progress,
+            }))}
+          />
+        ) : (
+          <div className="monitor-loading-track" aria-hidden="true"><span /></div>
+        )}
+      </div>
 
-          <section className="surface monitor-stages-card">
-            <div className="monitor-section-heading">
-              <div><span className="section-kicker">Pipeline</span><h3>Processing steps</h3></div>
-              <span className="stage-count">{completed}/{stageStates.length}</span>
-            </div>
-            <div className="stage-list user-stage-list">
-              {stageStates.map((item, index) => <StageCard key={item.stage.key} item={item} index={index} />)}
-            </div>
-          </section>
-
-          {currentJob.status === "completed" && (
-            <section className="surface report-ready-card">
-              <span className="report-ready-icon"><MonitorIcon name="download" /></span>
-              <div className="report-ready-copy">
-                <span className="section-kicker">Downloads</span>
-                <h3>Your report is ready</h3>
-                <p>Choose the complete chat package with its available files, or download only the main and sub-reports.</p>
-              </div>
-              <div className="actions-row report-ready-actions" aria-label={currentJob.source_type === "upload" ? "Download all" : "Download report"}>
-                <button className="button button-primary button-large" type="button" onClick={() => onDownload("complete")} disabled={downloadInProgress}>
-                  {downloadInProgress ? "Preparing download…" : "Complete chat + files"}
-                </button>
-                <button className="button button-secondary button-large" type="button" onClick={() => onDownload("reports")} disabled={downloadInProgress}>
-                  Main + sub-reports only
-                </button>
-              </div>
-            </section>
-          )}
-        </>
-      )}
+      <div className="monitor-support-grid">
+        <ActivityPanel activity={activity} />
+        <ContextPanel currentJob={currentJob} />
+      </div>
     </section>
   );
 }

@@ -3,6 +3,7 @@ import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS } from "../lib/constants";
 import { formatBytes } from "../lib/format";
 import { QuestionBuilder } from "./QuestionBuilder";
 import { QuestionSetsPanel } from "./QuestionSetsPanel";
+import { WorkspaceRail, WorkspaceTopbar } from "./WorkspaceChrome";
 
 function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -86,42 +87,6 @@ function FieldLabel({ children, help }) {
   );
 }
 
-function AnalysisOverview({ sourceMode, sourceReady, questionCount, questionsReady, options, uploadInProgress, readinessMessage }) {
-  const state = uploadInProgress ? "working" : sourceReady && questionsReady ? "ready" : "setup";
-  const enhancementLabel = options.analyze_media !== false && options.translate
-    ? "Media + translation"
-    : options.analyze_media !== false ? "Media" : options.translate ? "Translation" : "Standard";
-
-  return (
-    <section className={`analysis-overview analysis-overview-${state}`}>
-      <div className="analysis-readiness-copy">
-        <span className="analysis-overview-icon"><AnalysisIcon name={state === "ready" ? "check" : "sparkles"} /></span>
-        <div>
-          <span className={`analysis-readiness-badge analysis-readiness-badge-${state}`}>
-            <span className="status-dot" />
-            {uploadInProgress ? "Uploading" : state === "ready" ? "Ready" : "Needs input"}
-          </span>
-          <h2>{uploadInProgress ? "Preparing your source" : readinessMessage}</h2>
-        </div>
-      </div>
-      <div className="analysis-overview-metrics" aria-label="Analysis readiness summary">
-        <div className={sourceReady ? "is-ready" : ""}>
-          <span>Source</span>
-          <strong>{sourceReady ? sourceMode === "upload" ? "ZIP export" : "Collected chat" : "Not selected"}</strong>
-        </div>
-        <div className={questionsReady ? "is-ready" : ""}>
-          <span>Questions</span>
-          <strong>{questionCount}</strong>
-        </div>
-        <div>
-          <span>Processing</span>
-          <strong>{enhancementLabel}</strong>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function chatSourceLabel(chat) {
   return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
 }
@@ -200,17 +165,24 @@ export function CreateJobPanel({
     ? "Add a report question"
     : firstIncompleteQuestion >= 0 ? `Complete question ${firstIncompleteQuestion + 1}` : "";
   const readinessMessage = sourceIssue || questionIssue || "Ready to start analysis";
+  const sourceInvalid = sourceMode === "upload"
+    ? Boolean(file && !file.name.toLowerCase().endsWith(".zip"))
+    : Boolean(selectedChat && reportDatesPresent && !reportRangeValid);
+  const workspaceState = uploadInProgress
+    ? "working"
+    : sourceInvalid ? "attention" : sourceReady && questionsReady ? "ready" : "setup";
+  const workspaceBadge = uploadInProgress
+    ? "Uploading"
+    : sourceInvalid ? "Check input" : sourceReady && questionsReady ? "Ready" : "Needs input";
+  const processingLabel = options.analyze_media !== false && options.translate
+    ? "Media + translation"
+    : options.analyze_media !== false ? "Media analysis" : options.translate ? "Translation" : "Standard";
 
   useEffect(() => {
     if (sourceMode !== "telegram_chat") return;
     if (usableChats.some((chat) => chat.id === telegramChatId)) return;
     setTelegramChatId(usableChats[0]?.id || "");
   }, [sourceMode, setTelegramChatId, telegramChatId, usableChats]);
-
-  const sourceSummary = useMemo(() => {
-    if (sourceMode === "upload") return file?.name || "No export selected";
-    return selectedChat ? `${selectedChat.title} - ${chatSourceLabel(selectedChat)}` : "No Telegram chat selected";
-  }, [file, selectedChat, sourceMode]);
 
   const fileText = file
     ? `${formatBytes(file.size)}${file.name.toLowerCase().endsWith(".zip") ? " · Click to replace" : " · ZIP files only"}`
@@ -244,28 +216,61 @@ export function CreateJobPanel({
   };
 
   return (
-    <section className="page analysis-page">
-      <header className="page-header">
-        <div>
-          <span className="page-kicker">Workspace</span>
-          <h1>New Analysis</h1>
-          <p>Choose evidence, shape the questions, and create a focused report.</p>
-        </div>
-      </header>
+    <section className={`page workspace-page workspace-page-${workspaceState} analysis-page analysis-page-${workspaceState}`}>
+      <WorkspaceTopbar
+        tone={workspaceState}
+        badge={workspaceBadge}
+        title="New Analysis"
+        subtitle={uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : readinessMessage}
+        actions={(
+          <>
+            <button className="button button-ghost" type="button" onClick={reset} disabled={uploadInProgress}>
+              Reset
+            </button>
+            <button
+              className="button button-primary button-large"
+              type="button"
+              onClick={start}
+              disabled={uploadInProgress || !sourceReady || !questionsReady}
+              title={!sourceReady || !questionsReady ? readinessMessage : undefined}
+            >
+              {uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : "Start analysis"}
+            </button>
+          </>
+        )}
+      />
 
-      <AnalysisOverview
-        sourceMode={sourceMode}
-        sourceReady={sourceReady}
-        questionCount={questionCount}
-        questionsReady={questionsReady}
-        options={options}
-        uploadInProgress={uploadInProgress}
-        readinessMessage={readinessMessage}
+      <WorkspaceRail
+        className="analysis-readiness-rail"
+        ariaLabel="Analysis readiness"
+        items={[
+          {
+            key: "evidence",
+            label: "Evidence",
+            status: sourceReady ? "completed" : sourceInvalid ? "failed" : "active",
+            detail: sourceReady ? sourceMode === "upload" ? "ZIP selected" : "Chat selected" : sourceIssue,
+            progress: sourceReady ? 100 : sourceInvalid ? 16 : 0,
+          },
+          {
+            key: "questions",
+            label: "Questions",
+            status: questionsReady ? "completed" : "active",
+            detail: questionsReady ? `${questionCount} ready` : questionIssue,
+            progress: questionsReady ? 100 : 0,
+          },
+          {
+            key: "processing",
+            label: "Processing",
+            status: "configured",
+            detail: processingLabel,
+            progress: 100,
+          },
+        ]}
       />
 
       <div className="analysis-grid">
         <div className="analysis-column">
-          <section className="surface analysis-section analysis-source-card">
+          <section className="surface workspace-panel analysis-section analysis-source-card">
             <div className="analysis-card-heading">
               <div className="analysis-heading-copy">
                 <span className="analysis-section-icon"><AnalysisIcon name="upload" /></span>
@@ -417,7 +422,7 @@ export function CreateJobPanel({
             )}
           </section>
 
-          <details className="surface analysis-section analysis-options-card">
+          <details className="surface workspace-panel analysis-section analysis-options-card">
             <summary className="analysis-options-summary">
               <div className="analysis-heading-copy">
                 <span className="analysis-section-icon"><AnalysisIcon name="sparkles" /></span>
@@ -474,7 +479,7 @@ export function CreateJobPanel({
           </details>
         </div>
 
-        <section className="surface analysis-section questions-section analysis-questions-card">
+        <section className="surface workspace-panel analysis-section questions-section analysis-questions-card">
           <div className="analysis-card-heading questions-heading">
             <div className="analysis-heading-copy">
               <span className="analysis-section-icon"><AnalysisIcon name="questions" /></span>
@@ -509,31 +514,6 @@ export function CreateJobPanel({
         </section>
       </div>
 
-      <footer className="analysis-action-bar">
-        <div className="analysis-summary">
-          <span className={`analysis-submit-icon${sourceReady && questionsReady ? " is-ready" : ""}`}>
-            <AnalysisIcon name={sourceReady && questionsReady ? "check" : "sparkles"} />
-          </span>
-          <span className="analysis-summary-copy">
-            <strong>{uploadInProgress ? "Uploading export" : readinessMessage}</strong>
-            <small>{sourceSummary} · {questionCount} question{questionCount === 1 ? "" : "s"}</small>
-          </span>
-        </div>
-        <div className="analysis-actions">
-          <button className="button button-ghost" type="button" onClick={reset} disabled={uploadInProgress}>
-            Reset
-          </button>
-          <button
-            className="button button-primary button-large"
-            type="button"
-            onClick={start}
-            disabled={uploadInProgress || !sourceReady || !questionsReady}
-            title={!sourceReady || !questionsReady ? readinessMessage : undefined}
-          >
-            {uploadInProgress ? "Uploading…" : "Start analysis"}
-          </button>
-        </div>
-      </footer>
     </section>
   );
 }

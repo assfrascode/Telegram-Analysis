@@ -66,13 +66,6 @@ export function optionsFromState(options) {
   };
 }
 
-export function badgeClassForStatus(status) {
-  if (["completed", "uploaded", "ok"].includes(status)) return "badge badge-success";
-  if (["failed", "rejected", "error", "cancelled"].includes(status)) return "badge badge-error";
-  if (["running", "queued", "cancelling"].includes(status)) return "badge badge-warning";
-  return "badge badge-muted";
-}
-
 export function statusLabel(status) {
   const labels = {
     queued: "Queued",
@@ -95,12 +88,14 @@ export function formatProgressPayload(payload = {}) {
     ?? payload.media_done
     ?? payload.questions_done
     ?? payload.chunks_done
-    ?? payload.texts_done;
+    ?? payload.texts_done
+    ?? payload.messages_done;
   const total = payload.total
     ?? payload.media_total
     ?? payload.questions_total
     ?? payload.chunks_total
-    ?? payload.texts_total;
+    ?? payload.texts_total
+    ?? payload.messages_total;
   if (done !== undefined && total !== undefined) return `${done}/${total}`;
   if (payload.progress !== undefined) return `${payload.progress}%`;
   return "";
