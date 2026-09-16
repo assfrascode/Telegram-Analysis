@@ -210,7 +210,7 @@ function ConnectionSetup({
   );
 }
 
-function ExternalCollectorState({ chats, connection, onShowBackendSetup, showBackendSetup }) {
+function ExternalCollectorState({ chats, connection, onShowBackendSetup }) {
   const hasChats = chats.length > 0;
   const online = Boolean(connection?.connected);
   const hasSource = hasChats || online;
@@ -243,11 +243,9 @@ function ExternalCollectorState({ chats, connection, onShowBackendSetup, showBac
             {stateLabel}
           </span>
         )}
-        {!showBackendSetup && (
-          <button className={`button ${hasSource ? "button-secondary" : "button-primary"}`} type="button" onClick={onShowBackendSetup}>
-            {hasSource ? "Connect another account" : "Connect Telegram"}
-          </button>
-        )}
+        <button className={`button ${hasSource ? "button-secondary" : "button-primary"}`} type="button" onClick={onShowBackendSetup}>
+          {hasSource ? "Connect another account" : "Connect Telegram"}
+        </button>
       </div>
     </section>
   );
@@ -1057,35 +1055,35 @@ export function TelegramSourcesPanel({
               onAddChat={addChat}
             />
           </div>
+        ) : shouldShowBackendSetup ? (
+          <div className="telegram-source-stack">
+            <ConnectionSetup
+              apiId={apiId}
+              setApiId={setApiId}
+              apiHash={apiHash}
+              setApiHash={setApiHash}
+              phone={phone}
+              setPhone={setPhone}
+              challengeId={challengeId}
+              requiresPassword={requiresPassword}
+              code={code}
+              setCode={setCode}
+              password={password}
+              setPassword={setPassword}
+              busy={busy}
+              onStart={startLogin}
+              onVerifyCode={verifyCode}
+              onVerifyPassword={verifyPassword}
+              onCancel={() => setShowBackendSetup(false)}
+            />
+          </div>
         ) : (
           <div className="telegram-source-stack">
             <ExternalCollectorState
               chats={activeExternalChats}
               connection={collectorConnection}
               onShowBackendSetup={() => setShowBackendSetup(true)}
-              showBackendSetup={shouldShowBackendSetup}
             />
-            {shouldShowBackendSetup && (
-              <ConnectionSetup
-                apiId={apiId}
-                setApiId={setApiId}
-                apiHash={apiHash}
-                setApiHash={setApiHash}
-                phone={phone}
-                setPhone={setPhone}
-                challengeId={challengeId}
-                requiresPassword={requiresPassword}
-                code={code}
-                setCode={setCode}
-                password={password}
-                setPassword={setPassword}
-                busy={busy}
-                onStart={startLogin}
-                onVerifyCode={verifyCode}
-                onVerifyPassword={verifyPassword}
-                onCancel={() => setShowBackendSetup(false)}
-              />
-            )}
           </div>
         )}
       </div>

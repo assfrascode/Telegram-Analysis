@@ -4126,7 +4126,7 @@ summary:focus-visible {
   height: 100%;
   min-height: 0;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .telegram-page-setup {
@@ -4146,13 +4146,9 @@ summary:focus-visible {
 .telegram-primary-workspace {
   position: relative;
   z-index: 1;
-  max-height: clamp(150px, 24vh, 235px);
   min-height: 0;
-  flex: 0 1 auto;
-  overflow-y: auto;
+  flex: 0 0 auto;
   padding-top: 0.7rem;
-  scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin;
 }
 
 .telegram-primary-workspace .telegram-setup-grid,
@@ -4215,10 +4211,7 @@ summary:focus-visible {
     padding-block: 1rem;
   }
 
-  .telegram-primary-workspace {
-    max-height: 185px;
-    padding-top: 0.55rem;
-  }
+  .telegram-primary-workspace { padding-top: 0.55rem; }
 
   .telegram-data-grid {
     padding-top: 0.55rem;
