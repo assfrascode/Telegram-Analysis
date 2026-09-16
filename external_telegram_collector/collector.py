@@ -31,6 +31,7 @@ from telethon.errors import (
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
     PhoneNumberInvalidError,
+    SendCodeUnavailableError,
     SessionPasswordNeededError,
     TakeoutInitDelayError,
 )
@@ -1530,6 +1531,14 @@ class CollectorRuntime:
                 await self._send_code(client)
             except ConfigurationError as exc:
                 raise LoginRejected(str(exc)) from exc
+            except SendCodeUnavailableError as exc:
+                message = (
+                    "Telegram has no additional verification delivery method available. "
+                    "Check Telegram on an already signed-in device for the current code, "
+                    "or wait before requesting another code."
+                )
+                self._set_phase("awaiting_code", message, "warning")
+                raise LoginRejected(message) from exc
             except FloodWaitError as exc:
                 self._raise_login_flood_wait("awaiting_code", exc)
             log("Requested a new Telegram verification code")

@@ -261,8 +261,13 @@ function ConnectionSetup({
   );
 }
 
-function ExternalCollectorState({ chats, onShowBackendSetup, showBackendSetup }) {
+function ExternalCollectorState({ chats, connection, onShowBackendSetup, showBackendSetup }) {
   const hasChats = chats.length > 0;
+  const online = Boolean(connection?.connected);
+  const stateLabel = online ? "Connected" : connection ? "Not reachable" : "Checking connection";
+  const offlineDetail = connection?.last_seen_at
+    ? ` Last contact: ${formatDate(connection.last_seen_at)}.`
+    : " The collector has not contacted the application yet.";
 
   return (
     <section className={`surface telegram-card external-collector-card${hasChats ? " has-source" : ""}`}>
@@ -277,11 +282,17 @@ function ExternalCollectorState({ chats, onShowBackendSetup, showBackendSetup })
               </InfoTooltip>
             )}
           </span>
-          <h2>{hasChats ? "External collector connected" : "No collection source yet"}</h2>
-          <p>{hasChats ? `${chats.length} active collector chat${chats.length === 1 ? "" : "s"}. No backend account required.` : "Connect Telegram to add groups and channels here."}</p>
+          <h2>{hasChats ? `External collector ${online ? "connected" : "not reachable"}` : "No collection source yet"}</h2>
+          <p>{hasChats ? `${chats.length} active collector chat${chats.length === 1 ? "" : "s"}. ${online ? "The collector is polling for work. No backend account required." : `New messages will not be collected until it reconnects.${offlineDetail}`}` : "Connect Telegram to add groups and channels here."}</p>
         </div>
       </div>
       <div className="external-collector-actions">
+        {hasChats && (
+          <span className={`connection-state connection-state-${online ? "ready" : "offline"}`}>
+            <span className={`status-dot status-dot-${online ? "completed" : "error"}`} />
+            {stateLabel}
+          </span>
+        )}
         {!showBackendSetup && (
           <button className={`button ${hasChats ? "button-secondary" : "button-primary"}`} type="button" onClick={onShowBackendSetup}>
             {hasChats ? "Connect another account" : "Connect Telegram"}
@@ -392,7 +403,7 @@ function AddChatSection({
   );
 }
 
-function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }) {
+function CollectedChatsTable({ chats, busy, backendConnected, externalCollectorConnected, onSync, onUpdate }) {
   const [showArchived, setShowArchived] = useState(false);
   const [pendingIntervals, setPendingIntervals] = useState({});
   const archivedCount = chats.filter((chat) => chat.status === "archived").length;
@@ -446,9 +457,11 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
             <tbody>
               {visibleChats.map((chat) => {
                 const needsBackendConnection = chat.ingest_mode !== "external_push" && !backendConnected;
-                const needsAttention = needsBackendConnection || chat.status === "error" || Boolean(chat.last_error);
+                const needsExternalConnection = chat.ingest_mode === "external_push" && !externalCollectorConnected;
+                const needsAttention = needsBackendConnection || needsExternalConnection || chat.status === "error" || Boolean(chat.last_error);
                 const displayStatus = needsBackendConnection
                   ? "Reconnect needed"
+                  : needsExternalConnection ? "External collector not reachable"
                   : needsAttention ? "Needs attention" : chatStatusText(chat.status);
                 return (
                   <tr key={chat.id} className={chat.status === "archived" ? "is-archived" : ""}>
@@ -472,6 +485,7 @@ function CollectedChatsTable({ chats, busy, backendConnected, onSync, onUpdate }
                         </div>
                       </div>
                       {needsBackendConnection && <span className="table-error">Requires backend Telegram connection</span>}
+                      {needsExternalConnection && <span className="table-error">External collector is not reachable</span>}
                       {chat.last_error && <span className="table-error">{chat.last_error}</span>}
                     </td>
                     <td>
@@ -834,6 +848,7 @@ function ScheduledReportsSection({
 
 export function TelegramSourcesPanel({
   connection,
+  collectorConnection,
   chats,
   schedules,
   questionSets,
@@ -863,15 +878,18 @@ export function TelegramSourcesPanel({
     chat.ingest_mode === "external_push" && chat.status !== "archived"
   ));
   const isBackendConnected = Boolean(connection?.connected);
+  const isExternalCollectorConnected = Boolean(collectorConnection?.connected);
   const activeChats = chats.filter((chat) => chat.status !== "archived");
   const usableActiveChats = activeChats.filter((chat) => (
-    chat.ingest_mode === "external_push" || isBackendConnected
+    chat.ingest_mode === "external_push" ? isExternalCollectorConnected : isBackendConnected
   ));
   const unavailableBackendChats = activeChats.filter((chat) => (
     chat.ingest_mode !== "external_push" && !isBackendConnected
   ));
   const chatsWithIssues = activeChats.filter((chat) => chat.status === "error" || chat.last_error);
-  const hasCollectionIssues = unavailableBackendChats.length > 0 || chatsWithIssues.length > 0;
+  const hasCollectionIssues = unavailableBackendChats.length > 0
+    || (activeExternalChats.length > 0 && !isExternalCollectorConnected)
+    || chatsWithIssues.length > 0;
   const hasExternalSource = activeExternalChats.length > 0;
   const sourceLabel = isBackendConnected && hasExternalSource
     ? "Backend + external"
@@ -1043,6 +1061,7 @@ export function TelegramSourcesPanel({
         <div className="telegram-source-stack">
           <ExternalCollectorState
             chats={activeExternalChats}
+            connection={collectorConnection}
             onShowBackendSetup={() => setShowBackendSetup(true)}
             showBackendSetup={shouldShowBackendSetup}
           />
@@ -1073,6 +1092,7 @@ export function TelegramSourcesPanel({
         chats={chats}
         busy={busy}
         backendConnected={isBackendConnected}
+        externalCollectorConnected={isExternalCollectorConnected}
         onSync={syncChat}
         onUpdate={updateChat}
       />

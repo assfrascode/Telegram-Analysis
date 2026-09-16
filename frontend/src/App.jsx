@@ -148,6 +148,7 @@ export default function App() {
   const [downloadInProgress, setDownloadInProgress] = useState(false);
   const [sourceMode, setSourceMode] = useState("upload");
   const [telegramConnection, setTelegramConnection] = useState(null);
+  const [telegramCollectorConnection, setTelegramCollectorConnection] = useState(null);
   const [telegramChats, setTelegramChats] = useState([]);
   const [telegramReportSchedules, setTelegramReportSchedules] = useState([]);
   const [telegramChatId, setTelegramChatId] = useState("");
@@ -181,6 +182,7 @@ export default function App() {
     setJobs([]);
     setCapacity(null);
     setTelegramConnection(null);
+    setTelegramCollectorConnection(null);
     setTelegramChats([]);
     setTelegramReportSchedules([]);
     setToast(null);
@@ -273,8 +275,9 @@ export default function App() {
 
   const refreshTelegram = useCallback(async () => {
     if (!token) return;
-    const [connectionResult, chatsResult, schedulesResult] = await Promise.allSettled([
+    const [connectionResult, collectorResult, chatsResult, schedulesResult] = await Promise.allSettled([
       request("/telegram/connection"),
+      request("/telegram/collector-connection"),
       request("/telegram/chats"),
       request("/telegram/report-schedules"),
     ]);
@@ -283,6 +286,12 @@ export default function App() {
       setTelegramConnection(connectionResult.value);
     } else {
       addLocalLog(`Could not load Telegram connection: ${requestErrorMessage(connectionResult.reason)}`, "warning");
+    }
+
+    if (collectorResult.status === "fulfilled") {
+      setTelegramCollectorConnection(collectorResult.value);
+    } else {
+      addLocalLog(`Could not load external collector connection: ${requestErrorMessage(collectorResult.reason)}`, "warning");
     }
 
     if (chatsResult.status === "fulfilled") {
@@ -419,6 +428,7 @@ export default function App() {
     setSelectedQuestionSetId(null);
     setCapacity(null);
     setTelegramConnection(null);
+    setTelegramCollectorConnection(null);
     setTelegramChats([]);
     setTelegramReportSchedules([]);
     resetJobEvents();
@@ -704,6 +714,7 @@ export default function App() {
         ) : activeView === "telegram" ? (
             <TelegramSourcesPanel
               connection={telegramConnection}
+              collectorConnection={telegramCollectorConnection}
               chats={telegramChats}
               schedules={telegramReportSchedules}
               questionSets={questionSets}

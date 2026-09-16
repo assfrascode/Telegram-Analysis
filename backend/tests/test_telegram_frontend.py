@@ -52,6 +52,8 @@ def test_react_frontend_exposes_external_collector_without_backend_credentials()
     assert "backendTelegramConnected" in create
     assert "Promise.allSettled" in app
     assert 'request("/telegram/chats")' in app
+    assert 'request("/telegram/collector-connection")' in app
+    assert "External collector is not reachable" in panel
 
 
 def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> None:
@@ -153,3 +155,15 @@ def test_frontends_use_single_use_websocket_tickets() -> None:
     assert "?ticket=" in static_app
     assert "`/jobs/${currentJobId}/ws-ticket`" in react_socket
     assert "`/jobs/${jobId}/ws-ticket`" in static_app
+
+
+def test_frontends_keep_status_reconciliation_active_with_websocket() -> None:
+    react_socket = Path("frontend/src/hooks/useJobSocket.js").read_text()
+    static_app = Path("backend/app/static/app/app.js").read_text()
+
+    react_open_handler = react_socket.split("socket.onopen =", 1)[1].split("socket.onmessage =", 1)[0]
+    static_open_handler = static_app.split("ws.onopen =", 1)[1].split("ws.onmessage =", 1)[0]
+
+    assert "startPolling();" in react_socket
+    assert "stopPolling();" not in react_open_handler
+    assert "stopPolling();" not in static_open_handler

@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.api.routes_telegram_ingest import chat_response
+from app.api.routes_telegram import collector_connection_response
 from app.models import (
     JobStatus,
     TelegramChat,
@@ -49,6 +50,18 @@ def test_ingest_tokens_are_prefixed_and_hashed() -> None:
     assert hash_ingest_token(token) != token
     assert len(hash_ingest_token(token)) == 64
     assert hash_ingest_token(token) == hash_ingest_token(token)
+
+
+def test_external_collector_connection_uses_recent_token_activity() -> None:
+    now = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+
+    connected = collector_connection_response(1, now - timedelta(seconds=30), now=now)
+    stale = collector_connection_response(1, now - timedelta(seconds=61), now=now)
+    missing = collector_connection_response(0, None, now=now)
+
+    assert connected.configured is True and connected.connected is True
+    assert stale.configured is True and stale.connected is False
+    assert missing.configured is False and missing.connected is False
 
 
 def test_external_chat_schema_uses_existing_interval_presets() -> None:

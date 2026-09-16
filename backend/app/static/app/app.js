@@ -1150,6 +1150,7 @@ function formatProgressPayload(payload = {}) {
 async function connectWs() {
   disconnectWs();
   if (!state.token || !state.currentJobId) return;
+  startPolling();
 
   const jobId = state.currentJobId;
   setWsStatus("verbinde", "badge-warning");
@@ -1171,7 +1172,6 @@ async function connectWs() {
   state.ws = ws;
 
   ws.onopen = () => {
-    stopPolling();
     setWsStatus("verbunden", "badge-success");
     addLocalLog("WebSocket verbunden");
   };
@@ -1249,14 +1249,9 @@ function handleJobEvent(event) {
 }
 
 function startPolling() {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
   stopPolling();
   state.pollTimer = window.setInterval(async () => {
     if (!state.currentJobId || !state.token) return;
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      stopPolling();
-      return;
-    }
     await Promise.allSettled([refreshJobStatus(), loadEventBacklog()]);
     if (state.currentJob && TERMINAL_STATUSES.has(state.currentJob.status)) {
       stopPolling();

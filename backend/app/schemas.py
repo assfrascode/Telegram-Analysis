@@ -213,6 +213,12 @@ class TelegramConnectionResponse(BaseModel):
     last_verified_at: datetime | None = None
 
 
+class TelegramCollectorConnectionResponse(BaseModel):
+    configured: bool
+    connected: bool
+    last_seen_at: datetime | None = None
+
+
 class TelegramDialogResponse(BaseModel):
     telegram_chat_id: int
     # Telegram access hashes are signed 64-bit integers. Keep them as decimal

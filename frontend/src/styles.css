@@ -2412,6 +2412,16 @@ select:focus {
   color: #9ceacb;
 }
 
+.connection-state-offline {
+  color: #ff9d9d;
+}
+
+.external-collector-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .connection-form {
   display: grid;
   grid-template-columns: 0.55fr 1fr 1fr auto;

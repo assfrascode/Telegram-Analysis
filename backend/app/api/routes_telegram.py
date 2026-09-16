@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
@@ -12,6 +12,7 @@ from app.models import (
     TelegramChatStatus,
     TelegramConnectionStatus,
     TelegramIngestMode,
+    TelegramIngestToken,
     User,
 )
 from app.schemas import (
@@ -19,6 +20,7 @@ from app.schemas import (
     TelegramChatResponse,
     TelegramChatUpdateRequest,
     TelegramConnectionResponse,
+    TelegramCollectorConnectionResponse,
     TelegramDialogResponse,
     TelegramLoginCodeRequest,
     TelegramLoginPasswordRequest,
@@ -49,6 +51,7 @@ from app.services.auth_rate_limit import enforce_auth_rate_limit
 from app.services.telegram_sync import next_periodic_sync_at
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
+EXTERNAL_COLLECTOR_ONLINE_WINDOW = timedelta(seconds=60)
 
 
 def utc_now() -> datetime:
@@ -66,6 +69,23 @@ def connection_response(connection) -> TelegramConnectionResponse:
         display_name=connection.display_name,
         last_error=connection.last_error,
         last_verified_at=connection.last_verified_at,
+    )
+
+
+def collector_connection_response(
+    configured_count: int,
+    last_seen_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> TelegramCollectorConnectionResponse:
+    current_time = now or utc_now()
+    return TelegramCollectorConnectionResponse(
+        configured=configured_count > 0,
+        connected=(
+            last_seen_at is not None
+            and last_seen_at >= current_time - EXTERNAL_COLLECTOR_ONLINE_WINDOW
+        ),
+        last_seen_at=last_seen_at,
     )
 
 
@@ -108,6 +128,30 @@ async def connection_status(
     session: AsyncSession = Depends(get_session),
 ) -> TelegramConnectionResponse:
     return connection_response(await get_connection(session, user.id))
+
+
+@router.get("/collector-connection", response_model=TelegramCollectorConnectionResponse)
+async def collector_connection_status(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TelegramCollectorConnectionResponse:
+    configured_count, last_seen_at = (
+        await session.execute(
+            select(
+                func.count(func.distinct(TelegramIngestToken.id)),
+                func.max(TelegramIngestToken.last_used_at),
+            )
+            .join(TelegramChat, TelegramChat.ingest_token_id == TelegramIngestToken.id)
+            .where(
+                TelegramChat.owner_user_id == user.id,
+                TelegramChat.ingest_mode == TelegramIngestMode.external_push,
+                TelegramChat.status != TelegramChatStatus.archived,
+                TelegramIngestToken.revoked_at.is_(None),
+                TelegramIngestToken.expires_at > utc_now(),
+            )
+        )
+    ).one()
+    return collector_connection_response(configured_count, last_seen_at)
 
 
 @router.post("/connection/start")

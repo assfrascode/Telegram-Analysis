@@ -10,6 +10,7 @@ from telethon.errors import (
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
+    SendCodeUnavailableError,
     SessionPasswordNeededError,
 )
 from telethon.tl.types import User
@@ -29,9 +30,12 @@ class StopPolling(RuntimeError):
 
 
 class FakeClient:
-    def __init__(self, authorized: bool = False, sign_in_errors=None) -> None:
+    def __init__(
+        self, authorized: bool = False, sign_in_errors=None, send_code_errors=None
+    ) -> None:
         self.authorized = authorized
         self.sign_in_errors = list(sign_in_errors or [])
+        self.send_code_errors = list(send_code_errors or [])
         self.code_requests = 0
         self.sign_in_calls = []
         self.start_calls = []
@@ -58,6 +62,10 @@ class FakeClient:
 
     async def send_code_request(self, _phone):
         self.code_requests += 1
+        if self.send_code_errors:
+            error = self.send_code_errors.pop(0)
+            if error is not None:
+                raise error
         return SimpleNamespace(phone_code_hash=f"hash-{self.code_requests}")
 
     async def sign_in(self, **kwargs):
@@ -223,6 +231,43 @@ def test_resend_replaces_active_phone_code_hash(valid_collector_config) -> None:
         assert status.phase == "awaiting_code"
 
     asyncio.run(scenario())
+
+
+def test_unavailable_resend_returns_a_retryable_login_error(
+    valid_collector_config,
+) -> None:
+    async def scenario():
+        client = FakeClient(send_code_errors=[SendCodeUnavailableError(None)])
+        status = collector.CollectorStatus()
+        runtime = runtime_for(client, status)
+        runtime.client = client
+        runtime.phone_code_hash = "active-hash"
+        status.set_phase("awaiting_code", "Waiting")
+        app = collector.create_app(runtime)
+        endpoints = {
+            route.path: route.endpoint for route in app.routes if hasattr(route, "endpoint")
+        }
+
+        with pytest.raises(HTTPException) as error:
+            await endpoints["/api/login/resend"]()
+
+        assert error.value.status_code == 400
+        assert "no additional verification delivery method" in error.value.detail
+        assert runtime.phone_code_hash == "active-hash"
+        assert status.phase == "awaiting_code"
+        assert "already signed-in device" in status.message
+
+    asyncio.run(scenario())
+
+
+def test_collector_web_handles_non_json_error_responses() -> None:
+    javascript = Path(
+        "external_telegram_collector/web/app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "await response.text()" in javascript
+    assert "JSON.parse(body)" in javascript
+    assert "Request failed (${response.status})" in javascript
 
 
 def test_status_tracks_runs_and_bounds_events() -> None:

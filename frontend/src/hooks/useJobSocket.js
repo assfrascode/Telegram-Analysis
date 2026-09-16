@@ -27,6 +27,11 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
       pollTimer = window.setInterval(() => callbacks.current.pollLatest?.(), 5000);
     };
 
+    // Keep a lightweight reconciliation loop running even while the socket is
+    // connected. WebSocket delivery is intentionally best-effort; the event
+    // backlog and job endpoint are the durable source of truth.
+    startPolling();
+
     const connect = async () => {
       if (stopped) return;
       callbacks.current.setWsStatus("connecting");
@@ -51,7 +56,6 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
       }
 
       socket.onopen = () => {
-        stopPolling();
         callbacks.current.setWsStatus("connected");
         callbacks.current.appendEvent?.({ event_type: "frontend", level: "info", message: "Live updates connected" });
       };
