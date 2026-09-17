@@ -4,7 +4,7 @@ Chat Analyse is a Dockerized Python application for analysing Telegram conversat
 
 The project is still an MVP, but it includes a functional backend, worker pipeline, storage layer, React frontend, Telegram collection flows, and report scheduling.
 
-See [TODO.md](TODO.md) for the prioritized project backlog.
+See [PROJECT_BACKLOG.md](PROJECT_BACKLOG.md) for prioritized todos and future project ideas.
 
 ## Current Capabilities
 
