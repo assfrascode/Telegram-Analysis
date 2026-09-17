@@ -54,29 +54,43 @@ class TelegramSnapshotWorker(Worker):
         chat = await session.get(TelegramChat, job.telegram_chat_id)
         if chat is None or job.report_start_at is None or job.report_end_at is None:
             raise TelegramSyncError("Telegram report interval is incomplete")
-        logger.info(
-            "Telegram report sync started",
-            extra={"event": "telegram.report_sync_started", "chat_id": str(chat.id)},
-        )
 
         job.status = JobStatus.running
         job.started_at = job.started_at or datetime.now(timezone.utc)
-        await self.emit_event(
-            session,
-            job=job,
-            event_type="telegram.sync.started",
-            message="Telegram-Nachrichten werden bis zum Berichtszeitpunkt synchronisiert",
-            payload={
-                "chat_id": str(chat.id),
-                "start_at": job.report_start_at.isoformat(),
-                "end_at": job.report_end_at.isoformat(),
-            },
-        )
         await session.commit()
+
+        # The chat may have finished another synchronization after this worker
+        # loaded it. Refresh before deciding whether to wake a collector.
+        await session.refresh(chat)
+        coverage_already_complete = self._chat_covers_report(chat, job)
+        if coverage_already_complete:
+            logger.info(
+                "Telegram report uses existing coverage",
+                extra={"event": "telegram.report_sync_skipped", "chat_id": str(chat.id)},
+            )
+        else:
+            logger.info(
+                "Telegram report sync started",
+                extra={"event": "telegram.report_sync_started", "chat_id": str(chat.id)},
+            )
+            await self.emit_event(
+                session,
+                job=job,
+                event_type="telegram.sync.started",
+                message="Telegram-Nachrichten werden bis zum Berichtszeitpunkt synchronisiert",
+                payload={
+                    "chat_id": str(chat.id),
+                    "start_at": job.report_start_at.isoformat(),
+                    "end_at": job.report_end_at.isoformat(),
+                },
+            )
+            await session.commit()
 
         allow_partial_sync = job_allows_partial_telegram_sync(job)
         try:
-            if allow_partial_sync:
+            if coverage_already_complete:
+                run = None
+            elif allow_partial_sync:
                 await self._prepare_partial_report_sync(session, job, chat)
                 run = None
             elif chat.ingest_mode == TelegramIngestMode.external_push:
@@ -111,22 +125,32 @@ class TelegramSnapshotWorker(Worker):
         logger.info(
             "Telegram report sync completed",
             extra={
-                "event": "telegram.report_sync_completed",
+                "event": (
+                    "telegram.report_sync_skipped"
+                    if coverage_already_complete
+                    else "telegram.report_sync_completed"
+                ),
                 "chat_id": str(chat.id),
-                "sync_run_id": str(run.id) if run is not None else "partial",
+                "sync_run_id": str(run.id) if run is not None else None,
+                "sync_skipped": coverage_already_complete,
             },
         )
         await self.emit_event(
             session,
             job=job,
             event_type="telegram.sync.completed",
-            message="Telegram-Synchronisierung abgeschlossen",
+            message=(
+                "Vorhandene Telegram-Nachrichten decken den Berichtszeitraum bereits ab"
+                if coverage_already_complete
+                else "Telegram-Synchronisierung abgeschlossen"
+            ),
             payload={
                 "messages_seen": messages_seen,
                 "attachments_seen": attachments_seen,
                 "attachments_failed": attachments_failed,
                 "ingest_mode": chat.ingest_mode.value,
                 "allow_partial_telegram_sync": allow_partial_sync,
+                "sync_skipped": coverage_already_complete,
             },
         )
         await session.commit()

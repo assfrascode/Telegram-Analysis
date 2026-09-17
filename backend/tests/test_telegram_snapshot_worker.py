@@ -299,6 +299,9 @@ def test_partial_snapshot_skips_external_wait_and_fails_without_messages(monkeyp
         async def execute(self, query):
             return Result()
 
+        async def refresh(self, value):
+            return None
+
         async def flush(self):
             return None
 
@@ -323,6 +326,85 @@ def test_partial_snapshot_skips_external_wait_and_fails_without_messages(monkeyp
     assert job.error_message == "No collected Telegram messages exist in the requested interval"
     assert any(event["event_type"] == "telegram.sync.partial" for event in events)
     assert any(event["event_type"] == "telegram.snapshot.failed" for event in events)
+
+
+def test_partial_snapshot_does_not_request_sync_for_covered_subrange(monkeypatch) -> None:
+    coverage_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    coverage_end = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    next_sync_at = datetime(2026, 2, 2, tzinfo=timezone.utc)
+    job_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    job = SimpleNamespace(
+        id=job_id,
+        owner_user_id=uuid.uuid4(),
+        telegram_chat_id=chat_id,
+        report_start_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+        report_end_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        status=JobStatus.queued,
+        started_at=None,
+        completed_at=None,
+        error_message=None,
+        options={"allow_partial_telegram_sync": True},
+    )
+    chat = SimpleNamespace(
+        id=chat_id,
+        ingest_mode=TelegramIngestMode.external_push,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        next_sync_at=next_sync_at,
+        updated_at=coverage_end,
+    )
+    events = []
+
+    class Scalars:
+        def all(self):
+            return []
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def get(self, model, value):
+            if model is Job:
+                return job
+            if model is TelegramChat:
+                return chat
+            return None
+
+        async def execute(self, query):
+            return Result()
+
+        async def refresh(self, value):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        events.append(kwargs)
+
+    async def fail_sync(*args, **kwargs):
+        raise AssertionError("a covered report must not request synchronization")
+
+    worker.emit_event = emit_event
+    worker._prepare_partial_report_sync = fail_sync
+    worker._wait_for_external_coverage = fail_sync
+    monkeypatch.setattr(telegram_snapshot_worker, "synchronize_chat", fail_sync)
+
+    asyncio.run(worker.handle(Session(), {"job_id": str(job_id)}))
+
+    assert chat.next_sync_at == next_sync_at
+    assert not any(event["event_type"] == "telegram.sync.started" for event in events)
+    completed_event = next(
+        event for event in events if event["event_type"] == "telegram.sync.completed"
+    )
+    assert completed_event["payload"]["sync_skipped"] is True
 
 
 def test_backend_collector_prefers_completed_partial_report_interval() -> None:
