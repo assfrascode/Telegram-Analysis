@@ -106,20 +106,6 @@ function chatSourceLabel(chat) {
   return chat.ingest_mode === "external_push" ? "External collector" : "Backend account";
 }
 
-function SourceBadge({ chat }) {
-  const external = chat.ingest_mode === "external_push";
-  return (
-    <span
-      className={`source-badge source-badge-${external ? "external" : "backend"}`}
-      title={external
-        ? "Messages are sent by a collector running outside this application."
-        : "Messages are collected through the Telegram account connected here."}
-    >
-      {external ? "External" : "Backend"}
-    </span>
-  );
-}
-
 function ConnectionSetup({
   apiId,
   setApiId,
@@ -397,8 +383,8 @@ function CollectedChatsTable({ chats, busy, backendConnected, externalCollectorC
             <thead>
               <tr>
                 <th><span className="sr-only">Health</span>Chat</th>
-                <th>Synchronization</th>
                 <th>Frequency</th>
+                <th>Synchronization</th>
                 <th><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
@@ -426,22 +412,11 @@ function CollectedChatsTable({ chats, busy, backendConnected, externalCollectorC
                         </span>
                         <div>
                           <strong title={chat.title}>{chat.title}</strong>
-                          <span className="chat-meta">
-                            <SourceBadge chat={chat} />
-                            {chat.ingest_mode !== "external_push" && (chat.username ? `@${chat.username}` : chat.chat_type)}
-                          </span>
                         </div>
                       </div>
                       {needsBackendConnection && <span className="table-error">Requires backend Telegram connection</span>}
                       {needsExternalConnection && <span className="table-error">External collector is not reachable</span>}
                       {chat.last_error && <span className="table-error">{chat.last_error}</span>}
-                    </td>
-                    <td>
-                      <span className="sync-date"><strong>Last</strong>{formatDate(chat.last_sync_at)}</span>
-                      <span className="sync-date sync-date-secondary">
-                        <strong>Next</strong>
-                        {nextSyncLabel(chat)}
-                      </span>
                     </td>
                     <td>
                       <select
@@ -457,6 +432,13 @@ function CollectedChatsTable({ chats, busy, backendConnected, externalCollectorC
                         <option value={1440}>Daily</option>
                         <option value={0}>Automatic sync off</option>
                       </select>
+                    </td>
+                    <td>
+                      <span className="sync-date"><strong>Last</strong>{formatDate(chat.last_sync_at)}</span>
+                      <span className="sync-date sync-date-secondary">
+                        <strong>Next</strong>
+                        {nextSyncLabel(chat)}
+                      </span>
                     </td>
                     <td>
                       <div className="table-actions">

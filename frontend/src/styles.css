@@ -2340,35 +2340,6 @@ select:focus {
   height: 1rem;
 }
 
-.chat-meta {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.38rem;
-  margin-top: 0.25rem;
-  color: var(--muted);
-  font-size: 0.67rem;
-}
-
-.source-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.16rem 0.38rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--text-soft);
-  background: rgba(255, 255, 255, 0.025);
-  font-size: 0.62rem;
-  font-weight: 720;
-  cursor: help;
-}
-
-.source-badge-external {
-  border-color: rgba(91, 140, 255, 0.25);
-  color: #a9c0f7;
-  background: rgba(91, 140, 255, 0.07);
-}
-
 .table-status {
   width: fit-content;
   padding: 0.27rem 0.48rem;
@@ -4002,10 +3973,11 @@ summary:focus-visible {
   background: linear-gradient(105deg, rgba(239, 107, 117, 0.13), rgba(91, 140, 255, 0.07));
 }
 
-.collected-chats-card .telegram-table th:nth-child(1) { width: 45%; }
+.collected-chats-card .telegram-table { min-width: 640px; }
+.collected-chats-card .telegram-table th:nth-child(1) { width: 27%; }
 .collected-chats-card .telegram-table th:nth-child(2) { width: 24%; }
-.collected-chats-card .telegram-table th:nth-child(3) { width: 14%; }
-.collected-chats-card .telegram-table th:nth-child(4) { width: 17%; }
+.collected-chats-card .telegram-table th:nth-child(3) { width: 29%; }
+.collected-chats-card .telegram-table th:nth-child(4) { width: 20%; }
 
 .chat-avatar-with-health { position: relative; }
 
