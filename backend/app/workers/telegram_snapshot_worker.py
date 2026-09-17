@@ -26,6 +26,7 @@ from app.models import (
     TelegramSyncStatus,
 )
 from app.services.telegram_ingest import job_allows_partial_telegram_sync
+from app.services.telegram_export import telegram_desktop_media_path
 from app.services.telegram_sync import (
     TelegramSyncError,
     chat_covers_interval,
@@ -231,7 +232,12 @@ class TelegramSnapshotWorker(Worker):
                 message_id=source_to_job[source.message_id].id,
                 source_media_id=source.id,
                 media_type=source.media_type,
-                original_path=f"telegram/{source.id}/{source.filename}",
+                original_path=telegram_desktop_media_path(
+                    media_type=source.media_type,
+                    telegram_message_id=source_to_job[source.message_id].telegram_message_id,
+                    timestamp=source_to_job[source.message_id].timestamp,
+                    filename=source.filename,
+                ),
                 minio_object_key=source.minio_object_key,
                 size_bytes=source.size_bytes,
                 sha256=source.sha256,

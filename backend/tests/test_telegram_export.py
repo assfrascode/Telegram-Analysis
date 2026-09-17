@@ -1,6 +1,6 @@
 import json
 from decimal import Decimal
-from datetime import timezone
+from datetime import datetime, timezone
 from io import BytesIO
 
 import pytest
@@ -13,6 +13,7 @@ from app.services.telegram_export import (
     normalize_export_path,
     parse_message,
     parse_text,
+    telegram_desktop_media_path,
 )
 from app.services.telegram_html_export import (
     TelegramHtmlPage,
@@ -30,6 +31,28 @@ def test_normalize_export_path_rejects_zip_slip_paths():
         normalize_export_path("../photos/x.jpg")
     with pytest.raises(TelegramExportError):
         normalize_export_path("/photos/x.jpg")
+
+
+@pytest.mark.parametrize(
+    ("media_type", "filename", "expected"),
+    [
+        ("image", "photo-123.jpg", "photos/photo_42@02-01-2026_03-04-05.jpg"),
+        ("video", "clip.mp4", "video_files/video_42@02-01-2026_03-04-05.mp4"),
+        ("voice", "voice.ogg", "voice_messages/audio_42@02-01-2026_03-04-05.ogg"),
+        ("document", "brief.pdf", "files/42_brief.pdf"),
+    ],
+)
+def test_collected_media_uses_telegram_desktop_export_paths(
+    media_type: str,
+    filename: str,
+    expected: str,
+) -> None:
+    assert telegram_desktop_media_path(
+        media_type=media_type,
+        telegram_message_id=42,
+        timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        filename=filename,
+    ) == expected
 
 
 def test_parse_message_preserves_core_metadata_and_media():

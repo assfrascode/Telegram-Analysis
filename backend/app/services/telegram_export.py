@@ -25,6 +25,49 @@ class TelegramExportError(ValueError):
     pass
 
 
+def telegram_desktop_media_path(
+    *,
+    media_type: str,
+    telegram_message_id: int,
+    timestamp: datetime,
+    filename: str,
+) -> str:
+    """Build the export-relative path Telegram Desktop would use for collected media.
+
+    The external collector stores attachment objects independently, so it does not
+    have an original export path to preserve. Use the message ID and timestamp to
+    produce stable, collision-resistant names beside ``result.json`` instead of
+    exposing internal database UUIDs in the downloaded archive.
+    """
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    timestamp = timestamp.astimezone(timezone.utc)
+    stamp = timestamp.strftime("%d-%m-%Y_%H-%M-%S")
+
+    normalized_type = str(media_type or "document").strip().lower()
+    basename = PurePosixPath(str(filename or "").replace("\\", "/")).name
+    suffix = PurePosixPath(basename).suffix.lower()
+
+    if normalized_type == "image":
+        image_suffix = suffix if suffix in IMAGE_EXTENSIONS else ".jpg"
+        return f"photos/photo_{telegram_message_id}@{stamp}{image_suffix}"
+    if normalized_type == "video":
+        video_suffix = suffix if suffix in VIDEO_EXTENSIONS else ".mp4"
+        return f"video_files/video_{telegram_message_id}@{stamp}{video_suffix}"
+    if normalized_type == "voice":
+        audio_suffix = suffix if suffix in AUDIO_EXTENSIONS else ".ogg"
+        return f"voice_messages/audio_{telegram_message_id}@{stamp}{audio_suffix}"
+    if normalized_type == "audio":
+        audio_suffix = suffix if suffix in AUDIO_EXTENSIONS else ".mp3"
+        return f"audio_files/audio_{telegram_message_id}@{stamp}{audio_suffix}"
+    if normalized_type == "sticker":
+        sticker_suffix = suffix or ".webp"
+        return f"stickers/sticker_{telegram_message_id}@{stamp}{sticker_suffix}"
+
+    safe_basename = basename.replace("\x00", "").strip() or "attachment"
+    return f"files/{telegram_message_id}_{safe_basename}"
+
+
 def validate_json_stream_limits(
     file_obj: BinaryIO,
     *,

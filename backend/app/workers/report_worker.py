@@ -419,13 +419,48 @@ class ReportWorker(Worker):
         rows = list(
             (
                 await session.execute(
-                    select(TelegramMedia, TelegramMessage)
+                    select(
+                        TelegramMedia,
+                        TelegramMessage,
+                        MediaAnalysis,
+                        MediaTranscript,
+                        MediaTranscriptTranslation,
+                    )
                     .outerjoin(TelegramMessage, TelegramMessage.id == TelegramMedia.message_id)
+                    .outerjoin(
+                        MediaAnalysis,
+                        (MediaAnalysis.media_id == TelegramMedia.id)
+                        & (MediaAnalysis.model_name == settings.vision_model)
+                        & (MediaAnalysis.prompt_version == settings.media_analysis_prompt_version),
+                    )
+                    .outerjoin(
+                        MediaTranscript,
+                        (MediaTranscript.media_id == TelegramMedia.id)
+                        & (MediaTranscript.provider == "openai")
+                        & (MediaTranscript.model_name == settings.openai_transcription_model)
+                        & (MediaTranscript.response_format == "text"),
+                    )
+                    .outerjoin(
+                        MediaTranscriptTranslation,
+                        (MediaTranscriptTranslation.transcript_id == MediaTranscript.id)
+                        & (MediaTranscriptTranslation.provider == "libretranslate")
+                        & (MediaTranscriptTranslation.target_language == "en"),
+                    )
                     .where(TelegramMedia.job_id == job.id)
                 )
             ).all()
         )
-        items = [build_report_gallery_item(media, message) for media, message in rows]
+        items = [
+            build_report_gallery_item(
+                media,
+                message,
+                analysis,
+                transcript,
+                transcript_translation,
+                english_only=bool((job.options or {}).get("translate", False)),
+            )
+            for media, message, analysis, transcript, transcript_translation in rows
+        ]
         return sort_report_gallery_items(items)
 
     async def _load_questions(self, session: AsyncSession, job: Job) -> list[ReportQuestion]:

@@ -151,7 +151,7 @@ def test_download_all_builds_collected_chat_export(monkeypatch, tmp_path: Path) 
     )
     media = SimpleNamespace(
         message_id=message_db_id,
-        original_path="telegram/media/photo.jpg",
+        original_path="photos/photo_42@01-01-2026_00-00-00.jpg",
         minio_object_key="media/photo.jpg",
         media_type="image",
     )
@@ -181,7 +181,7 @@ def test_download_all_builds_collected_chat_export(monkeypatch, tmp_path: Path) 
     assert response.path == str(bundle_path)
     assert captured["chat_title"] == "External chat"
     assert captured["messages"][0]["telegram_message_id"] == 42
-    assert captured["media"][0].path == "telegram/media/photo.jpg"
+    assert captured["media"][0].path == "photos/photo_42@01-01-2026_00-00-00.jpg"
     assert "telegram-export-external-chat-2026-01-02-with-report.zip" in response.headers[
         "content-disposition"
     ]

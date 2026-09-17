@@ -10,7 +10,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
-from app.models import StepStatus, TelegramMedia, TelegramMessage
+from app.models import MediaAnalysis, MediaTranscript, StepStatus, TelegramMedia, TelegramMessage
 from app.services.report_builder import (
     build_report_gallery_item,
     format_file_size,
@@ -76,7 +76,7 @@ def test_gallery_links_only_safe_available_export_media() -> None:
 
     available = build_report_gallery_item(_media("photos/photo 1.jpg"), message)
     collected = build_report_gallery_item(
-        _media("telegram/source/file.pdf", source_media_id=uuid.uuid4()),
+        _media("video_files/video_42.mp4", media_type="video", source_media_id=uuid.uuid4()),
         message,
     )
     missing = build_report_gallery_item(
@@ -90,8 +90,8 @@ def test_gallery_links_only_safe_available_export_media() -> None:
     unsafe = build_report_gallery_item(_media("../photos/escape.jpg"), message)
 
     assert available.relative_href == "../photos/photo 1.jpg"
-    assert collected.relative_href is None
-    assert collected.link_unavailable_reason == "Collector file not included"
+    assert collected.relative_href == "../video_files/video_42.mp4"
+    assert collected.link_unavailable_reason is None
     assert missing.relative_href is None
     assert missing.link_unavailable_reason == "Not included in export"
     assert unsafe.relative_href is None
@@ -111,6 +111,52 @@ def test_gallery_keeps_original_link_when_only_media_analysis_failed() -> None:
 
     assert item.relative_href == "../photos/still-available.jpg"
     assert item.link_unavailable_reason is None
+
+
+def test_gallery_renders_collector_description_and_transcript() -> None:
+    message = _message(42, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    media = _media(
+        "video_files/video_42@01-01-2026_00-00-00.mp4",
+        media_type="video",
+        source_media_id=uuid.uuid4(),
+    )
+    item = build_report_gallery_item(
+        media,
+        message,
+        MediaAnalysis(
+            media_id=media.id,
+            model_name="vision-model",
+            prompt_version="neutral-en-v2",
+            description="A person speaks beside a river.",
+            raw_response={},
+        ),
+        MediaTranscript(
+            job_id=media.job_id,
+            media_id=media.id,
+            provider="openai",
+            model_name="whisper-1",
+            response_format="text",
+            status=StepStatus.completed,
+            transcript_text="The river is rising.",
+            raw_response={},
+        ),
+    )
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates" / "report"
+    env = Environment(
+        loader=FileSystemLoader(template_dir),
+        autoescape=select_autoescape(["html", "xml", "html.j2"]),
+    )
+
+    html = env.get_template("media_gallery.html.j2").render(
+        job=SimpleNamespace(source_name="Collected Chat"),
+        generated_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        media_gallery=[item],
+    )
+
+    assert item.relative_href == "../video_files/video_42@01-01-2026_00-00-00.mp4"
+    assert "A person speaks beside a river." in html
+    assert "The river is rising." in html
+    assert "data-media-enrichment-toggle" in html
 
 
 def test_gallery_items_sort_by_timestamp_message_id_and_path_with_unknowns_last() -> None:
@@ -167,7 +213,11 @@ def test_report_zip_contains_preview_gallery_and_no_media_binaries() -> None:
     media_gallery = [
         build_report_gallery_item(_media("photos/<script>.jpg"), message),
         build_report_gallery_item(
-            _media("telegram/source/video.mp4", media_type="video", source_media_id=uuid.uuid4()),
+            _media(
+                "video_files/video_42.mp4",
+                media_type="video",
+                source_media_id=uuid.uuid4(),
+            ),
             message,
         ),
     ]
@@ -199,11 +249,10 @@ def test_report_zip_contains_preview_gallery_and_no_media_binaries() -> None:
     assert "&lt;Admin&gt;" in gallery_html
     assert "<script>.jpg" not in gallery_html
     assert "Open original" in gallery_html
-    assert "Collector file not included" in gallery_html
-    assert "telegram/source/video.mp4" not in gallery_html
+    assert 'src="../video_files/video_42.mp4"' in gallery_html
     assert '<img src="../photos/&lt;script&gt;.jpg"' in gallery_html
     assert "1.2 KB" in gallery_html
-    assert "<video" not in gallery_html
+    assert "<video" in gallery_html
     assert "<audio" not in gallery_html
 
 

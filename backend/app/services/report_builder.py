@@ -265,12 +265,9 @@ def report_media_link(
     """Return an offline-safe media link and a concise user-facing fallback reason.
 
     Media processing state and file availability are deliberately kept separate:
-    an attachment can still be opened when its AI analysis failed. Collector media,
-    on the other hand, does not live beside an exported offline report.
+    an attachment can still be opened when its AI analysis failed. Both uploaded
+    exports and collected-chat bundles place media beside the offline report.
     """
-    if media.source_media_id is not None:
-        return None, "Collector file not included"
-
     if not media.minio_object_key:
         if media.missing_reason == "unsafe_path":
             return None, "Invalid file reference"
@@ -370,6 +367,9 @@ class ReportGalleryItem:
     timestamp_iso: str
     sender_id: str | None
     sender_name: str | None
+    description: str | None = None
+    transcript_text: str | None = None
+    transcript_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -588,8 +588,23 @@ def build_report_message(
 def build_report_gallery_item(
     media: TelegramMedia,
     message: TelegramMessage | None,
+    analysis: MediaAnalysis | None = None,
+    transcript: MediaTranscript | None = None,
+    transcript_translation: MediaTranscriptTranslation | None = None,
+    *,
+    english_only: bool = False,
 ) -> ReportGalleryItem:
     relative_href, link_unavailable_reason = report_media_link(media, from_subreport=False)
+    source_transcript_text = transcript.transcript_text.strip() if transcript else ""
+    translated_transcript_text = (
+        transcript_translation.translated_text.strip() if transcript_translation else ""
+    )
+    transcript_text = (
+        translated_transcript_text if english_only and source_transcript_text else source_transcript_text
+    )
+    transcript_error = transcript.error_message if transcript else None
+    if english_only and source_transcript_text and not translated_transcript_text:
+        transcript_error = "English translation unavailable"
 
     normalized_path = str(media.original_path or "").replace("\\", "/").rstrip("/")
     filename = normalized_path.rsplit("/", 1)[-1] or "Unnamed attachment"
@@ -610,6 +625,9 @@ def build_report_gallery_item(
         timestamp_iso=(isoformat_or_empty(message.timestamp) if message else ""),
         sender_id=(message.sender_id if message else None),
         sender_name=(message.sender_name if message else None),
+        description=(analysis.description.strip() if analysis and analysis.description else None),
+        transcript_text=transcript_text or None,
+        transcript_error=transcript_error,
     )
 
 

@@ -322,7 +322,7 @@ report.zip
     questions/
 ```
 
-Answers and summaries render sanitized Markdown; model-authored HTML is displayed as text so it cannot break the surrounding report. Every page includes a persistent dark/light theme switch, with a Telegram-inspired pale chat canvas and white message bubbles in light mode. Question pages show media inline and expose generated descriptions/transcriptions from a compact info control. Repeated raw chunk text is not included in the rendered pages. The media gallery provides an inline image/video/audio library with fallback cards for files the browser cannot preview.
+Answers and summaries render sanitized Markdown; model-authored HTML is displayed as text so it cannot break the surrounding report. Every page includes a persistent dark/light theme switch, with a Telegram-inspired pale chat canvas and white message bubbles in light mode. Question pages show media inline and expose generated descriptions/transcriptions from a compact info control. Repeated raw chunk text is not included in the rendered pages. The media gallery provides an inline image/video/audio library with fallback cards for files the browser cannot preview and the same description/transcription controls.
 
 Original Telegram media is not duplicated in the report-only ZIP. It contains the main report, question sub-reports, media gallery, and the CSS/JavaScript they need. Media previews and links are relative and resolve when the report is extracted from the complete chat package.
 

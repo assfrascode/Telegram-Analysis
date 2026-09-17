@@ -117,9 +117,10 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
         id=uuid.uuid4(),
         job_id=message.job_id,
         message_id=message.id,
+        source_media_id=uuid.uuid4(),
         media_type="audio",
-        original_path="files/audio.mp3",
-        minio_object_key="jobs/test/files/audio.mp3",
+        original_path="audio_files/audio_43@01-01-2026_00-00-00.mp3",
+        minio_object_key="telegram/collected/audio.mp3",
         status=StepStatus.completed,
     )
     transcript = MediaTranscript(
@@ -179,8 +180,11 @@ def test_report_message_and_subreport_render_media_transcript() -> None:
     html = _render_subreport(question)
 
     assert "Audio attachment" in html
-    assert 'href="../../files/audio.mp3"' in html
-    assert '<audio controls preload="metadata" src="../../files/audio.mp3">' in html
+    assert 'href="../../audio_files/audio_43@01-01-2026_00-00-00.mp3"' in html
+    assert (
+        '<audio controls preload="metadata" '
+        'src="../../audio_files/audio_43@01-01-2026_00-00-00.mp3">'
+    ) in html
     assert "data-media-enrichment-toggle" in html
     assert "An audio clip containing a short spoken greeting." in html
     assert "Transkribierter Inhalt." in html

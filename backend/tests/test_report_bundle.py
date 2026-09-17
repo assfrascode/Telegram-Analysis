@@ -168,7 +168,13 @@ def test_collected_bundle_recreates_json_media_and_report(tmp_path: Path) -> Non
         "generated-report.zip",
         {"report/index.html": "main", "report/questions/q_001.html": "sub"},
     )
-    client = _FakeMinio({"report": report_bytes, "media/photo.jpg": b"photo-bytes"})
+    client = _FakeMinio(
+        {
+            "report": report_bytes,
+            "media/photo.jpg": b"photo-bytes",
+            "media/video.mp4": b"video-bytes",
+        }
+    )
 
     bundle_path = Path(
         build_collected_chat_bundle(
@@ -187,16 +193,32 @@ def test_collected_bundle_recreates_json_media_and_report(tmp_path: Path) -> Non
                     "message_type": "message",
                     "text": "hello",
                     "reactions": [],
-                }
+                },
+                {
+                    "telegram_message_id": 8,
+                    "timestamp": datetime(2026, 1, 2, 4, 5, tzinfo=timezone.utc),
+                    "sender_id": "user1",
+                    "sender_name": "Alice",
+                    "message_type": "message",
+                    "text": "video",
+                    "reactions": [],
+                },
             ],
             media=[
                 CollectedExportMedia(
                     message_id=7,
-                    path="telegram/media-id/photo.jpg",
+                    path="photos/photo_7@02-01-2026_03-04-00.jpg",
                     object_key="media/photo.jpg",
                     media_type="image",
                     mime_type="image/jpeg",
-                )
+                ),
+                CollectedExportMedia(
+                    message_id=8,
+                    path="video_files/video_8@02-01-2026_04-05-00.mp4",
+                    object_key="media/video.mp4",
+                    media_type="video",
+                    mime_type="video/mp4",
+                ),
             ],
         )
     )
@@ -205,14 +227,23 @@ def test_collected_bundle_recreates_json_media_and_report(tmp_path: Path) -> Non
         with zipfile.ZipFile(bundle_path) as archive:
             assert set(archive.namelist()) == {
                 "result.json",
-                "telegram/media-id/photo.jpg",
+                "photos/photo_7@02-01-2026_03-04-00.jpg",
+                "video_files/video_8@02-01-2026_04-05-00.mp4",
                 "report/index.html",
                 "report/questions/q_001.html",
             }
             export = json.loads(archive.read("result.json"))
             assert export["name"] == "Collected chat"
-            assert export["messages"][0]["photo"] == "telegram/media-id/photo.jpg"
-            assert archive.read("telegram/media-id/photo.jpg") == b"photo-bytes"
+            assert export["messages"][0]["photo"] == "photos/photo_7@02-01-2026_03-04-00.jpg"
+            assert (
+                export["messages"][1]["file"]
+                == "video_files/video_8@02-01-2026_04-05-00.mp4"
+            )
+            assert archive.read("photos/photo_7@02-01-2026_03-04-00.jpg") == b"photo-bytes"
+            assert (
+                archive.read("video_files/video_8@02-01-2026_04-05-00.mp4")
+                == b"video-bytes"
+            )
     finally:
         remove_temp_file(str(bundle_path))
 
