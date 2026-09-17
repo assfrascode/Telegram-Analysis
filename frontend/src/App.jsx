@@ -129,6 +129,7 @@ export default function App() {
   const [currentJobId, setCurrentJobId] = useState(() => sessionStorage.getItem(STORAGE_JOB));
   const [activeView, setActiveView] = useState(() => (sessionStorage.getItem(STORAGE_JOB) ? "monitor" : "analysis"));
   const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
   const [authError, setAuthError] = useState("");
   const [capacity, setCapacity] = useState(null);
@@ -162,6 +163,11 @@ export default function App() {
   const eventIdsRef = useRef(new Set());
   const lastEventIdRef = useRef(0);
   const sessionExpiryHandledRef = useRef(false);
+  const submissionRef = useRef(false);
+  const sessionRef = useRef({ token });
+  const monitorScopeRef = useRef({});
+  const sessionScope = sessionRef.current;
+  const monitorScope = monitorScopeRef.current;
 
   const showToast = useCallback((message, kind = "info") => {
     setToast({ message, kind, createdAt: Date.now() });
@@ -176,6 +182,12 @@ export default function App() {
   const expireSession = useCallback(() => {
     if (sessionExpiryHandledRef.current) return;
     sessionExpiryHandledRef.current = true;
+    sessionRef.current = { token: null };
+    monitorScopeRef.current = {};
+    eventIdsRef.current = new Set();
+    lastEventIdRef.current = 0;
+    setEvents([]);
+    setVisibleEvents([]);
     setToken(null);
     setCurrentJobId(null);
     setCurrentJob(null);
@@ -194,14 +206,18 @@ export default function App() {
 
   const request = useCallback(async (path, config = {}) => {
     try {
-      return await apiJson(path, { ...config, token });
+      if (sessionRef.current !== sessionScope) throw new DOMException("Session changed", "AbortError");
+      const result = await apiJson(path, { ...config, token });
+      if (sessionRef.current !== sessionScope) throw new DOMException("Session changed", "AbortError");
+      return result;
     } catch (error) {
-      if (error?.status === 401) expireSession();
+      if (error?.status === 401 && sessionRef.current === sessionScope) expireSession();
       throw error;
     }
-  }, [expireSession, token]);
+  }, [expireSession, sessionScope, token]);
 
   const appendEvent = useCallback((event) => {
+    if (monitorScopeRef.current !== monitorScope) return false;
     const normalized = normalizeEvent(event);
     if (normalized.id && eventIdsRef.current.has(normalized.id)) return false;
 
@@ -224,7 +240,7 @@ export default function App() {
       return next;
     });
     return true;
-  }, []);
+  }, [monitorScope]);
 
   const resetJobEvents = useCallback(() => {
     eventIdsRef.current = new Set();
@@ -248,6 +264,7 @@ export default function App() {
       setCapacity(data);
       return data;
     } catch (error) {
+      if (error.name === "AbortError") return null;
       const fallback = { accepting_jobs: false, blockers: ["capacity_request_failed"], resources: {}, error: error.message };
       setCapacity(fallback);
       addLocalLog(`Could not check system capacity: ${error.message}`, "error");
@@ -314,32 +331,37 @@ export default function App() {
   }, [addLocalLog, request, token]);
 
   const refreshJobStatus = useCallback(async () => {
-    if (!token || !currentJobId) return null;
+    if (!token || !currentJobId || monitorScopeRef.current !== monitorScope) return null;
     try {
       const job = await request(`/jobs/${currentJobId}`);
+      if (monitorScopeRef.current !== monitorScope) return null;
       setCurrentJob(job);
       return job;
     } catch (error) {
+      if (monitorScopeRef.current !== monitorScope) return null;
       addLocalLog(`Could not load analysis status: ${error.message}`, "error");
       return null;
     }
-  }, [addLocalLog, currentJobId, request, token]);
+  }, [addLocalLog, currentJobId, monitorScope, request, token]);
 
   const loadEventBacklog = useCallback(async () => {
-    if (!token || !currentJobId) return;
+    if (!token || !currentJobId || monitorScopeRef.current !== monitorScope) return;
     try {
       const backlog = await request(`/jobs/${currentJobId}/events?after_id=${lastEventIdRef.current}`);
+      if (monitorScopeRef.current !== monitorScope) return;
       backlog.forEach(appendEvent);
     } catch (error) {
+      if (monitorScopeRef.current !== monitorScope) return;
       addLocalLog(`Could not load events: ${error.message}`, "warning");
     }
-  }, [addLocalLog, appendEvent, currentJobId, request, token]);
+  }, [addLocalLog, appendEvent, currentJobId, monitorScope, request, token]);
 
   const pollLatest = useCallback(async () => {
     await Promise.allSettled([refreshJobStatus(), loadEventBacklog()]);
   }, [loadEventBacklog, refreshJobStatus]);
 
   const selectJob = useCallback(async (jobId) => {
+    monitorScopeRef.current = {};
     setCurrentJobId(jobId);
     setCurrentJob(null);
     setActiveView("monitor");
@@ -353,6 +375,7 @@ export default function App() {
   }, [currentJobId, pollLatest, token]);
 
   useJobSocket({
+    scope: monitorScope,
     token,
     currentJobId,
     currentJobStatus: currentJob?.status,
@@ -388,6 +411,8 @@ export default function App() {
     try {
       const data = await apiJson("/auth/login", { method: "POST", body: { email, password } });
       sessionExpiryHandledRef.current = false;
+      sessionRef.current = { token: data.access_token };
+      monitorScopeRef.current = {};
       setToken(data.access_token);
       sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
       addLocalLog("Signed in");
@@ -406,6 +431,8 @@ export default function App() {
     try {
       const data = await apiJson("/auth/register", { method: "POST", body: { email, password } });
       sessionExpiryHandledRef.current = false;
+      sessionRef.current = { token: data.access_token };
+      monitorScopeRef.current = {};
       setToken(data.access_token);
       sessionStorage.setItem(STORAGE_TOKEN, data.access_token);
       addLocalLog("Account created");
@@ -420,6 +447,8 @@ export default function App() {
   };
 
   const logout = () => {
+    sessionRef.current = { token: null };
+    monitorScopeRef.current = {};
     sessionExpiryHandledRef.current = false;
     setAuthError("");
     setToken(null);
@@ -529,6 +558,8 @@ export default function App() {
   };
 
   const startJob = async ({ file, sourceMode: selectedSourceMode, telegramChatId: selectedChatId, reportStart: selectedStart, reportEnd: selectedEnd }) => {
+    // React state is not updated synchronously between two calls in one event turn.
+    if (submissionRef.current) return;
     if (!token) {
       showToast("Sign in first", "warning");
       return;
@@ -560,12 +591,14 @@ export default function App() {
       return;
     }
 
-    setBusy(true);
+    submissionRef.current = true;
+    setSubmitting(true);
     setUploadInProgress(selectedSourceMode === "upload");
     setUploadProgress(0);
 
     try {
       const currentCapacity = await refreshCapacity();
+      if (sessionRef.current !== sessionScope) return;
       if (currentCapacity && !currentCapacity.accepting_jobs) {
         throw new Error(`The system is not accepting new analyses: ${(currentCapacity.blockers || []).join(", ")}`);
       }
@@ -597,15 +630,18 @@ export default function App() {
         job = await request("/jobs/telegram", { method: "POST", body: payload });
         addLocalLog("Telegram synchronization and analysis started");
       }
+      if (sessionRef.current !== sessionScope) return;
       await selectJob(job.id);
       addLocalLog("Analysis started");
       showToast("Analysis started");
       await Promise.allSettled([refreshJobs(), refreshCapacity()]);
     } catch (error) {
+      if (sessionRef.current !== sessionScope) return;
       showToast(error.message, "error");
       addLocalLog(`Could not start analysis: ${error.message}`, "error");
     } finally {
-      setBusy(false);
+      submissionRef.current = false;
+      setSubmitting(false);
       setUploadInProgress(false);
     }
   };
@@ -615,9 +651,11 @@ export default function App() {
     if (!window.confirm("Cancel this analysis?")) return;
     try {
       const data = await request(`/jobs/${currentJobId}/cancel`, { method: "POST" });
+      if (monitorScopeRef.current !== monitorScope) return;
       addLocalLog(`Cancellation requested: ${data.status}`, "warning");
       await refreshJobStatus();
     } catch (error) {
+      if (monitorScopeRef.current !== monitorScope) return;
       showToast(`Cancellation failed: ${error.message}`, "error");
       addLocalLog(`Cancellation failed: ${error.message}`, "error");
     }
@@ -628,11 +666,13 @@ export default function App() {
     if (!window.confirm("Retry this failed analysis from the last failed step?")) return;
     try {
       const job = await request(`/jobs/${currentJobId}/retry`, { method: "POST" });
+      if (monitorScopeRef.current !== monitorScope) return;
       setCurrentJob(job);
       addLocalLog(`Retry requested: ${job.status}`, "warning");
       showToast("Retry started");
       await Promise.allSettled([pollLatest(), refreshJobs(), refreshCapacity()]);
     } catch (error) {
+      if (monitorScopeRef.current !== monitorScope) return;
       showToast(`Retry failed: ${error.message}`, "error");
       addLocalLog(`Retry failed: ${error.message}`, "error");
       await refreshJobStatus();
@@ -738,6 +778,7 @@ export default function App() {
               setSelectedQuestionSetId={setSelectedQuestionSetId}
               uploadProgress={uploadProgress}
               uploadInProgress={uploadInProgress}
+              submitting={submitting}
               onStartJob={startJob}
               onSelectQuestionSet={selectAndLoadQuestionSet}
               onSaveQuestionSet={saveCurrentQuestionSet}

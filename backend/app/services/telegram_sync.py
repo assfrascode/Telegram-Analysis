@@ -43,9 +43,14 @@ from app.services.telegram_accounts import connected_client
 settings = get_settings()
 logger = logging.getLogger(__name__)
 SYNC_DISABLED_UNTIL = datetime.max.replace(tzinfo=timezone.utc)
+MEDIA_RETRY_BATCH_SIZE = 100
 
 
 class TelegramSyncError(RuntimeError):
+    pass
+
+
+class PermanentMediaError(TelegramSyncError):
     pass
 
 
@@ -190,9 +195,9 @@ def _document_filename(message) -> str | None:
 
 
 def _media_metadata(message) -> tuple[str, str, str | None, str] | None:
-    if message.photo is not None:
+    if getattr(message, "photo", None) is not None:
         return "image", f"photo-{message.photo.id}.jpg", "image/jpeg", f"photo:{message.photo.id}"
-    document = message.document
+    document = getattr(message, "document", None)
     if document is None:
         return None
 
@@ -310,6 +315,8 @@ async def _download_media(
         await session.flush()
     if row.status == StepStatus.completed and row.minio_object_key:
         return True, False
+    if row.status == StepStatus.failed_permanent:
+        return True, True
 
     temp = tempfile.NamedTemporaryFile(prefix="telegram-media-", delete=False)
     temp_path = temp.name
@@ -319,7 +326,7 @@ async def _download_media(
         try:
             declared_size = _declared_media_size(message)
             if declared_size is not None and declared_size > settings.max_ingest_media_bytes:
-                raise TelegramSyncError("Attachment exceeds configured max size")
+                raise PermanentMediaError("Attachment exceeds configured max size")
 
             def check_progress(received: int, total: int) -> None:
                 if (
@@ -329,7 +336,7 @@ async def _download_media(
                     total is not None
                     and int(total) > settings.max_ingest_media_bytes
                 ):
-                    raise TelegramSyncError("Attachment exceeds configured max size")
+                    raise PermanentMediaError("Attachment exceeds configured max size")
 
             async with asyncio.timeout(settings.telegram_media_download_timeout_seconds):
                 downloaded = await message.download_media(
@@ -342,11 +349,11 @@ async def _download_media(
                 f"{settings.telegram_media_download_timeout_seconds} seconds"
             ) from exc
         if not downloaded or not os.path.exists(downloaded):
-            raise TelegramSyncError("Telegram returned no downloadable attachment")
+            raise PermanentMediaError("Telegram returned no downloadable attachment")
         downloaded_path = downloaded
         size = os.path.getsize(downloaded)
         if size > settings.max_ingest_media_bytes:
-            raise TelegramSyncError("Attachment exceeds configured max size")
+            raise PermanentMediaError("Attachment exceeds configured max size")
         digest = hashlib.sha256()
         with open(downloaded, "rb") as source:
             while chunk := source.read(1024 * 1024):
@@ -371,7 +378,11 @@ async def _download_media(
         row.updated_at = utc_now()
         return True, False
     except Exception as exc:
-        row.status = StepStatus.failed_retryable
+        row.status = (
+            StepStatus.failed_permanent
+            if isinstance(exc, PermanentMediaError)
+            else StepStatus.failed_retryable
+        )
         row.error_message = str(exc)[:4000]
         row.updated_at = utc_now()
         return True, True
@@ -385,6 +396,64 @@ async def _download_media(
                 os.unlink(downloaded_path)
             except FileNotFoundError:
                 pass
+
+
+async def pending_media_retries(
+    session: AsyncSession,
+    *,
+    chat: TelegramChat,
+) -> list[tuple[CollectedTelegramMedia, CollectedTelegramMessage]]:
+    """Read a bounded, oldest-first retry queue independent of the sync cursor.
+
+    The chat's existing sync lease serializes consumers. A failed attempt updates
+    updated_at, providing a cooldown and allowing other failed files to progress.
+    """
+    cutoff = utc_now() - timedelta(minutes=settings.telegram_sync_retry_minutes)
+    result = await session.execute(
+        select(CollectedTelegramMedia, CollectedTelegramMessage)
+        .join(CollectedTelegramMessage, CollectedTelegramMedia.message_id == CollectedTelegramMessage.id)
+        .where(
+            CollectedTelegramMedia.chat_id == chat.id,
+            CollectedTelegramMedia.owner_user_id == chat.owner_user_id,
+            CollectedTelegramMessage.chat_id == chat.id,
+            CollectedTelegramMessage.owner_user_id == chat.owner_user_id,
+            CollectedTelegramMessage.timestamp >= chat.initial_sync_from,
+            CollectedTelegramMedia.status == StepStatus.failed_retryable,
+            CollectedTelegramMedia.updated_at <= cutoff,
+        )
+        .order_by(CollectedTelegramMedia.updated_at, CollectedTelegramMedia.id)
+        .limit(MEDIA_RETRY_BATCH_SIZE)
+    )
+    return list(result.all())
+
+
+async def retry_failed_media(session: AsyncSession, *, chat: TelegramChat, client, entity, run) -> None:
+    for media, message_row in await pending_media_retries(session, chat=chat):
+        failed = True
+        try:
+            async with asyncio.timeout(settings.telegram_sync_inactivity_timeout_seconds):
+                message = await client.get_messages(entity, ids=message_row.telegram_message_id)
+                metadata = _media_metadata(message) if message is not None else None
+                if metadata is None or metadata[3] != media.telegram_media_key:
+                    raise PermanentMediaError("Original Telegram attachment is no longer available")
+                _, failed = await _download_media(
+                    session, chat=chat, message_row=message_row, message=message,
+                )
+        except (FloodWaitError, AuthKeyUnregisteredError):
+            raise
+        except Exception as exc:
+            media.status = (
+                StepStatus.failed_permanent
+                if isinstance(exc, PermanentMediaError)
+                else StepStatus.failed_retryable
+            )
+            media.error_message = (str(exc) or type(exc).__name__)[:4000]
+            media.updated_at = utc_now()
+        run.attachments_seen += 1
+        run.attachments_failed += int(failed)
+        chat.lease_expires_at = utc_now() + timedelta(minutes=settings.telegram_sync_lease_minutes)
+        chat.updated_at = utc_now()
+        await session.commit()
 
 
 async def synchronize_chat(
@@ -445,9 +514,12 @@ async def synchronize_chat(
                 "sync_run_id": str(run.id),
             },
         )
+        run.attachments_seen = 0
+        run.attachments_failed = 0
+        await retry_failed_media(session, chat=chat, client=client, entity=entity, run=run)
         messages_seen = 0
-        attachments_seen = 0
-        attachments_failed = 0
+        attachments_seen = run.attachments_seen
+        attachments_failed = run.attachments_failed
         highest_message_id = after_message_id
         iter_kwargs: dict[str, Any] = {
             "offset_date": requested_end,

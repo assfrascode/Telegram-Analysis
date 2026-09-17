@@ -18,6 +18,7 @@ from app.schemas import (
     TelegramIngestRunCompleteRequest,
     TelegramIngestTokenCreateRequest,
     TelegramIngestTokenCreateResponse,
+    TelegramMediaRetry,
 )
 from app.services.telegram_ingest import (
     IngestPrincipal,
@@ -33,6 +34,7 @@ from app.services.telegram_ingest import (
     upsert_external_messages,
 )
 from app.services.minio_store import remove_object
+from app.services.telegram_sync import pending_media_retries
 
 router = APIRouter(prefix="/telegram/ingest", tags=["telegram-ingest"])
 settings = get_settings()
@@ -142,6 +144,16 @@ async def claim_next(
         await session.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     run, chat, after_message_id = claimed
+    media_retries = [
+        TelegramMediaRetry(
+            telegram_message_id=message.telegram_message_id,
+            telegram_media_key=media.telegram_media_key,
+            media_type=media.media_type,
+            filename=media.filename,
+            mime_type=media.mime_type,
+        )
+        for media, message in await pending_media_retries(session, chat=chat)
+    ]
     await session.commit()
     return TelegramIngestClaimResponse(
         run_id=run.id,
@@ -149,6 +161,7 @@ async def claim_next(
         requested_start=run.requested_start,
         requested_end=run.requested_end,
         after_message_id=after_message_id,
+        media_retries=media_retries,
     )
 
 
@@ -191,6 +204,7 @@ async def post_media(
     size_bytes: int | None = Form(default=None, ge=0, le=settings.max_ingest_media_bytes),
     sha256: str | None = Form(default=None, pattern=r"^[0-9a-fA-F]{64}$"),
     error_message: str | None = Form(default=None, max_length=4000),
+    retryable: bool = Form(default=True),
     file: UploadFile | None = File(default=None),
     principal: IngestPrincipal = Depends(get_current_ingest_principal),
     session: AsyncSession = Depends(get_session),
@@ -208,6 +222,7 @@ async def post_media(
         declared_sha256=sha256,
         file=file,
         error_message=error_message,
+        retryable=retryable,
     )
     try:
         await session.commit()

@@ -17,6 +17,18 @@ Frontend URL:
 http://localhost:3000
 ```
 
+## Development checks
+
+```bash
+npm install
+npm test
+npm run build
+```
+
+The React regression tests exercise submission guards, job/session changes, and
+late HTTP/WebSocket responses with controlled asynchronous requests. They run
+without a backend or browser. Full browser journey coverage remains separate work.
+
 ## Why there is no package-lock.json in this generated package
 
 The earlier generated package-lock was produced inside a sandbox whose npm registry resolves to an internal mirror. That made Docker builds on normal machines wait on unreachable registry URLs. This package intentionally installs from `https://registry.npmjs.org/` inside Docker using exact top-level dependency versions.

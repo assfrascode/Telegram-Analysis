@@ -2,9 +2,9 @@ import { useEffect, useRef } from "react";
 import { apiJson, buildWsUrl } from "../api/client";
 import { TERMINAL_STATUSES } from "../lib/constants";
 
-export function useJobSocket({ token, currentJobId, currentJobStatus, appendEvent, onTerminalEvent, pollLatest, setWsStatus }) {
-  const callbacks = useRef({ appendEvent, onTerminalEvent, pollLatest, setWsStatus });
-  callbacks.current = { appendEvent, onTerminalEvent, pollLatest, setWsStatus };
+export function useJobSocket({ scope, token, currentJobId, currentJobStatus, appendEvent, onTerminalEvent, pollLatest, setWsStatus }) {
+  const callbacks = useRef();
+  callbacks.current = { scope, appendEvent, onTerminalEvent, pollLatest, setWsStatus };
 
   useEffect(() => {
     if (!token || !currentJobId || TERMINAL_STATUSES.has(currentJobStatus)) {
@@ -16,6 +16,7 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
     let reconnectTimer = null;
     let pollTimer = null;
     let stopped = false;
+    const isCurrent = () => !stopped && callbacks.current.scope === scope;
 
     const stopPolling = () => {
       if (pollTimer) window.clearInterval(pollTimer);
@@ -23,8 +24,10 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
     };
 
     const startPolling = () => {
-      if (pollTimer) return;
-      pollTimer = window.setInterval(() => callbacks.current.pollLatest?.(), 5000);
+      if (pollTimer || !isCurrent()) return;
+      pollTimer = window.setInterval(() => {
+        if (isCurrent()) callbacks.current.pollLatest?.();
+      }, 5000);
     };
 
     // Keep a lightweight reconciliation loop running even while the socket is
@@ -33,7 +36,7 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
     startPolling();
 
     const connect = async () => {
-      if (stopped) return;
+      if (!isCurrent()) return;
       callbacks.current.setWsStatus("connecting");
 
       try {
@@ -41,9 +44,10 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
           token,
           method: "POST",
         });
-        if (stopped) return;
+        if (!isCurrent()) return;
         socket = new WebSocket(buildWsUrl(`/ws/jobs/${currentJobId}`, ticket));
       } catch (error) {
+        if (!isCurrent()) return;
         callbacks.current.setWsStatus("error");
         callbacks.current.appendEvent?.({
           event_type: "frontend",
@@ -56,11 +60,13 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
       }
 
       socket.onopen = () => {
+        if (!isCurrent()) return;
         callbacks.current.setWsStatus("connected");
         callbacks.current.appendEvent?.({ event_type: "frontend", level: "info", message: "Live updates connected" });
       };
 
       socket.onmessage = (message) => {
+        if (!isCurrent()) return;
         try {
           const data = JSON.parse(message.data);
           callbacks.current.appendEvent?.(data);
@@ -76,11 +82,13 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
         }
       };
 
-      socket.onerror = () => callbacks.current.setWsStatus("error");
+      socket.onerror = () => {
+        if (isCurrent()) callbacks.current.setWsStatus("error");
+      };
 
       socket.onclose = () => {
+        if (!isCurrent()) return;
         callbacks.current.setWsStatus("disconnected");
-        if (stopped) return;
         startPolling();
         reconnectTimer = window.setTimeout(connect, 3000);
       };
@@ -98,5 +106,5 @@ export function useJobSocket({ token, currentJobId, currentJobStatus, appendEven
       }
       callbacks.current.setWsStatus("disconnected");
     };
-  }, [token, currentJobId, currentJobStatus]);
+  }, [scope, token, currentJobId, currentJobStatus]);
 }

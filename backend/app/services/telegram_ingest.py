@@ -571,6 +571,7 @@ async def upsert_external_media(
     declared_sha256: str | None,
     file: UploadFile | None,
     error_message: str | None,
+    retryable: bool = True,
 ) -> MediaUpsertResult:
     _run, chat = await load_running_external_run(session, principal=principal, run_id=run_id)
     message = (
@@ -623,7 +624,7 @@ async def upsert_external_media(
         row.minio_object_key = None
         row.size_bytes = declared_size_bytes
         row.sha256 = declared_sha256
-        row.status = StepStatus.failed_retryable
+        row.status = StepStatus.failed_retryable if retryable else StepStatus.failed_permanent
         row.error_message = error_message[:4000]
         await session.flush()
         return MediaUpsertResult(media=row, superseded_object_key=previous_object_key)

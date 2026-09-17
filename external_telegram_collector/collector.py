@@ -26,6 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from telethon import TelegramClient
 from telethon.errors import (
     ApiIdInvalidError,
+    AuthKeyUnregisteredError,
     FloodWaitError,
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
@@ -384,12 +385,21 @@ class ClaimChatInput(BaseModel):
     chat_type: Literal["group", "megagroup", "channel"]
 
 
+class MediaRetryInput(BaseModel):
+    telegram_message_id: int = Field(gt=0)
+    telegram_media_key: str = Field(min_length=1, max_length=512)
+    media_type: str = Field(min_length=1, max_length=64)
+    filename: str = Field(min_length=1, max_length=1024)
+    mime_type: str | None = Field(default=None, max_length=255)
+
+
 class ClaimInput(BaseModel):
     run_id: UUID
     chat: ClaimChatInput
     requested_start: datetime
     requested_end: datetime
     after_message_id: int | None = Field(default=None, ge=0)
+    media_retries: list[MediaRetryInput] = Field(default_factory=list, max_length=100)
 
 
 def configured_initial_sync_from() -> datetime:
@@ -429,10 +439,14 @@ class MediaMetadata(NamedTuple):
     size_bytes: int | None
 
 
+class PermanentMediaError(RuntimeError):
+    pass
+
+
 def media_download_progress_guard(remaining_run_bytes: int):
     def enforce(received: int, _total: int) -> None:
         if received > MAX_MEDIA_FILE_BYTES:
-            raise RuntimeError(
+            raise PermanentMediaError(
                 "Attachment exceeded TELEGRAM_MAX_MEDIA_FILE_BYTES during download"
             )
         if received > remaining_run_bytes:
@@ -695,7 +709,7 @@ def photo_size_bytes(photo: Any) -> int | None:
 
 
 def media_metadata(message) -> MediaMetadata | None:
-    if message.photo is not None:
+    if getattr(message, "photo", None) is not None:
         return MediaMetadata(
             "image",
             f"photo-{message.photo.id}.jpg",
@@ -704,7 +718,7 @@ def media_metadata(message) -> MediaMetadata | None:
             photo_size_bytes(message.photo),
         )
 
-    document = message.document
+    document = getattr(message, "document", None)
     if document is None:
         return None
 
@@ -873,6 +887,8 @@ class Backend:
         message_id: int,
         metadata: MediaMetadata,
         error: str,
+        *,
+        retryable: bool = True,
     ) -> None:
         media_type, filename, mime_type, media_key, _size_bytes = metadata
         response = await self.client.post(
@@ -884,6 +900,7 @@ class Backend:
                 "filename": filename,
                 "mime_type": mime_type or "",
                 "error_message": error[:4000],
+                "retryable": str(retryable).lower(),
             },
         )
         response.raise_for_status()
@@ -1115,6 +1132,142 @@ async def process_claim(
             )
             messages = []
 
+    async def process_media(message, metadata: MediaMetadata) -> None:
+        nonlocal attachments_seen, attachments_failed, media_bytes_consumed
+        attachments_seen += 1
+        STATUS.update_run(
+            messages_seen=messages_seen,
+            attachments_seen=attachments_seen,
+            attachments_failed=attachments_failed,
+        )
+        media_type, filename, _mime_type, media_key, declared_size = metadata
+        quota_error: str | None = None
+        if attachments_seen > MAX_MEDIA_FILES_PER_RUN:
+            quota_error = "Collector media file-count limit exceeded"
+        elif declared_size is not None and declared_size > MAX_MEDIA_FILE_BYTES:
+            quota_error = "Attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
+        elif (
+            declared_size is not None
+            and media_bytes_consumed + declared_size > MAX_MEDIA_BYTES_PER_RUN
+        ):
+            quota_error = (
+                "Collector media byte limit for this sync run exceeded"
+            )
+        if quota_error is not None:
+            attachments_failed += 1
+            STATUS.update_run(
+                messages_seen=messages_seen,
+                attachments_seen=attachments_seen,
+                attachments_failed=attachments_failed,
+            )
+            log(
+                f"Skipping media run={run_id} message_id={message.id} "
+                f"media_key={media_key}: {quota_error}",
+                "warning",
+            )
+            await backend.post_media_error(
+                run_id, message.id, metadata, quota_error,
+                retryable=not (declared_size is not None and declared_size > MAX_MEDIA_FILE_BYTES),
+            )
+            return
+        temp = tempfile.NamedTemporaryFile(
+            prefix="telegram-external-media-", delete=False
+        )
+        temp_path = temp.name
+        temp.close()
+        downloaded_path = temp_path
+        log(
+            f"Downloading media run={run_id} message_id={message.id} "
+            f"media_key={media_key} type={media_type} filename={filename!r}"
+        )
+        try:
+            remaining_run_bytes = MAX_MEDIA_BYTES_PER_RUN - media_bytes_consumed
+            async with asyncio.timeout(MEDIA_DOWNLOAD_TIMEOUT_SECONDS):
+                downloaded = await message.download_media(
+                    file=temp_path,
+                    progress_callback=media_download_progress_guard(
+                        remaining_run_bytes
+                    ),
+                )
+            if not downloaded:
+                raise PermanentMediaError(
+                    "Telegram returned no downloadable attachment"
+                )
+            downloaded_path = downloaded
+            actual_size = os.path.getsize(downloaded_path)
+            if actual_size > MAX_MEDIA_FILE_BYTES:
+                raise PermanentMediaError(
+                    "Downloaded attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
+                )
+            if media_bytes_consumed + actual_size > MAX_MEDIA_BYTES_PER_RUN:
+                raise RuntimeError(
+                    "Downloaded attachment exceeds the media byte limit for this sync run"
+                )
+            media_bytes_consumed += actual_size
+            log(
+                f"Uploading media run={run_id} message_id={message.id} "
+                f"size_bytes={actual_size}"
+            )
+            await backend.post_media_file(
+                run_id, message.id, metadata, downloaded_path
+            )
+            log(
+                f"Uploaded media run={run_id} message_id={message.id} "
+                f"media_key={media_key}"
+            )
+        except Exception as exc:
+            attachments_failed += 1
+            STATUS.update_run(
+                messages_seen=messages_seen,
+                attachments_seen=attachments_seen,
+                attachments_failed=attachments_failed,
+            )
+            log(
+                f"Media failed run={run_id} message_id={message.id} "
+                f"media_key={media_key}: {exc}"
+            )
+            await backend.post_media_error(
+                run_id, message.id, metadata, str(exc),
+                retryable=not isinstance(exc, PermanentMediaError),
+            )
+        finally:
+            for path in {temp_path, downloaded_path}:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+
+    async def retry_media(scan_client: TelegramClient) -> None:
+        nonlocal attachments_seen, attachments_failed
+        for retry in validated_claim.media_retries:
+            metadata = MediaMetadata(
+                retry.media_type, retry.filename, retry.mime_type, retry.telegram_media_key, None,
+            )
+            try:
+                async with asyncio.timeout(MEDIA_DOWNLOAD_TIMEOUT_SECONDS):
+                    message = await scan_client.get_messages(entity, ids=retry.telegram_message_id)
+                current = media_metadata(message) if message is not None else None
+                if current is None or current.media_key != retry.telegram_media_key:
+                    raise PermanentMediaError("Original Telegram attachment is no longer available")
+                if ensure_utc(message.date) < configured_initial_sync_from():
+                    raise PermanentMediaError("Attachment is outside the collector's local sync boundary")
+            except (FloodWaitError, AuthKeyUnregisteredError):
+                raise
+            except Exception as exc:
+                attachments_seen += 1
+                attachments_failed += 1
+                await backend.post_media_error(
+                    run_id, retry.telegram_message_id, metadata, str(exc) or type(exc).__name__,
+                    retryable=not isinstance(exc, PermanentMediaError),
+                )
+                STATUS.update_run(
+                    messages_seen=messages_seen,
+                    attachments_seen=attachments_seen,
+                    attachments_failed=attachments_failed,
+                )
+                continue
+            await process_media(message, current)
+
     async def scan_messages(scan_client: TelegramClient) -> None:
         nonlocal messages_seen, attachments_seen, attachments_failed, media_bytes_consumed
         mode = "takeout" if scan_client is not client else "regular"
@@ -1150,106 +1303,7 @@ async def process_claim(
                 await flush_messages()
 
             if metadata is not None:
-                attachments_seen += 1
-                STATUS.update_run(
-                    messages_seen=messages_seen,
-                    attachments_seen=attachments_seen,
-                    attachments_failed=attachments_failed,
-                )
-                media_type, filename, _mime_type, media_key, declared_size = metadata
-                quota_error: str | None = None
-                if attachments_seen > MAX_MEDIA_FILES_PER_RUN:
-                    quota_error = "Collector media file-count limit exceeded"
-                elif declared_size is not None and declared_size > MAX_MEDIA_FILE_BYTES:
-                    quota_error = "Attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
-                elif (
-                    declared_size is not None
-                    and media_bytes_consumed + declared_size > MAX_MEDIA_BYTES_PER_RUN
-                ):
-                    quota_error = (
-                        "Collector media byte limit for this sync run exceeded"
-                    )
-                if quota_error is not None:
-                    attachments_failed += 1
-                    STATUS.update_run(
-                        messages_seen=messages_seen,
-                        attachments_seen=attachments_seen,
-                        attachments_failed=attachments_failed,
-                    )
-                    log(
-                        f"Skipping media run={run_id} message_id={message.id} "
-                        f"media_key={media_key}: {quota_error}",
-                        "warning",
-                    )
-                    await backend.post_media_error(
-                        run_id, message.id, metadata, quota_error
-                    )
-                    continue
-                temp = tempfile.NamedTemporaryFile(
-                    prefix="telegram-external-media-", delete=False
-                )
-                temp_path = temp.name
-                temp.close()
-                downloaded_path = temp_path
-                log(
-                    f"Downloading media run={run_id} message_id={message.id} "
-                    f"media_key={media_key} type={media_type} filename={filename!r}"
-                )
-                try:
-                    remaining_run_bytes = MAX_MEDIA_BYTES_PER_RUN - media_bytes_consumed
-                    async with asyncio.timeout(MEDIA_DOWNLOAD_TIMEOUT_SECONDS):
-                        downloaded = await message.download_media(
-                            file=temp_path,
-                            progress_callback=media_download_progress_guard(
-                                remaining_run_bytes
-                            ),
-                        )
-                    if not downloaded:
-                        raise RuntimeError(
-                            "Telegram returned no downloadable attachment"
-                        )
-                    downloaded_path = downloaded
-                    actual_size = os.path.getsize(downloaded_path)
-                    if actual_size > MAX_MEDIA_FILE_BYTES:
-                        raise RuntimeError(
-                            "Downloaded attachment exceeds TELEGRAM_MAX_MEDIA_FILE_BYTES"
-                        )
-                    if media_bytes_consumed + actual_size > MAX_MEDIA_BYTES_PER_RUN:
-                        raise RuntimeError(
-                            "Downloaded attachment exceeds the media byte limit for this sync run"
-                        )
-                    media_bytes_consumed += actual_size
-                    log(
-                        f"Uploading media run={run_id} message_id={message.id} "
-                        f"size_bytes={actual_size}"
-                    )
-                    await backend.post_media_file(
-                        run_id, message.id, metadata, downloaded_path
-                    )
-                    log(
-                        f"Uploaded media run={run_id} message_id={message.id} "
-                        f"media_key={media_key}"
-                    )
-                except Exception as exc:
-                    attachments_failed += 1
-                    STATUS.update_run(
-                        messages_seen=messages_seen,
-                        attachments_seen=attachments_seen,
-                        attachments_failed=attachments_failed,
-                    )
-                    log(
-                        f"Media failed run={run_id} message_id={message.id} "
-                        f"media_key={media_key}: {exc}"
-                    )
-                    await backend.post_media_error(
-                        run_id, message.id, metadata, str(exc)
-                    )
-                finally:
-                    for path in {temp_path, downloaded_path}:
-                        try:
-                            os.unlink(path)
-                        except FileNotFoundError:
-                            pass
+                await process_media(message, metadata)
 
     try:
         if USE_TAKEOUT:
@@ -1261,8 +1315,10 @@ async def process_claim(
                 channels=True,
                 files=True,
             ) as takeout:
+                await retry_media(takeout)
                 await scan_messages(takeout)
         else:
+            await retry_media(client)
             await scan_messages(client)
 
         await flush_messages()

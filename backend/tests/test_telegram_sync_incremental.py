@@ -29,6 +29,9 @@ class FakeSession:
     async def commit(self):
         self.commits += 1
 
+    async def execute(self, query):
+        return SimpleNamespace(all=lambda: [])
+
 
 class FakeClient:
     def __init__(self, messages, *, delay_seconds=0):
@@ -66,6 +69,7 @@ def make_chat(now: datetime):
         last_collected_message_id=100,
         next_sync_at=now,
         coverage_start=now - timedelta(days=1),
+        initial_sync_from=now - timedelta(days=1),
         coverage_end=now - timedelta(hours=1),
         lease_owner="collector:test",
         lease_expires_at=now + timedelta(minutes=30),

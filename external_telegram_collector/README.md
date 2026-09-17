@@ -129,6 +129,16 @@ Telegram message ID and the collector requests only newer messages. Claims are
 also checked against the local approved map, entity type, `INITIAL_SYNC_FROM`, and
 `TELEGRAM_MAX_SYNC_RANGE_DAYS`; backend state alone cannot expand local access.
 
+Claims can additionally include up to 100 failed attachments to retry by exact
+message ID, independently of the forward cursor and current scan window. The
+backend selects the oldest eligible failures after a cooldown controlled by its
+`TELEGRAM_SYNC_RETRY_MINUTES`. Retries use the same approved chat, local history
+boundary, download deadlines, and per-file/per-run quotas. Missing or replaced
+attachments and files exceeding the per-file limit are reported as permanent
+failures; temporary errors and exhausted per-run quotas remain retryable. This
+work runs on the next scheduled or requested sync, including runs with no new
+messages. Update both backend and collector to enable it.
+
 Set `TELEGRAM_USE_TAKEOUT=true` for large historical exports or media-heavy
 syncs. In takeout mode, startup registration and claim polling still use the
 normal Telegram session, but each claimed message scan and media download runs

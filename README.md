@@ -133,12 +133,16 @@ data-owning user. Public registration is disabled by default. After the first
 successful login, set `BOOTSTRAP_ADMIN_ENABLED=false`, clear the two bootstrap
 values from `.env`, and recreate the backend container.
 
-The default object-store image follows the supported current MinIO AIStor image,
-which will not start without a free-tier or commercial license. Store that file
-outside Git and set `MINIO_LICENSE_FILE` to its host path; Compose mounts it
-read-only. Confirm the product's licensing and support requirements before use.
+The object store defaults to `minio/minio:RELEASE.2025-04-22T22-12-26Z`, configurable
+through `MINIO_IMAGE`. This Compose configuration runs MinIO with its data volume
+and root credentials; it does not configure AIStor or mount a license file.
+`MINIO_LICENSE_FILE` is not used and can be removed from older environment files.
+If migrating to AIStor, supply its required command and license mount in a
+separately reviewed Compose override; changing the image alone is not a complete
+migration. Existing `.env` values for `MINIO_IMAGE` now take effect, so check that
+value before recreating the storage container.
 
-The named PostgreSQL, NATS, AIStor, and Qdrant volumes contain application data
+The named PostgreSQL, NATS, MinIO, and Qdrant volumes contain application data
 in plaintext at the container-storage layer. Put Docker's data root and backups
 on encrypted storage, restrict Docker-daemon and backup access, and test encrypted
 restore procedures. The supplied request, extraction, media, connection, and
@@ -146,13 +150,13 @@ temporary-filesystem limits bound the main untrusted inputs; also set host-level
 CPU, memory, PID, and persistent-volume/bucket quotas for the size of your
 deployment.
 
-Compose follows the deployment's latest-image policy for PostgreSQL, NATS,
-MinIO AIStor, Qdrant, vLLM, Python, Node, and Nginx. The Python and Node `slim`
-aliases likewise track the current language image while reducing the runtime
-surface. Every image remains overrideable by environment variable. Resolve and
-record the deployed image digests in each release manifest before promotion; a
-floating current tag is not reproducible and can introduce breaking major
-upgrades.
+Compose uses floating image tags for PostgreSQL, NATS, Qdrant, vLLM, Prometheus,
+and Nginx; Python and Node use their floating `slim` aliases. MinIO uses the fixed
+release tag above. Image environment overrides are defined for PostgreSQL,
+MinIO, vLLM, Prometheus, Python, Node, and Nginx; NATS and Qdrant currently require
+a Compose override. Resolve and record deployed image digests in each release
+manifest before promotion; floating tags are not reproducible and can introduce
+breaking major upgrades.
 
 Compose assigns an explicit runtime role to each backend process. JWT/bootstrap
 secrets remain API-only; the internal Telegram collector receives only its
@@ -176,7 +180,17 @@ Use the main `New Analysis` screen to upload a Telegram Desktop ZIP export in JS
 Use `Telegram Setup` in the frontend to connect a Telegram account with credentials from `my.telegram.org`, load available groups/channels, and select chats to collect. The backend stores Telegram API credentials and session data encrypted at rest, then syncs active chats at the selected interval.
 
 Completed syncs continue from the highest stored Telegram message ID instead of
-rescanning a time overlap. Long syncs use progress-based inactivity limits:
+rescanning a time overlap. At the start of each scheduled or manually requested
+sync, both collector modes also retry up to 100 previously failed attachments by
+their exact message IDs, oldest attempts first. These retries do not rewind the
+message cursor and work when there are no new messages. Transient failures become
+eligible again after `TELEGRAM_SYNC_RETRY_MINUTES` (5 minutes by default); missing,
+replaced, or oversized attachments retain a permanent failure and reason. Manual-only
+chats retry on their next requested sync. Existing report snapshots are unchanged;
+new snapshots can include recovered attachments. Update the external collector
+alongside the backend to enable this retry protocol.
+
+Long syncs use progress-based inactivity limits:
 `TELEGRAM_SYNC_INACTIVITY_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_INACTIVITY_TIMEOUT_SECONDS` both default to 900 seconds.
 External collectors have 60 seconds to respond to a newly requested report sync,

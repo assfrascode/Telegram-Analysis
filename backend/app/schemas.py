@@ -355,12 +355,21 @@ class TelegramIngestChatTokenAssignRequest(BaseModel):
     token_id: uuid.UUID
 
 
+class TelegramMediaRetry(BaseModel):
+    telegram_message_id: int
+    telegram_media_key: str
+    media_type: str
+    filename: str
+    mime_type: str | None = None
+
+
 class TelegramIngestClaimResponse(BaseModel):
     run_id: uuid.UUID
     chat: TelegramChatResponse
     requested_start: datetime
     requested_end: datetime
     after_message_id: int | None = None
+    media_retries: list[TelegramMediaRetry] = Field(default_factory=list)
 
 
 class TelegramIngestMessageInput(BaseModel):

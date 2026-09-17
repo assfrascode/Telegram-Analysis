@@ -1,29 +1,29 @@
 # Chat Analyse: ideas and todos
 
-Reviewed against the repository on 2026-09-17. This is a proposed backlog, not a release commitment. The correctness findings below come from code inspection and still need targeted reproduction. Check an item off when its completion criteria are met.
+Reviewed against the repository on 2026-09-17. This is a proposed backlog, not a release commitment. Unchecked correctness findings come from code inspection and still need targeted reproduction. Completed fixes include their validation below.
 
 The project already supports ZIP and collected-chat analysis, saved question sets, scheduled reports, translation, media processing, authenticated downloads, retries, migrations, and operational metrics. The work below builds on those capabilities.
 
 ## P1 — Fix correctness gaps and make changes repeatable
 
-- [ ] **T01 — Prevent duplicate analysis submissions.** Telegram submissions set `busy`, but the start button only checks `uploadInProgress`, which stays false for this source.
-  **Done when:** both source modes reject repeat submission while pending; a rapid double-click creates one request; failure makes the form usable again.
+- [x] **T01 — Prevent duplicate analysis submissions.** Both source modes now use a synchronous submission guard and disable the form actions while starting an analysis.
+  **Validated:** React regression tests cover duplicate calls before a render, the actual Telegram start button, both source modes, and recovery after failure.
   **Start in:** [App.jsx](frontend/src/App.jsx), [CreateJobPanel.jsx](frontend/src/components/CreateJobPanel.jsx).
 
-- [ ] **T02 — Isolate monitoring state when switching jobs.** Status and event requests can finish after the user selects another job and still update shared state.
-  **Done when:** responses from a previous job or login session are cancelled or ignored; delayed requests cannot mix job status, events, or event cursors after switching jobs or signing out.
+- [x] **T02 — Isolate monitoring state when switching jobs.** Status, events, retry/cancel results, and WebSocket callbacks are scoped to the selected job; authentication errors are scoped to their login session.
+  **Validated:** React regressions cover A → B → A selection, old event cursors, late retry responses, a new login after sign-out, and obsolete socket messages/ticket errors.
   **Start in:** [App.jsx](frontend/src/App.jsx), [API client](frontend/src/api/client.js), [socket hook](frontend/src/hooks/useJobSocket.js).
 
 - [ ] **T03 — Verify worker ownership during redelivery and long batches.** Workers fetch multiple tasks, process them sequentially, and heartbeat the currently executing message; inspect whether waiting messages can be redelivered and processed concurrently.
   **Done when:** a long first task, two workers, and a worker restart cannot cause concurrent execution of the same task or duplicate downstream work; abandoned claims recover automatically.
   **Start in:** [worker base](backend/app/workers/base.py), [worker control](backend/app/services/worker_control.py), [worker tests](backend/tests/test_worker_base.py).
 
-- [ ] **T04 — Retry failed collected-media downloads independently.** A completed sync can advance its message cursor past messages whose attachments failed to download.
-  **Done when:** a transient attachment failure is retried without requiring a new message or a full history rescan; permanent failures remain visible; equivalent behavior is checked for backend and external collection.
+- [x] **T04 — Retry failed collected-media downloads independently.** Both collection modes consume up to 100 eligible failed attachments per sync by exact message ID, with a cooldown and explicit permanent failures.
+  **Validated:** backend and external-collector regressions exercise recovery with no new messages, unchanged forward cursors, transient/permanent errors, ownership filters, history boundaries, and download limits. Manual-only chats retry on the next requested sync.
   **Start in:** [Telegram sync](backend/app/services/telegram_sync.py), [external collector](external_telegram_collector/collector.py).
 
-- [ ] **T05 — Reconcile deployment documentation and configuration.** README and `.env.example` describe AIStor, `MINIO_IMAGE`, and a license mount, while Compose currently uses a fixed `minio/minio` image without that mount. Image override documentation also needs checking against actual service definitions.
-  **Done when:** the intended storage deployment is consistent across Compose, environment examples, and setup instructions; a clean-start walkthrough works using those instructions.
+- [x] **T05 — Reconcile deployment documentation and configuration.** Compose and the environment example agree on the existing MinIO release, now configurable through `MINIO_IMAGE`; README removes the unused AIStor license setup and lists the actual image overrides.
+  **Validation:** Compose configuration and documented defaults are checked without starting or changing deployed services. Existing `MINIO_IMAGE` values now take effect and should be checked before recreating MinIO.
   **Start in:** [README](README.md), [environment example](.env.example), [Compose](docker-compose.yml).
 
 - [ ] **T06 — Make dependency installation reproducible.** Direct dependencies are pinned, but transitive locks are absent. The frontend explicitly documents an earlier lockfile problem involving an inaccessible registry.
@@ -34,7 +34,7 @@ The project already supports ZIP and collected-chat analysis, saved question set
   **Done when:** changes run backend and external-collector tests, a frontend production build, and migration integration checks using an isolated disposable database; documented commands use the correct working directories.
   **Start in:** [backend tests](backend/tests), [collector tests](external_telegram_collector/tests), [migration integration test](backend/tests/test_migrations_integration.py), [frontend scripts](frontend/package.json).
 
-- [ ] **T08 — Add browser regression tests for complete user journeys.** Existing frontend checks include source-text assertions, and the frontend has no executable browser test suite.
+- [ ] **T08 — Add browser regression tests for complete user journeys.** React interaction regressions now protect T01/T02; a full browser test suite is still needed alongside the existing source-text checks.
   **Done when:** a repeatable mock-mode suite covers login expiry, both analysis sources, switching jobs, WebSocket fallback, retry/cancel, schedule editing, and both authenticated downloads. Include the regressions in T01 and T02.
   **Start in:** [frontend package](frontend/package.json), [existing frontend checks](backend/tests/test_telegram_frontend.py), [download checks](backend/tests/test_frontend_download_auth.py).
 
@@ -97,9 +97,9 @@ These are optional product directions. Validate demand and scope before promotin
 
 ## Suggested starting order
 
-1. Fix T01 and T02 and add focused interaction regressions.
-2. Resolve T05, then establish reproducible installs and CI with T06–T08.
-3. Reproduce and address T03 and T04 before increasing worker concurrency or collection volume.
+1. T01, T02, T04, and T05 are implemented; run their regression checks when changing these flows.
+2. Establish reproducible installs and CI with T06–T08.
+3. Reproduce and address T03 before increasing worker concurrency.
 4. Bring forward T13 and T14 before long-running deployments accumulate substantial data.
 5. Improve report trust with T10–T12; deliver T15 and T16 for everyday usability.
 

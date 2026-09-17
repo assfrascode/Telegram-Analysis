@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
+    "test": "vitest run --pool=forks --poolOptions.forks.singleFork",
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
@@ -14,5 +15,8 @@
     "react": "18.2.0",
     "react-dom": "18.2.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "react-test-renderer": "18.2.0",
+    "vitest": "2.1.9"
+  }
 }

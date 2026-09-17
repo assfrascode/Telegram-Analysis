@@ -103,6 +103,7 @@ export function CreateJobPanel({
   setSelectedQuestionSetId,
   uploadProgress,
   uploadInProgress,
+  submitting,
   onStartJob,
   onSelectQuestionSet,
   onSaveQuestionSet,
@@ -168,11 +169,11 @@ export function CreateJobPanel({
   const sourceInvalid = sourceMode === "upload"
     ? Boolean(file && !file.name.toLowerCase().endsWith(".zip"))
     : Boolean(selectedChat && reportDatesPresent && !reportRangeValid);
-  const workspaceState = uploadInProgress
+  const workspaceState = submitting
     ? "working"
     : sourceInvalid ? "attention" : sourceReady && questionsReady ? "ready" : "setup";
-  const workspaceBadge = uploadInProgress
-    ? "Uploading"
+  const workspaceBadge = submitting
+    ? uploadInProgress ? "Uploading" : "Starting"
     : sourceInvalid ? "Check input" : sourceReady && questionsReady ? "Ready" : "Needs input";
   const processingLabel = options.analyze_media !== false && options.translate
     ? "Media + translation"
@@ -221,20 +222,20 @@ export function CreateJobPanel({
         tone={workspaceState}
         badge={workspaceBadge}
         title="New Analysis"
-        subtitle={uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : readinessMessage}
+        subtitle={uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : submitting ? "Starting analysis…" : readinessMessage}
         actions={(
           <>
-            <button className="button button-ghost" type="button" onClick={reset} disabled={uploadInProgress}>
+            <button className="button button-ghost" type="button" onClick={reset} disabled={submitting}>
               Reset
             </button>
             <button
               className="button button-primary button-large"
               type="button"
               onClick={start}
-              disabled={uploadInProgress || !sourceReady || !questionsReady}
+              disabled={submitting || !sourceReady || !questionsReady}
               title={!sourceReady || !questionsReady ? readinessMessage : undefined}
             >
-              {uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : "Start analysis"}
+              {uploadInProgress ? `Uploading ${Math.round(uploadProgress)}%` : submitting ? "Starting analysis…" : "Start analysis"}
             </button>
           </>
         )}

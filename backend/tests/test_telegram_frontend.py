@@ -15,7 +15,7 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "Allow partial report" in create
     assert "allow_partial_telegram_sync" in create
     assert "Open Telegram Setup" in create
-    assert "analysis-overview" in create
+    assert "analysis-page" in create
     assert "analysis-source-choice" in create
     assert "Processing enhancements" in create
     assert "Use a period of 30 days or less" in create
@@ -72,7 +72,7 @@ def test_react_frontend_uses_desktop_shell_and_inline_question_set_forms() -> No
     assert "inline-template-form" in question_sets
     assert "Progress" in progress
     assert "Retry analysis" in progress
-    assert "progress-summary-card" in progress
+    assert 'aria-live="polite"' in progress
     assert "min-width: 1180px" in styles
 
 
