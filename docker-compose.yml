@@ -201,7 +201,7 @@ services:
     logging: *default-logging
 
   minio:
-    image: "${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
+    image: minio/minio:latest #"${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:

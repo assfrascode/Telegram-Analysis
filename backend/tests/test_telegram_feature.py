@@ -67,6 +67,7 @@ def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
         questions=[{"text": "What happened?"}],
     )
     assert default_request.options.allow_partial_telegram_sync is False
+    assert default_request.options.force_partial_telegram_sync is False
 
     partial_request = TelegramReportCreateRequest(
         telegram_chat_id=uuid.uuid4(),
@@ -76,6 +77,27 @@ def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
         options={"allow_partial_telegram_sync": True},
     )
     assert partial_request.options.allow_partial_telegram_sync is True
+
+    forced_request = TelegramReportCreateRequest(
+        telegram_chat_id=uuid.uuid4(),
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        questions=[{"text": "What happened?"}],
+        options={"force_partial_telegram_sync": True},
+    )
+    assert forced_request.options.force_partial_telegram_sync is True
+
+    with pytest.raises(ValidationError):
+        TelegramReportCreateRequest(
+            telegram_chat_id=uuid.uuid4(),
+            start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            questions=[{"text": "What happened?"}],
+            options={
+                "allow_partial_telegram_sync": True,
+                "force_partial_telegram_sync": True,
+            },
+        )
 
     with pytest.raises(ValidationError):
         TelegramReportCreateRequest(

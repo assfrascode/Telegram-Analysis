@@ -62,6 +62,7 @@ class JobOptions(BaseModel):
     translate: bool = False
     analyze_media: bool = True
     allow_partial_telegram_sync: bool = False
+    force_partial_telegram_sync: bool = False
     retrieval_k: int = Field(default=50, ge=1, le=200)
     rerank_k: int = Field(default=15, ge=1, le=100)
 
@@ -69,6 +70,10 @@ class JobOptions(BaseModel):
     def validate_rerank_not_larger_than_retrieval(self) -> Self:
         if self.rerank_k > self.retrieval_k:
             raise ValueError("rerank_k must not be greater than retrieval_k")
+        if self.allow_partial_telegram_sync and self.force_partial_telegram_sync:
+            raise ValueError(
+                "allow_partial_telegram_sync and force_partial_telegram_sync are mutually exclusive"
+            )
         return self
 
 
@@ -114,6 +119,7 @@ class ScheduledReportJobMetadata(BaseModel):
     run_time_local: str
     question_set_id: uuid.UUID | None = None
     allow_partial_telegram_sync: bool = False
+    force_partial_telegram_sync: bool = False
 
 
 class JobResponse(BaseModel):
@@ -285,6 +291,15 @@ class TelegramReportScheduleCreateRequest(BaseModel):
     rolling_window_days: int = Field(ge=1)
     enabled: bool = True
     allow_partial_telegram_sync: bool = False
+    force_partial_telegram_sync: bool = False
+
+    @model_validator(mode="after")
+    def validate_partial_mode(self) -> Self:
+        if self.allow_partial_telegram_sync and self.force_partial_telegram_sync:
+            raise ValueError(
+                "allow_partial_telegram_sync and force_partial_telegram_sync are mutually exclusive"
+            )
+        return self
 
 class TelegramReportScheduleUpdateRequest(BaseModel):
     telegram_chat_id: uuid.UUID | None = None
@@ -294,6 +309,7 @@ class TelegramReportScheduleUpdateRequest(BaseModel):
     rolling_window_days: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
     allow_partial_telegram_sync: bool | None = None
+    force_partial_telegram_sync: bool | None = None
 
 
 class TelegramReportScheduleResponse(BaseModel):
@@ -302,6 +318,7 @@ class TelegramReportScheduleResponse(BaseModel):
     question_set_id: uuid.UUID
     enabled: bool
     allow_partial_telegram_sync: bool
+    force_partial_telegram_sync: bool
     run_time_local: str
     timezone: str
     rolling_window_days: int

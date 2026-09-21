@@ -502,6 +502,7 @@ function ScheduledReportsSection({
   const [rollingWindowDays, setRollingWindowDays] = useState("1");
   const [enabled, setEnabled] = useState(true);
   const [allowPartialTelegramSync, setAllowPartialTelegramSync] = useState(false);
+  const [forcePartialTelegramSync, setForcePartialTelegramSync] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
@@ -526,6 +527,7 @@ function ScheduledReportsSection({
     setRollingWindowDays("1");
     setEnabled(true);
     setAllowPartialTelegramSync(false);
+    setForcePartialTelegramSync(false);
     setFormOpen(false);
   };
 
@@ -537,6 +539,7 @@ function ScheduledReportsSection({
     setRollingWindowDays("1");
     setEnabled(true);
     setAllowPartialTelegramSync(false);
+    setForcePartialTelegramSync(false);
     setFormOpen(true);
   };
 
@@ -548,6 +551,7 @@ function ScheduledReportsSection({
     setRollingWindowDays(String(schedule.rolling_window_days));
     setEnabled(schedule.enabled);
     setAllowPartialTelegramSync(Boolean(schedule.allow_partial_telegram_sync));
+    setForcePartialTelegramSync(Boolean(schedule.force_partial_telegram_sync));
     setFormOpen(true);
   };
 
@@ -560,6 +564,7 @@ function ScheduledReportsSection({
       rolling_window_days: Number(rollingWindowDays),
       enabled,
       allow_partial_telegram_sync: allowPartialTelegramSync,
+      force_partial_telegram_sync: forcePartialTelegramSync,
     });
     if (saved) resetForm();
   };
@@ -676,12 +681,31 @@ function ScheduledReportsSection({
                 <input
                   type="checkbox"
                   checked={allowPartialTelegramSync}
-                  onChange={(event) => setAllowPartialTelegramSync(event.target.checked)}
+                  onChange={(event) => {
+                    setAllowPartialTelegramSync(event.target.checked);
+                    if (event.target.checked) setForcePartialTelegramSync(false);
+                  }}
                 />
                 <span className="field-label-copy">
                   Allow partial report
                   <InfoTooltip label="About partial reports">
                     Run with stored messages instead of waiting for collection to catch up. Recent messages may be missing.
+                  </InfoTooltip>
+                </span>
+              </label>
+              <label className="option-row schedule-enabled">
+                <input
+                  type="checkbox"
+                  checked={forcePartialTelegramSync}
+                  onChange={(event) => {
+                    setForcePartialTelegramSync(event.target.checked);
+                    if (event.target.checked) setAllowPartialTelegramSync(false);
+                  }}
+                />
+                <span className="field-label-copy">
+                  Force partial report
+                  <InfoTooltip label="About forced partial reports">
+                    Use only messages already stored in the database. The scheduled report will not request or wait for a Telegram sync.
                   </InfoTooltip>
                 </span>
               </label>
@@ -720,7 +744,9 @@ function ScheduledReportsSection({
                   <td>{schedule.run_time_local}</td>
                   <td>
                     <span>{scheduleIntervalLabel(schedule.rolling_window_days)}</span>
-                    {schedule.allow_partial_telegram_sync && (
+                    {schedule.force_partial_telegram_sync ? (
+                      <span className="partial-badge" title="Uses database messages only and does not trigger synchronization.">Forced partial</span>
+                    ) : schedule.allow_partial_telegram_sync && (
                       <span className="partial-badge" title="May run before the latest Telegram synchronization finishes.">Partial allowed</span>
                     )}
                   </td>

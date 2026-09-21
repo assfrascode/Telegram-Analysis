@@ -89,10 +89,16 @@ def job_allows_partial_telegram_sync(job: Job) -> bool:
     return bool((getattr(job, "options", None) or {}).get("allow_partial_telegram_sync"))
 
 
+def job_forces_partial_telegram_sync(job: Job) -> bool:
+    return bool((getattr(job, "options", None) or {}).get("force_partial_telegram_sync"))
+
+
 def job_still_needs_report_coverage(job: Job, chat: TelegramChat) -> bool:
     if not job.report_start_at or not job.report_end_at:
         return False
     if chat_covers_interval(chat, job.report_start_at, job.report_end_at):
+        return False
+    if job_forces_partial_telegram_sync(job):
         return False
 
     status = getattr(job, "status", JobStatus.queued)

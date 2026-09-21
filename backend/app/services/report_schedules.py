@@ -75,6 +75,7 @@ def response(schedule: TelegramReportSchedule) -> TelegramReportScheduleResponse
         question_set_id=schedule.question_set_id,
         enabled=schedule.enabled,
         allow_partial_telegram_sync=bool(getattr(schedule, "allow_partial_telegram_sync", False)),
+        force_partial_telegram_sync=bool(getattr(schedule, "force_partial_telegram_sync", False)),
         run_time_local=schedule.run_time_local,
         timezone=schedule.timezone,
         rolling_window_days=schedule.rolling_window_days,
@@ -183,6 +184,7 @@ async def create_report_schedule(
         rolling_window_days=payload.rolling_window_days,
         enabled=payload.enabled,
         allow_partial_telegram_sync=payload.allow_partial_telegram_sync,
+        force_partial_telegram_sync=payload.force_partial_telegram_sync,
         next_run_at=(
             calculate_next_run_at(
                 payload.run_time_local,
@@ -233,6 +235,16 @@ async def update_report_schedule(
         should_recalculate = True
     if payload.allow_partial_telegram_sync is not None:
         schedule.allow_partial_telegram_sync = payload.allow_partial_telegram_sync
+    if payload.force_partial_telegram_sync is not None:
+        schedule.force_partial_telegram_sync = payload.force_partial_telegram_sync
+    if schedule.allow_partial_telegram_sync and schedule.force_partial_telegram_sync:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "allow_partial_telegram_sync and force_partial_telegram_sync "
+                "are mutually exclusive"
+            ),
+        )
 
     if schedule.enabled and (should_recalculate or schedule.next_run_at is None):
         schedule.next_run_at = calculate_next_run_at(

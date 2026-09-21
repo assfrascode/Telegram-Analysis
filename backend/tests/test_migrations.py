@@ -21,18 +21,41 @@ def _load_baseline_module():
     return module
 
 
-def test_baseline_schema_snapshot_matches_current_models():
+def test_baseline_schema_snapshot_matches_original_revision():
     from app import models  # noqa: F401
-    from app.db import Base, SCHEMA_REVISION
+    from app.db import Base
 
     revision = _load_baseline_module()
     expected = {
         table.name: tuple(column.name for column in table.columns)
         for table in Base.metadata.sorted_tables
     }
-    assert revision.revision == SCHEMA_REVISION
+    expected["telegram_report_schedules"] = tuple(
+        column
+        for column in expected["telegram_report_schedules"]
+        if column != "force_partial_telegram_sync"
+    )
+    assert revision.revision == "20260813_0001"
     assert revision.EXPECTED_COLUMNS == expected
     assert all("ALTER TABLE" not in statement for statement in revision.BASELINE_DDL)
+
+
+def test_force_partial_revision_is_current_head():
+    from app.db import SCHEMA_REVISION
+
+    path = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "versions"
+        / "20260921_0002_force_partial_reports.py"
+    )
+    spec = importlib.util.spec_from_file_location("force_partial_revision", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.down_revision == "20260813_0001"
+    assert module.revision == SCHEMA_REVISION
 
 
 def test_runtime_database_initialization_contains_no_schema_mutations():

@@ -26,10 +26,24 @@ def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
         rolling_window_days=1,
     )
     assert default_request.allow_partial_telegram_sync is False
+    assert default_request.force_partial_telegram_sync is False
     assert default_request.timezone == "Europe/Berlin"
 
     update_request = TelegramReportScheduleUpdateRequest(allow_partial_telegram_sync=True)
     assert update_request.allow_partial_telegram_sync is True
+
+    force_request = TelegramReportScheduleUpdateRequest(force_partial_telegram_sync=True)
+    assert force_request.force_partial_telegram_sync is True
+
+    with pytest.raises(ValidationError):
+        TelegramReportScheduleCreateRequest(
+            telegram_chat_id=uuid.uuid4(),
+            question_set_id=uuid.uuid4(),
+            run_time_local="05:00",
+            rolling_window_days=1,
+            allow_partial_telegram_sync=True,
+            force_partial_telegram_sync=True,
+        )
 
     with pytest.raises(ValidationError):
         TelegramReportScheduleCreateRequest(
@@ -174,6 +188,7 @@ def make_schedule(**overrides):
         "timezone": "UTC",
         "rolling_window_days": 7,
         "allow_partial_telegram_sync": False,
+        "force_partial_telegram_sync": False,
         "enabled": True,
         "next_run_at": datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc),
         "last_job_id": None,
@@ -302,9 +317,71 @@ def test_scheduler_creates_job_with_rolling_window_and_live_question_set(monkeyp
 
 
 def test_report_schedule_response_exposes_partial_flag() -> None:
-    schedule = make_schedule(allow_partial_telegram_sync=True)
+    schedule = make_schedule(
+        allow_partial_telegram_sync=False,
+        force_partial_telegram_sync=True,
+    )
 
     result = schedule_response(schedule)
 
     assert isinstance(result, TelegramReportScheduleResponse)
-    assert result.allow_partial_telegram_sync is True
+    assert result.allow_partial_telegram_sync is False
+    assert result.force_partial_telegram_sync is True
+
+
+def test_scheduler_propagates_force_partial_mode(monkeypatch) -> None:
+    owner_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    question_set_id = uuid.uuid4()
+    schedule = make_schedule(
+        owner_user_id=owner_id,
+        telegram_chat_id=chat_id,
+        question_set_id=question_set_id,
+        force_partial_telegram_sync=True,
+    )
+    chat = SimpleNamespace(id=chat_id, owner_user_id=owner_id, status=TelegramChatStatus.active)
+    question_set = SimpleNamespace(
+        id=question_set_id,
+        owner_user_id=owner_id,
+        archived_at=None,
+        default_translate=False,
+        default_analyze_media=True,
+        default_retrieval_k=50,
+        default_rerank_k=15,
+    )
+    session = FakeSession(schedule=schedule, chat=chat, question_set=question_set)
+    patch_session(monkeypatch, session)
+    created_jobs = []
+
+    async def accepting_capacity(session):
+        return None
+
+    async def create_job(session, owner_user_id, payload):
+        assert payload.options.allow_partial_telegram_sync is False
+        assert payload.options.force_partial_telegram_sync is True
+        job = SimpleNamespace(id=uuid.uuid4(), options={})
+        created_jobs.append(job)
+        return job
+
+    async def publish_task(session, js, job):
+        return None
+
+    @asynccontextmanager
+    async def fake_nats_context():
+        yield None, SimpleNamespace()
+
+    monkeypatch.setattr(run_report_scheduler, "ensure_accepting_jobs", accepting_capacity)
+    monkeypatch.setattr(run_report_scheduler, "create_telegram_job_record", create_job)
+    monkeypatch.setattr(run_report_scheduler, "publish_initial_job_task", publish_task)
+    monkeypatch.setattr(run_report_scheduler, "nats_context", fake_nats_context)
+    monkeypatch.setattr(
+        run_report_scheduler,
+        "utc_now",
+        lambda: datetime(2026, 1, 1, 5, 1, tzinfo=timezone.utc),
+    )
+
+    result = asyncio.run(run_report_scheduler.process_schedule(schedule.id))
+
+    assert result == created_jobs[0].id
+    metadata = created_jobs[0].options["scheduled_report"]
+    assert metadata["force_partial_telegram_sync"] is True

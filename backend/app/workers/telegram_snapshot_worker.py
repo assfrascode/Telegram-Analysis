@@ -25,7 +25,10 @@ from app.models import (
     TelegramSyncRun,
     TelegramSyncStatus,
 )
-from app.services.telegram_ingest import job_allows_partial_telegram_sync
+from app.services.telegram_ingest import (
+    job_allows_partial_telegram_sync,
+    job_forces_partial_telegram_sync,
+)
 from app.services.telegram_export import telegram_desktop_media_path
 from app.services.telegram_sync import (
     TelegramSyncError,
@@ -62,8 +65,15 @@ class TelegramSnapshotWorker(Worker):
         # The chat may have finished another synchronization after this worker
         # loaded it. Refresh before deciding whether to wake a collector.
         await session.refresh(chat)
+        allow_partial_sync = job_allows_partial_telegram_sync(job)
+        force_partial_sync = job_forces_partial_telegram_sync(job)
         coverage_already_complete = self._chat_covers_report(chat, job)
-        if coverage_already_complete:
+        if force_partial_sync:
+            logger.info(
+                "Telegram report forced to use database snapshot only",
+                extra={"event": "telegram.report_force_partial", "chat_id": str(chat.id)},
+            )
+        elif coverage_already_complete:
             logger.info(
                 "Telegram report uses existing coverage",
                 extra={"event": "telegram.report_sync_skipped", "chat_id": str(chat.id)},
@@ -86,9 +96,11 @@ class TelegramSnapshotWorker(Worker):
             )
             await session.commit()
 
-        allow_partial_sync = job_allows_partial_telegram_sync(job)
         try:
-            if coverage_already_complete:
+            if force_partial_sync:
+                await self._prepare_force_partial_report(session, job, chat)
+                run = None
+            elif coverage_already_complete:
                 run = None
             elif allow_partial_sync:
                 await self._prepare_partial_report_sync(session, job, chat)
@@ -126,13 +138,17 @@ class TelegramSnapshotWorker(Worker):
             "Telegram report sync completed",
             extra={
                 "event": (
-                    "telegram.report_sync_skipped"
-                    if coverage_already_complete
-                    else "telegram.report_sync_completed"
+                    "telegram.report_force_partial"
+                    if force_partial_sync
+                    else (
+                        "telegram.report_sync_skipped"
+                        if coverage_already_complete
+                        else "telegram.report_sync_completed"
+                    )
                 ),
                 "chat_id": str(chat.id),
                 "sync_run_id": str(run.id) if run is not None else None,
-                "sync_skipped": coverage_already_complete,
+                "sync_skipped": coverage_already_complete or force_partial_sync,
             },
         )
         await self.emit_event(
@@ -140,9 +156,13 @@ class TelegramSnapshotWorker(Worker):
             job=job,
             event_type="telegram.sync.completed",
             message=(
-                "Vorhandene Telegram-Nachrichten decken den Berichtszeitraum bereits ab"
-                if coverage_already_complete
-                else "Telegram-Synchronisierung abgeschlossen"
+                "Bericht verwendet ausschließlich gespeicherte Telegram-Nachrichten"
+                if force_partial_sync
+                else (
+                    "Vorhandene Telegram-Nachrichten decken den Berichtszeitraum bereits ab"
+                    if coverage_already_complete
+                    else "Telegram-Synchronisierung abgeschlossen"
+                )
             ),
             payload={
                 "messages_seen": messages_seen,
@@ -150,7 +170,8 @@ class TelegramSnapshotWorker(Worker):
                 "attachments_failed": attachments_failed,
                 "ingest_mode": chat.ingest_mode.value,
                 "allow_partial_telegram_sync": allow_partial_sync,
-                "sync_skipped": coverage_already_complete,
+                "force_partial_telegram_sync": force_partial_sync,
+                "sync_skipped": coverage_already_complete or force_partial_sync,
             },
         )
         await session.commit()
@@ -336,6 +357,34 @@ class TelegramSnapshotWorker(Worker):
             job=job,
             event_type="telegram.sync.partial",
             message="Bericht nutzt vorhandene Telegram-Nachrichten; fehlende Synchronisierung läuft nach",
+            level="warning",
+            payload={
+                "chat_id": str(chat.id),
+                "ingest_mode": chat.ingest_mode.value,
+                "start_at": job.report_start_at.isoformat() if job.report_start_at else None,
+                "end_at": job.report_end_at.isoformat() if job.report_end_at else None,
+                "coverage_start": chat.coverage_start.isoformat()
+                if chat.coverage_start
+                else None,
+                "coverage_end": chat.coverage_end.isoformat()
+                if chat.coverage_end
+                else None,
+            },
+        )
+        await session.commit()
+
+    async def _prepare_force_partial_report(
+        self,
+        session: AsyncSession,
+        job: Job,
+        chat: TelegramChat,
+    ) -> None:
+        """Snapshot stored rows without waking either Telegram collector."""
+        await self.emit_event(
+            session,
+            job=job,
+            event_type="telegram.sync.force_partial",
+            message="Bericht nutzt ausschließlich bereits gespeicherte Telegram-Nachrichten",
             level="warning",
             payload={
                 "chat_id": str(chat.id),

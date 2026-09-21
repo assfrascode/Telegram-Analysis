@@ -61,6 +61,7 @@ export function optionsFromState(options) {
     translate: Boolean(options.translate),
     analyze_media: options.analyze_media !== false,
     allow_partial_telegram_sync: Boolean(options.allow_partial_telegram_sync),
+    force_partial_telegram_sync: Boolean(options.force_partial_telegram_sync),
     retrieval_k: retrievalK,
     rerank_k: rerankK,
   };

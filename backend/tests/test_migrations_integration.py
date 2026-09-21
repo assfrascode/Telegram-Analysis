@@ -116,18 +116,20 @@ def test_clean_install_and_upgrade_from_legacy_mvp_schema():
     asyncio.run(_reset_database())
     _upgrade_head()
     revision, clean_columns = asyncio.run(_schema_state())
-    assert revision == "20260813_0001"
+    assert revision == "20260921_0002"
     assert "users" in clean_columns
     assert "source_name" in clean_columns["jobs"]
+    assert "force_partial_telegram_sync" in clean_columns["telegram_report_schedules"]
     _assert_no_migration_drift()
 
     asyncio.run(_reset_database())
     asyncio.run(_create_legacy_mvp_schema())
     _upgrade_head()
     revision, upgraded_columns = asyncio.run(_schema_state())
-    assert revision == "20260813_0001"
+    assert revision == "20260921_0002"
     assert "ingest_mode" in upgraded_columns["telegram_chats"]
     assert "last_collected_message_id" in upgraded_columns["telegram_chats"]
     assert "allow_partial_telegram_sync" in upgraded_columns["telegram_report_schedules"]
+    assert "force_partial_telegram_sync" in upgraded_columns["telegram_report_schedules"]
     assert "source_name" in upgraded_columns["jobs"]
     _assert_no_migration_drift()

@@ -79,6 +79,7 @@ export const DEFAULT_OPTIONS = {
   translate: false,
   analyze_media: true,
   allow_partial_telegram_sync: false,
+  force_partial_telegram_sync: false,
   retrieval_k: 50,
   rerank_k: 15,
 };

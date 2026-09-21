@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import Job, JobEvent, JobStatus, StepStatus, WorkerDeadLetter, WorkerTask
-from app.services.events import record_event
+from app.services.events import record_event, record_event_db_only
 
 settings = get_settings()
 
@@ -205,7 +205,12 @@ async def raise_if_cancelled(session: AsyncSession, job_id: uuid.UUID) -> None:
         raise WorkerCancelled(f"Job is terminal: {job_id} status={job.status.value}")
 
 
-async def mark_job_cancelled(session: AsyncSession, job: Job, *, js: Any | None = None) -> None:
+async def mark_job_cancelled(
+    session: AsyncSession,
+    job: Job,
+    *,
+    js: Any | None = None,
+) -> JobEvent | None:
     """Move a non-terminal job to cancelled and emit exactly one job.cancelled event.
 
     This function is intentionally idempotent. It emits ``job.cancelled`` the
@@ -213,25 +218,26 @@ async def mark_job_cancelled(session: AsyncSession, job: Job, *, js: Any | None 
     already set to ``cancelled`` by another process.
     """
     if job.status in {JobStatus.completed, JobStatus.failed}:
-        return
+        return None
 
     already_cancelled_event = await has_job_event(session, job.id, "job.cancelled")
     job.status = JobStatus.cancelled
     job.completed_at = job.completed_at or utc_now()
 
     if already_cancelled_event:
-        return
+        return None
 
-    await record_event(
-        session,
-        js=js,
-        job_id=job.id,
-        owner_user_id=job.owner_user_id,
-        event_type="job.cancelled",
-        level="warning",
-        message="Job wurde abgebrochen",
-        payload={"job_id": str(job.id)},
-    )
+    event_kwargs = {
+        "job_id": job.id,
+        "owner_user_id": job.owner_user_id,
+        "event_type": "job.cancelled",
+        "level": "warning",
+        "message": "Job wurde abgebrochen",
+        "payload": {"job_id": str(job.id)},
+    }
+    if js is None:
+        return await record_event_db_only(session, **event_kwargs)
+    return await record_event(session, js=js, **event_kwargs)
 
 
 async def mark_job_failed(

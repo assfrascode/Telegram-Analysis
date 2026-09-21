@@ -100,6 +100,7 @@ def scheduled_report_metadata(
         "run_time_local": schedule.run_time_local,
         "question_set_id": str(schedule.question_set_id),
         "allow_partial_telegram_sync": bool(getattr(schedule, "allow_partial_telegram_sync", False)),
+        "force_partial_telegram_sync": bool(getattr(schedule, "force_partial_telegram_sync", False)),
     }
 
 
@@ -175,6 +176,9 @@ async def process_schedule(schedule_id: uuid.UUID) -> uuid.UUID | None:
         options = question_set_options(question_set)
         options.allow_partial_telegram_sync = bool(
             getattr(schedule, "allow_partial_telegram_sync", False)
+        )
+        options.force_partial_telegram_sync = bool(
+            getattr(schedule, "force_partial_telegram_sync", False)
         )
         payload = TelegramReportCreateRequest(
             telegram_chat_id=schedule.telegram_chat_id,

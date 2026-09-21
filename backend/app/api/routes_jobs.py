@@ -46,7 +46,7 @@ from app.services.jobs import (
     publish_retry_job_task,
     request_cancel,
 )
-from app.services.events import record_event
+from app.services.events import publish_event, record_event_db_only
 from app.services.worker_control import mark_job_cancelled
 from app.services.websocket_tickets import issue_websocket_ticket
 from app.services.minio_store import get_bytes, minio_client
@@ -207,22 +207,34 @@ async def cancel_job(
 ) -> dict:
     job = await get_owned_job_or_404(session, job_id=job_id, user=user)
     await request_cancel(session, job)
-    async with nats_context() as (_, js):
-        await record_event(
-            session,
-            js=js,
-            job_id=job.id,
-            owner_user_id=job.owner_user_id,
-            event_type="job.cancel.requested",
-            level="warning",
-            message="Job-Abbruch wurde angefordert",
-            payload={"job_id": str(job.id)},
-        )
-        # Guarantees that WebSocket clients receive job.cancelled even when no
-        # worker is active for this job. Active workers still observe the DB
-        # status and stop before publishing subsequent pipeline subjects.
-        await mark_job_cancelled(session, job, js=js)
+    requested_event = await record_event_db_only(
+        session,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.cancel.requested",
+        level="warning",
+        message="Job-Abbruch wurde angefordert",
+        payload={"job_id": str(job.id)},
+    )
+    # Make cancellation durable before contacting NATS. In particular, a
+    # scheduled report must remain cancelled even if the event broker is down.
+    cancelled_event = await mark_job_cancelled(session, job)
     await session.commit()
+
+    try:
+        async with nats_context() as (_, js):
+            await publish_event(js, requested_event)
+            if cancelled_event is not None:
+                await publish_event(js, cancelled_event)
+    except Exception as exc:
+        logger.warning(
+            "Cancellation persisted but its live event could not be published",
+            extra={
+                "event": "job.cancel_publish_failed",
+                "job_id": str(job.id),
+                "error_type": type(exc).__name__,
+            },
+        )
     return {"ok": True, "status": job.status.value}
 
 

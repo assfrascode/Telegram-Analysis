@@ -397,7 +397,10 @@ export function CreateJobPanel({
                   <input
                     type="checkbox"
                     checked={Boolean(options.allow_partial_telegram_sync)}
-                    onChange={(event) => setOption("allow_partial_telegram_sync", event.target.checked)}
+                    onChange={(event) => {
+                      setOption("allow_partial_telegram_sync", event.target.checked);
+                      if (event.target.checked) setOption("force_partial_telegram_sync", false);
+                    }}
                   />
                   <span>
                     <span className="field-label-copy">
@@ -407,6 +410,25 @@ export function CreateJobPanel({
                       </InfoTooltip>
                     </span>
                     <small>Use currently stored messages</small>
+                  </span>
+                </label>
+                <label className="analysis-inline-option field-wide">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(options.force_partial_telegram_sync)}
+                    onChange={(event) => {
+                      setOption("force_partial_telegram_sync", event.target.checked);
+                      if (event.target.checked) setOption("allow_partial_telegram_sync", false);
+                    }}
+                  />
+                  <span>
+                    <span className="field-label-copy">
+                      Force partial report
+                      <InfoTooltip label="About forced partial reports">
+                        Use only messages already stored in the database. This report will not request or wait for a Telegram sync.
+                      </InfoTooltip>
+                    </span>
+                    <small>Database messages only; no report-triggered sync</small>
                   </span>
                 </label>
               </div>

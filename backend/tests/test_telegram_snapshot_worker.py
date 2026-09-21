@@ -328,6 +328,87 @@ def test_partial_snapshot_skips_external_wait_and_fails_without_messages(monkeyp
     assert any(event["event_type"] == "telegram.snapshot.failed" for event in events)
 
 
+def test_force_partial_snapshot_uses_database_without_requesting_sync(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    job_id = uuid.uuid4()
+    chat_id = uuid.uuid4()
+    original_next_sync_at = now + timedelta(hours=1)
+    job = SimpleNamespace(
+        id=job_id,
+        owner_user_id=uuid.uuid4(),
+        telegram_chat_id=chat_id,
+        report_start_at=now - timedelta(hours=2),
+        report_end_at=now,
+        status=JobStatus.queued,
+        started_at=None,
+        completed_at=None,
+        error_message=None,
+        options={"force_partial_telegram_sync": True},
+    )
+    chat = SimpleNamespace(
+        id=chat_id,
+        ingest_mode=TelegramIngestMode.external_push,
+        coverage_start=None,
+        coverage_end=None,
+        next_sync_at=original_next_sync_at,
+        updated_at=now,
+    )
+    events = []
+
+    class Scalars:
+        def all(self):
+            return []
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def get(self, model, value):
+            if model is Job:
+                return job
+            if model is TelegramChat:
+                return chat
+            return None
+
+        async def execute(self, query):
+            return Result()
+
+        async def refresh(self, value):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    worker = TelegramSnapshotWorker()
+
+    async def emit_event(session, **kwargs):
+        events.append(kwargs)
+
+    async def fail_sync(*args, **kwargs):
+        raise AssertionError("force partial reports must not request synchronization")
+
+    worker.emit_event = emit_event
+    worker._prepare_partial_report_sync = fail_sync
+    worker._wait_for_external_coverage = fail_sync
+    worker._synchronize_backend_coverage = fail_sync
+    monkeypatch.setattr(telegram_snapshot_worker, "synchronize_chat", fail_sync)
+
+    asyncio.run(worker.handle(Session(), {"job_id": str(job_id)}))
+
+    assert chat.next_sync_at == original_next_sync_at
+    assert job.status == JobStatus.failed
+    assert any(event["event_type"] == "telegram.sync.force_partial" for event in events)
+    completed_event = next(
+        event for event in events if event["event_type"] == "telegram.sync.completed"
+    )
+    assert completed_event["payload"]["force_partial_telegram_sync"] is True
+    assert completed_event["payload"]["sync_skipped"] is True
+
+
 def test_partial_snapshot_does_not_request_sync_for_covered_subrange(monkeypatch) -> None:
     coverage_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     coverage_end = datetime(2026, 1, 31, tzinfo=timezone.utc)
@@ -444,6 +525,43 @@ def test_backend_collector_prefers_completed_partial_report_interval() -> None:
     assert requested_start == chat.coverage_end
     assert requested_end == now
     assert job_id == report_job.id
+
+
+def test_force_partial_report_never_requests_collector_coverage() -> None:
+    now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    report_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=JobStatus.running,
+        report_start_at=now - timedelta(days=2),
+        report_end_at=now,
+        options={"force_partial_telegram_sync": True},
+    )
+    chat = SimpleNamespace(
+        id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        initial_sync_from=now - timedelta(days=30),
+        coverage_start=now - timedelta(days=3),
+        coverage_end=now - timedelta(days=1),
+    )
+
+    class Scalars:
+        def all(self):
+            return [report_job]
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def execute(self, query):
+            return Result()
+
+    selected = asyncio.run(run_telegram_collector.sync_request_for_chat(Session(), chat, now))
+
+    requested_start, requested_end, job_id = selected
+    assert requested_start == chat.coverage_end
+    assert requested_end == now
+    assert job_id is None
 
 
 def test_collector_startup_releases_only_non_report_leases(monkeypatch) -> None:

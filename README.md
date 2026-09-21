@@ -198,6 +198,9 @@ configured with `TELEGRAM_EXTERNAL_INITIAL_RESPONSE_TIMEOUT_SECONDS`. Once the
 collector responds, the longer progress-based timeout applies. Reports with
 `allow_partial_telegram_sync` enabled skip this wait and immediately use stored
 messages while collection catches up in the background.
+Reports with `force_partial_telegram_sync` enabled use only messages already in
+the database and never request a report-specific synchronization or background
+coverage backfill.
 The former `TELEGRAM_SYNC_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS` names remain accepted as deprecated
 fallbacks.

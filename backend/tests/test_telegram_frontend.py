@@ -14,6 +14,8 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "Use the last 30 days" in create
     assert "Allow partial report" in create
     assert "allow_partial_telegram_sync" in create
+    assert "Force partial report" in create
+    assert "force_partial_telegram_sync" in create
     assert "Open Telegram Setup" in create
     assert "analysis-page" in create
     assert "analysis-source-choice" in create
@@ -22,6 +24,8 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "Scheduled reports" in panel
     assert "/telegram/report-schedules" in panel
     assert "allow_partial_telegram_sync" in panel
+    assert "Force partial report" in panel
+    assert "force_partial_telegram_sync" in panel
     assert "Automatic sync off" in panel
     assert 'type="number"' in panel
     assert "Scheduled:" in (root / "components/AppSidebar.jsx").read_text()
