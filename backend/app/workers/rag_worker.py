@@ -2,6 +2,7 @@
 import asyncio
 import uuid
 from typing import Any
+from itertools import batched
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -238,15 +239,11 @@ async def _gateway_answer_prompt_body_budget(gateway: Any, *, max_tokens: int) -
 
 async def _delete_existing_question_runs(session: AsyncSession, job_id: uuid.UUID) -> None:
     """Remove previous retrieval/rerank/answer state for an idempotent rebuild."""
-    run_ids = list(
-        (
-            await session.execute(select(QuestionRun.id).where(QuestionRun.job_id == job_id))
-        )
-        .scalars()
-        .all()
+    await session.execute(
+        delete(RetrievalHit).where(RetrievalHit.question_run_id.in_(
+            select(QuestionRun.id).where(QuestionRun.job_id == job_id)
+        ))
     )
-    if run_ids:
-        await session.execute(delete(RetrievalHit).where(RetrievalHit.question_run_id.in_(run_ids)))
     await session.execute(delete(QuestionRun).where(QuestionRun.job_id == job_id))
 
 
@@ -375,21 +372,23 @@ class RetrieveWorker(Worker):
             )
             seen_chunk_ids: set[uuid.UUID] = set()
             inserted_hits = 0
+            candidate_ids = {
+                chunk_id for hit in hits if (chunk_id := _chunk_id_from_qdrant_hit(hit)) is not None
+            }
+            valid_chunk_ids: set[uuid.UUID] = set()
+            for candidate_batch in batched(candidate_ids, 500):
+                valid_chunk_ids.update(
+                    (await session.execute(
+                        select(MessageChunk.id).where(
+                            MessageChunk.id.in_(candidate_batch),
+                            MessageChunk.job_id == job.id,
+                        )
+                    )).scalars().all()
+                )
 
             for hit in hits:
                 chunk_id = _chunk_id_from_qdrant_hit(hit)
-                if chunk_id is None or chunk_id in seen_chunk_ids:
-                    continue
-
-                chunk_exists = (
-                    await session.execute(
-                        select(MessageChunk.id).where(
-                            MessageChunk.id == chunk_id,
-                            MessageChunk.job_id == job.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if chunk_exists is None:
+                if chunk_id not in valid_chunk_ids or chunk_id in seen_chunk_ids:
                     continue
 
                 seen_chunk_ids.add(chunk_id)

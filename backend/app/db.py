@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import get_settings
 
 settings = get_settings()
-SCHEMA_REVISION = "20260921_0002"
+SCHEMA_REVISION = "20260921_0003"
 
 convention = {
     "ix": "ix_%(column_0_label)s",

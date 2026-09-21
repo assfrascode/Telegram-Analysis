@@ -176,47 +176,26 @@ async def _vllm_healthchecks() -> dict[str, dict[str, Any]]:
 
 
 async def _db_counts(session: AsyncSession) -> dict[str, int]:
-    active_statuses = [JobStatus.queued, JobStatus.running, JobStatus.cancelling]
-    active_jobs = int(
-        (await session.execute(select(func.count(Job.id)).where(Job.status.in_(active_statuses)))).scalar() or 0
+    pending_statuses = [StepStatus.pending, StepStatus.running, StepStatus.failed_retryable]
+    worker_counts = select(
+        func.count().label("pending_worker_tasks"),
+        func.count().filter(WorkerTask.status == StepStatus.failed_retryable).label(
+            "failed_retryable_tasks"
+        ),
+    ).where(WorkerTask.status.in_(pending_statuses)).subquery()
+    statement = select(
+        select(func.count(Job.id)).where(
+            Job.status.in_([JobStatus.queued, JobStatus.running, JobStatus.cancelling])
+        ).scalar_subquery().label("active_jobs"),
+        select(func.count(TelegramMedia.id)).where(
+            TelegramMedia.status.in_(pending_statuses)
+        ).scalar_subquery().label("pending_media_tasks"),
+        worker_counts.c.pending_worker_tasks,
+        worker_counts.c.failed_retryable_tasks,
+        select(func.count(WorkerDeadLetter.id)).scalar_subquery().label("dead_letters_total"),
     )
-    pending_media_tasks = int(
-        (
-            await session.execute(
-                select(func.count(TelegramMedia.id)).where(
-                    TelegramMedia.status.in_([StepStatus.pending, StepStatus.running, StepStatus.failed_retryable])
-                )
-            )
-        ).scalar()
-        or 0
-    )
-    pending_worker_tasks = int(
-        (
-            await session.execute(
-                select(func.count(WorkerTask.id)).where(
-                    WorkerTask.status.in_([StepStatus.pending, StepStatus.running, StepStatus.failed_retryable])
-                )
-            )
-        ).scalar()
-        or 0
-    )
-    failed_retryable_tasks = int(
-        (
-            await session.execute(
-                select(func.count(WorkerTask.id)).where(WorkerTask.status == StepStatus.failed_retryable)
-            )
-        ).scalar()
-        or 0
-    )
-    dead_letters_total = int((await session.execute(select(func.count(WorkerDeadLetter.id)))).scalar() or 0)
-    return {
-        "active_jobs": active_jobs,
-        "pending_media_tasks": pending_media_tasks,
-        "pending_worker_tasks": pending_worker_tasks,
-        "failed_retryable_tasks": failed_retryable_tasks,
-        "dead_letters_total": dead_letters_total,
-    }
-
+    row = (await session.execute(statement)).one()
+    return {name: int(value or 0) for name, value in row._mapping.items()}
 
 def _resource_blockers(resources: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
@@ -257,9 +236,31 @@ def _limit_blockers(counts: dict[str, int], resources: dict[str, Any]) -> list[s
     return blockers
 
 
-async def capacity_snapshot(session: AsyncSession) -> dict[str, Any]:
+async def _external_resources() -> dict[str, Any]:
+    minio_check, nats_check, qdrant_check, vllm_checks = await asyncio.gather(
+        _timed("minio", _check_minio()),
+        _timed("nats", _check_nats()),
+        _timed("qdrant", _check_qdrant()),
+        _vllm_healthchecks(),
+    )
+    return {
+        "minio": minio_check.as_dict(),
+        "nats": nats_check.as_dict(),
+        "qdrant": qdrant_check.as_dict(),
+        "vllm": vllm_checks,
+    }
+
+
+async def capacity_snapshot(
+    session: AsyncSession,
+    *,
+    external_resources: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resources = dict(
+        external_resources if external_resources is not None else await _external_resources()
+    )
     postgres = await _timed("postgres", _check_postgres(session))
-    resources: dict[str, Any] = {"postgres": postgres.as_dict()}
+    resources["postgres"] = postgres.as_dict()
 
     counts = {
         "active_jobs": 0,
@@ -278,23 +279,6 @@ async def capacity_snapshot(session: AsyncSession) -> dict[str, Any]:
                 status="count_error",
                 detail=str(exc)[:1000],
             ).as_dict()
-
-    # Run external dependency checks concurrently after the DB check. They have
-    # independent short timeouts so one unhealthy service cannot hang /capacity.
-    minio_check, nats_check, qdrant_check, vllm_checks = await asyncio.gather(
-        _timed("minio", _check_minio()),
-        _timed("nats", _check_nats()),
-        _timed("qdrant", _check_qdrant()),
-        _vllm_healthchecks(),
-    )
-    resources.update(
-        {
-            "minio": minio_check.as_dict(),
-            "nats": nats_check.as_dict(),
-            "qdrant": qdrant_check.as_dict(),
-            "vllm": vllm_checks,
-        }
-    )
 
     blockers = _resource_blockers(resources) + _limit_blockers(counts, resources)
 
@@ -324,6 +308,8 @@ async def ensure_accepting_jobs(session: AsyncSession) -> None:
     from fastapi import HTTPException, status
 
     try:
+        # Network health checks must not hold the global admission lock.
+        resources = await _external_resources()
         # The caller inserts and commits its Job on this same session. Holding a
         # transaction-scoped advisory lock therefore serializes count -> insert
         # reservations across API processes and the report scheduler.
@@ -331,7 +317,7 @@ async def ensure_accepting_jobs(session: AsyncSession) -> None:
             text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": JOB_ADMISSION_LOCK_KEY},
         )
-        snapshot = await capacity_snapshot(session)
+        snapshot = await capacity_snapshot(session, external_resources=resources)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

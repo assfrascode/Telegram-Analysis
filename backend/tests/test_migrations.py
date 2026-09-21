@@ -40,9 +40,7 @@ def test_baseline_schema_snapshot_matches_original_revision():
     assert all("ALTER TABLE" not in statement for statement in revision.BASELINE_DDL)
 
 
-def test_force_partial_revision_is_current_head():
-    from app.db import SCHEMA_REVISION
-
+def test_force_partial_revision_follows_baseline():
     path = (
         Path(__file__).parents[1]
         / "migrations"
@@ -55,7 +53,17 @@ def test_force_partial_revision_is_current_head():
     spec.loader.exec_module(module)
 
     assert module.down_revision == "20260813_0001"
-    assert module.revision == SCHEMA_REVISION
+    assert module.revision == "20260921_0002"
+
+
+def test_schema_revision_matches_alembic_head():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from app.db import SCHEMA_REVISION
+
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parents[1] / "migrations"))
+    assert ScriptDirectory.from_config(config).get_current_head() == SCHEMA_REVISION
 
 
 def test_runtime_database_initialization_contains_no_schema_mutations():

@@ -85,6 +85,11 @@ async def _create_legacy_mvp_schema() -> None:
             await connection.execute(
                 text("ALTER TABLE telegram_report_schedules DROP COLUMN allow_partial_telegram_sync")
             )
+            await connection.execute(
+                text("ALTER TABLE telegram_report_schedules DROP COLUMN force_partial_telegram_sync")
+            )
+            await connection.execute(text("DROP INDEX ix_collected_messages_chat_timestamp_id"))
+            await connection.execute(text("DROP INDEX ix_job_events_job_id_id"))
             await connection.execute(text("ALTER TABLE jobs DROP COLUMN source_name"))
             await connection.execute(text("DROP TYPE telegramingestmode"))
     finally:
@@ -116,7 +121,7 @@ def test_clean_install_and_upgrade_from_legacy_mvp_schema():
     asyncio.run(_reset_database())
     _upgrade_head()
     revision, clean_columns = asyncio.run(_schema_state())
-    assert revision == "20260921_0002"
+    assert revision == "20260921_0003"
     assert "users" in clean_columns
     assert "source_name" in clean_columns["jobs"]
     assert "force_partial_telegram_sync" in clean_columns["telegram_report_schedules"]
@@ -126,7 +131,7 @@ def test_clean_install_and_upgrade_from_legacy_mvp_schema():
     asyncio.run(_create_legacy_mvp_schema())
     _upgrade_head()
     revision, upgraded_columns = asyncio.run(_schema_state())
-    assert revision == "20260921_0002"
+    assert revision == "20260921_0003"
     assert "ingest_mode" in upgraded_columns["telegram_chats"]
     assert "last_collected_message_id" in upgraded_columns["telegram_chats"]
     assert "allow_partial_telegram_sync" in upgraded_columns["telegram_report_schedules"]

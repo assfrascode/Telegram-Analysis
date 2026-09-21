@@ -5,6 +5,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import batched
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -233,7 +234,7 @@ class TranscriptionWorker(Worker):
             & (MediaTranscript.response_format == RESPONSE_FORMAT)
         )
         result = await session.execute(
-            select(TelegramMedia, MediaTranscript)
+            select(TelegramMedia)
             .outerjoin(MediaTranscript, transcript_join)
             .where(
                 TelegramMedia.job_id == job_id,
@@ -247,11 +248,22 @@ class TranscriptionWorker(Worker):
             .order_by(TelegramMedia.id)
             .limit(settings.openai_transcription_batch_size)
         )
-        return [media for media, _transcript in result.all()]
+        return list(result.scalars().all())
 
     async def _mark_batch_running(self, session: AsyncSession, rows: list[TelegramMedia]) -> None:
+        existing = {}
+        for batch in batched(rows, 500):
+            transcripts = (await session.execute(
+                select(MediaTranscript).where(
+                    MediaTranscript.media_id.in_([row.id for row in batch]),
+                    MediaTranscript.provider == PROVIDER,
+                    MediaTranscript.model_name == settings.openai_transcription_model,
+                    MediaTranscript.response_format == RESPONSE_FORMAT,
+                )
+            )).scalars().all()
+            existing.update((transcript.media_id, transcript) for transcript in transcripts)
         for row in rows:
-            transcript = await self._existing_transcript(session, row.id)
+            transcript = existing.get(row.id)
             if transcript is None:
                 transcript = MediaTranscript(
                     job_id=row.job_id,
@@ -262,6 +274,7 @@ class TranscriptionWorker(Worker):
                     status=StepStatus.running,
                 )
                 session.add(transcript)
+                existing[row.id] = transcript
             else:
                 transcript.status = StepStatus.running
                 transcript.error_message = None
@@ -448,11 +461,28 @@ class TranscriptionWorker(Worker):
         ).scalar_one_or_none()
 
     async def _stats(self, session: AsyncSession, job_id: uuid.UUID) -> dict[str, int]:
-        total = await self._count_media(session, job_id)
-        completed = await self._count_transcripts(session, job_id, StepStatus.completed)
-        running = await self._count_transcripts(session, job_id, StepStatus.running)
-        retryable = await self._count_transcripts(session, job_id, StepStatus.failed_retryable)
-        permanent = await self._count_transcripts(session, job_id, StepStatus.failed_permanent)
+        transcript_join = (
+            (MediaTranscript.media_id == TelegramMedia.id)
+            & (MediaTranscript.provider == PROVIDER)
+            & (MediaTranscript.model_name == settings.openai_transcription_model)
+            & (MediaTranscript.response_format == RESPONSE_FORMAT)
+        )
+        counts = (await session.execute(
+            select(
+                func.count().filter(TelegramMedia.minio_object_key.is_not(None)),
+                *(func.count().filter(MediaTranscript.status == status) for status in (
+                    StepStatus.completed, StepStatus.running,
+                    StepStatus.failed_retryable, StepStatus.failed_permanent,
+                )),
+            )
+            .select_from(TelegramMedia)
+            .outerjoin(MediaTranscript, transcript_join)
+            .where(
+                TelegramMedia.job_id == job_id,
+                TelegramMedia.media_type.in_(TRANSCRIBABLE_MEDIA_TYPES),
+            )
+        )).one()
+        total, completed, running, retryable, permanent = map(int, counts)
         pending = max(0, total - completed - running - retryable - permanent)
         return {
             "total": total,
@@ -464,45 +494,6 @@ class TranscriptionWorker(Worker):
             "transcription_retryable_failed": retryable,
             "transcription_permanent_failed": permanent,
         }
-
-    async def _count_media(self, session: AsyncSession, job_id: uuid.UUID) -> int:
-        return int(
-            (
-                await session.execute(
-                    select(func.count())
-                    .select_from(TelegramMedia)
-                    .where(
-                        TelegramMedia.job_id == job_id,
-                        TelegramMedia.media_type.in_(TRANSCRIBABLE_MEDIA_TYPES),
-                        TelegramMedia.minio_object_key.is_not(None),
-                    )
-                )
-            ).scalar_one()
-        )
-
-    async def _count_transcripts(
-        self,
-        session: AsyncSession,
-        job_id: uuid.UUID,
-        status: StepStatus,
-    ) -> int:
-        return int(
-            (
-                await session.execute(
-                    select(func.count())
-                    .select_from(MediaTranscript)
-                    .join(TelegramMedia, TelegramMedia.id == MediaTranscript.media_id)
-                    .where(
-                        TelegramMedia.job_id == job_id,
-                        TelegramMedia.media_type.in_(TRANSCRIBABLE_MEDIA_TYPES),
-                        MediaTranscript.provider == PROVIDER,
-                        MediaTranscript.model_name == settings.openai_transcription_model,
-                        MediaTranscript.response_format == RESPONSE_FORMAT,
-                        MediaTranscript.status == status,
-                    )
-                )
-            ).scalar_one()
-        )
 
     def _progress_message(self, row: TelegramMedia, result: TranscriptionWorkResult) -> str:
         if result.status == StepStatus.completed:

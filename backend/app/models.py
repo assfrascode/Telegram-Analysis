@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     String,
     Text,
@@ -202,7 +203,10 @@ class TelegramSyncRun(Base):
 
 class CollectedTelegramMessage(Base):
     __tablename__ = "collected_telegram_messages"
-    __table_args__ = (UniqueConstraint("chat_id", "telegram_message_id"),)
+    __table_args__ = (
+        UniqueConstraint("chat_id", "telegram_message_id"),
+        Index("ix_collected_messages_chat_timestamp_id", "chat_id", "timestamp", "telegram_message_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_chats.id"), index=True)
@@ -395,6 +399,7 @@ class JobStep(Base):
 
 class JobEvent(Base):
     __tablename__ = "job_events"
+    __table_args__ = (Index("ix_job_events_job_id_id", "job_id", "id"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"), index=True)

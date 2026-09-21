@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 import uuid
+from itertools import batched
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
@@ -57,20 +58,7 @@ def _list_available_media(root_prefix: str) -> dict[str, dict[str, Any]]:
     return available
 
 
-async def _upsert_message(session: AsyncSession, job: Job, parsed) -> TelegramMessage:
-    existing = (
-        await session.execute(
-            select(TelegramMessage).where(
-                TelegramMessage.job_id == job.id,
-                TelegramMessage.telegram_message_id == parsed.telegram_message_id,
-            )
-        )
-    ).scalar_one_or_none()
-
-    if existing is None:
-        existing = TelegramMessage(job_id=job.id, telegram_message_id=parsed.telegram_message_id)
-        session.add(existing)
-
+def _set_message_values(existing: TelegramMessage, parsed) -> None:
     existing.timestamp = parsed.timestamp
     existing.edited_timestamp = parsed.edited_timestamp
     existing.sender_id = parsed.sender_id
@@ -81,36 +69,13 @@ async def _upsert_message(session: AsyncSession, job: Job, parsed) -> TelegramMe
     existing.reactions = parsed.reactions
     existing.text = parsed.text
     existing.raw = parsed.raw
-    await session.flush()
-    return existing
 
 
-async def _upsert_media(
-    session: AsyncSession,
-    job: Job,
-    message: TelegramMessage,
+def _set_media_values(
+    existing: TelegramMedia,
     media_ref,
     available_media: dict[str, dict[str, Any]],
 ) -> TelegramMedia:
-    existing = (
-        await session.execute(
-            select(TelegramMedia).where(
-                TelegramMedia.job_id == job.id,
-                TelegramMedia.message_id == message.id,
-                TelegramMedia.original_path == media_ref.original_path,
-            )
-        )
-    ).scalar_one_or_none()
-
-    if existing is None:
-        existing = TelegramMedia(
-            job_id=job.id,
-            message_id=message.id,
-            media_type=media_ref.media_type,
-            original_path=media_ref.original_path,
-        )
-        session.add(existing)
-
     existing.media_type = media_ref.media_type
     existing.original_path = media_ref.original_path
 
@@ -140,6 +105,69 @@ async def _upsert_media(
     return existing
 
 
+async def _persist_message_batch(
+    session: AsyncSession,
+    job: Job,
+    parsed_messages: list,
+    available_media: dict[str, dict[str, Any]],
+) -> tuple[int, int, int]:
+    """Prefetch each table once; retain ORM change detection on parser retries."""
+    rows = (
+        await session.execute(
+            select(TelegramMessage).where(
+                TelegramMessage.job_id == job.id,
+                TelegramMessage.telegram_message_id.in_(
+                    [parsed.telegram_message_id for parsed in parsed_messages]
+                ),
+            )
+        )
+    ).scalars().all()
+    messages = {row.telegram_message_id: row for row in rows}
+    for parsed in parsed_messages:
+        row = messages.get(parsed.telegram_message_id)
+        if row is None:
+            row = TelegramMessage(job_id=job.id, telegram_message_id=parsed.telegram_message_id)
+            session.add(row)
+            messages[parsed.telegram_message_id] = row
+        _set_message_values(row, parsed)
+    # Generate parent IDs and insert all parents before their media children.
+    await session.flush()
+
+    media_message_ids = list({
+        messages[parsed.telegram_message_id].id for parsed in parsed_messages if parsed.media
+    })
+    media_rows = (
+        (
+            await session.execute(
+                select(TelegramMedia).where(
+                    TelegramMedia.job_id == job.id,
+                    TelegramMedia.message_id.in_(media_message_ids),
+                )
+            )
+        ).scalars().all()
+        if media_message_ids else []
+    )
+    media_by_key = {(row.message_id, row.original_path): row for row in media_rows}
+    total = available = missing = 0
+    for parsed in parsed_messages:
+        message = messages[parsed.telegram_message_id]
+        for media_ref in parsed.media:
+            key = (message.id, media_ref.original_path)
+            media = media_by_key.get(key)
+            if media is None:
+                media = TelegramMedia(job_id=job.id, message_id=message.id)
+                session.add(media)
+                media_by_key[key] = media
+            _set_media_values(media, media_ref, available_media)
+            total += 1
+            if media.status == StepStatus.pending:
+                available += 1
+            else:
+                missing += 1
+    await session.flush()
+    return total, available, missing
+
+
 class ParserWorker(Worker):
     subject = subjects.PARSE
     durable = "parser-worker"
@@ -157,6 +185,7 @@ class ParserWorker(Worker):
             message="Telegram-Export Parsing gestartet",
             payload={"source_format": source_format},
         )
+        await session.commit()
 
         prefix = payload.get("extracted_prefix") or extracted_prefix(job.owner_user_id, job.id)
         result_object_key = payload.get("result_json_object_key")
@@ -207,25 +236,23 @@ class ParserWorker(Worker):
             media_missing = 0
 
             with open(result_temp_path, "rb") as result_file:
-                for raw_message in iter_result_messages(
-                    result_file,
-                    max_messages=settings.max_telegram_messages_per_export,
-                    max_message_bytes=settings.max_telegram_message_chars,
-                ):
-                    parsed = parse_message(raw_message)
-                    if parsed is None:
-                        continue
-
-                    db_message = await _upsert_message(session, job, parsed)
-                    for media_ref in parsed.media:
-                        media_row = await _upsert_media(session, job, db_message, media_ref, available_media)
-                        media_total += 1
-                        if media_row.status == StepStatus.pending:
-                            media_available += 1
-                        else:
-                            media_missing += 1
-
-                    messages_done += 1
+                parsed_messages = (
+                    parsed
+                    for raw in iter_result_messages(
+                        result_file,
+                        max_messages=settings.max_telegram_messages_per_export,
+                        max_message_bytes=settings.max_telegram_message_chars,
+                    )
+                    if (parsed := parse_message(raw)) is not None
+                )
+                for batch in batched(parsed_messages, 500):
+                    total, available, missing = await _persist_message_batch(
+                        session, job, list(batch), available_media
+                    )
+                    media_total += total
+                    media_available += available
+                    media_missing += missing
+                    messages_done += len(batch)
                     if messages_done % 1000 == 0:
                         await self.raise_if_cancelled(session, job.id)
                         await session.flush()

@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
 
 from app.config import get_settings
 from app.observability.metrics import record_sync_terminal
@@ -493,35 +494,40 @@ async def upsert_external_messages(
 ) -> int:
     _run, chat = await load_running_external_run(session, principal=principal, run_id=run_id)
     now = utc_now()
-    for item in messages:
-        row = (
-            await session.execute(
-                select(CollectedTelegramMessage).where(
-                    CollectedTelegramMessage.chat_id == chat.id,
-                    CollectedTelegramMessage.telegram_message_id == item.telegram_message_id,
-                )
+    # PostgreSQL cannot update the same conflict key twice in one INSERT.
+    # Preserve the old loop's last-occurrence-wins behavior, including its count.
+    unique = {item.telegram_message_id: item for item in messages}
+    rows = [
+        {
+            "chat_id": chat.id,
+            "owner_user_id": chat.owner_user_id,
+            "telegram_message_id": item.telegram_message_id,
+            "timestamp": ensure_utc(item.timestamp),
+            "edited_timestamp": ensure_utc(item.edited_timestamp) if item.edited_timestamp else None,
+            "sender_id": item.sender_id,
+            "sender_name": item.sender_name,
+            "message_type": item.message_type or "message",
+            "reply_to_message_id": item.reply_to_message_id,
+            "forwarded_from": item.forwarded_from,
+            "reactions": item.reactions,
+            "text": item.text or "",
+            "raw": item.raw,
+            "collected_at": now,
+        }
+        for _, item in sorted(unique.items())
+    ]
+    for offset in range(0, len(rows), 500):
+        statement = insert(CollectedTelegramMessage).values(rows[offset : offset + 500])
+        await session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["chat_id", "telegram_message_id"],
+                set_={
+                    name: statement.excluded[name]
+                    for name in rows[0]
+                    if name not in {"chat_id", "owner_user_id", "telegram_message_id"}
+                },
             )
-        ).scalar_one_or_none()
-        if row is None:
-            row = CollectedTelegramMessage(
-                chat_id=chat.id,
-                owner_user_id=chat.owner_user_id,
-                telegram_message_id=item.telegram_message_id,
-                timestamp=ensure_utc(item.timestamp),
-            )
-            session.add(row)
-
-        row.timestamp = ensure_utc(item.timestamp)
-        row.edited_timestamp = ensure_utc(item.edited_timestamp) if item.edited_timestamp else None
-        row.sender_id = item.sender_id
-        row.sender_name = item.sender_name
-        row.message_type = item.message_type or "message"
-        row.reply_to_message_id = item.reply_to_message_id
-        row.forwarded_from = item.forwarded_from
-        row.reactions = item.reactions
-        row.text = item.text or ""
-        row.raw = item.raw
-        row.collected_at = now
+        )
     chat.lease_expires_at = now + timedelta(minutes=settings.telegram_sync_lease_minutes)
     chat.updated_at = now
     await session.flush()

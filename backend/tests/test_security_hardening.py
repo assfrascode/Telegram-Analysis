@@ -377,7 +377,7 @@ def test_ingest_token_expiry_and_owner_authorized_chat_rotation(monkeypatch) -> 
     assert run.completed_at == now
 
 
-def test_job_admission_takes_transaction_lock_before_capacity_check(monkeypatch) -> None:
+def test_job_admission_checks_network_before_lock_but_counts_under_lock(monkeypatch) -> None:
     calls = []
 
     class Session:
@@ -385,12 +385,19 @@ def test_job_admission_takes_transaction_lock_before_capacity_check(monkeypatch)
             calls.append((str(statement), parameters))
             return _ScalarResult()
 
-    async def accepting(session):
+    async def healthy():
+        calls.append(("network", None))
+        return {"nats": {"ok": True}}
+
+    async def accepting(session, *, external_resources):
+        assert external_resources == {"nats": {"ok": True}}
         calls.append(("capacity", None))
         return {"accepting_jobs": True, "blockers": []}
 
+    monkeypatch.setattr(capacity, "_external_resources", healthy)
     monkeypatch.setattr(capacity, "capacity_snapshot", accepting)
     asyncio.run(capacity.ensure_accepting_jobs(Session()))
 
-    assert "pg_advisory_xact_lock" in calls[0][0]
-    assert calls[1][0] == "capacity"
+    assert calls[0][0] == "network"
+    assert "pg_advisory_xact_lock" in calls[1][0]
+    assert calls[2][0] == "capacity"

@@ -4,11 +4,13 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from io import BytesIO
+from itertools import batched
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import func, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.config import get_settings
 from app.llm.prompt_limits import count_text_tokens, split_text_by_tokens
@@ -426,6 +428,12 @@ class ReportWorker(Worker):
                         MediaTranscript,
                         MediaTranscriptTranslation,
                     )
+                    .options(
+                        defer(TelegramMessage.raw, raiseload=True),
+                        defer(MediaAnalysis.raw_response, raiseload=True),
+                        defer(MediaTranscript.raw_response, raiseload=True),
+                        defer(MediaTranscriptTranslation.raw_response, raiseload=True),
+                    )
                     .outerjoin(TelegramMessage, TelegramMessage.id == TelegramMedia.message_id)
                     .outerjoin(
                         MediaAnalysis,
@@ -464,36 +472,31 @@ class ReportWorker(Worker):
         return sort_report_gallery_items(items)
 
     async def _load_questions(self, session: AsyncSession, job: Job) -> list[ReportQuestion]:
-        question_rows = list(
-            (
-                await session.execute(
-                    select(Question).where(Question.job_id == job.id).order_by(Question.question_index)
-                )
-            )
-            .scalars()
-            .all()
+        latest_run_id = (
+            select(QuestionRun.id)
+            .where(QuestionRun.question_id == Question.id)
+            .order_by(QuestionRun.created_at.desc())
+            .limit(1)
+            .correlate(Question)
+            .scalar_subquery()
+        )
+        question_rows = (await session.execute(
+            select(Question, QuestionRun)
+            .options(defer(QuestionRun.raw_response, raiseload=True))
+            .outerjoin(QuestionRun, QuestionRun.id == latest_run_id)
+            .where(Question.job_id == job.id)
+            .order_by(Question.question_index)
+        )).all()
+        evidence_by_run = await self._hydrate_evidence_for_runs(
+            session,
+            job.id,
+            [run.id for _, run in question_rows if run is not None],
+            english_only=bool((job.options or {}).get("translate", False)),
         )
 
         rendered: list[ReportQuestion] = []
-        for question in question_rows:
-            run = (
-                await session.execute(
-                    select(QuestionRun)
-                    .where(QuestionRun.question_id == question.id)
-                    .order_by(QuestionRun.created_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-
-            evidence = (
-                await self._hydrate_evidence(
-                    session,
-                    run,
-                    english_only=bool((job.options or {}).get("translate", False)),
-                )
-                if run
-                else []
-            )
+        for question, run in question_rows:
+            evidence = evidence_by_run.get(run.id, []) if run else []
             rendered.append(
                 ReportQuestion(
                     index=question.question_index,
@@ -509,74 +512,67 @@ class ReportWorker(Worker):
             )
         return rendered
 
-    async def _hydrate_evidence(
+    async def _hydrate_evidence_for_runs(
         self,
         session: AsyncSession,
-        question_run: QuestionRun,
+        job_id: uuid.UUID,
+        run_ids: list[uuid.UUID],
         *,
         english_only: bool,
-    ) -> list[Any]:
-        hit_rows = list(
-            (
-                await session.execute(
-                    select(RetrievalHit, MessageChunk)
-                    .join(MessageChunk, MessageChunk.id == RetrievalHit.chunk_id)
-                    .where(
-                        RetrievalHit.question_run_id == question_run.id,
-                        RetrievalHit.used_in_answer.is_(True),
-                    )
-                    .order_by(nullslast(RetrievalHit.rerank_rank), RetrievalHit.retrieval_rank)
+    ) -> dict[uuid.UUID, list[Any]]:
+        hit_rows = []
+        for run_batch in batched(run_ids, 500):
+            hit_rows.extend((await session.execute(
+                select(RetrievalHit, MessageChunk)
+                .options(defer(MessageChunk.payload, raiseload=True))
+                .join(MessageChunk, MessageChunk.id == RetrievalHit.chunk_id)
+                .where(
+                    RetrievalHit.question_run_id.in_(run_batch),
+                    RetrievalHit.used_in_answer.is_(True),
                 )
-            ).all()
+                .order_by(nullslast(RetrievalHit.rerank_rank), RetrievalHit.retrieval_rank)
+            )).all())
+
+        # Overlapping chunks and questions share these records. The maps live
+        # only for this render, so they require no cross-job invalidation.
+        ids_by_chunk = {chunk.id: parse_uuid_list(chunk.message_ids) for _, chunk in hit_rows}
+        message_ids = dict.fromkeys(
+            message_id for ids in ids_by_chunk.values() for message_id in ids
         )
+        messages_by_id = {}
+        media_by_message = {}
+        translations_by_message = {}
+        for message_batch in batched(message_ids, 500):
+            rows = (await session.execute(
+                select(TelegramMessage).options(defer(TelegramMessage.raw, raiseload=True)).where(
+                    TelegramMessage.job_id == job_id,
+                    TelegramMessage.id.in_(message_batch),
+                )
+            )).scalars().all()
+            messages_by_id.update((message.id, message) for message in rows)
+            media_by_message.update(await self._load_media_for_messages(
+                session, job_id, list(message_batch)
+            ))
+            translations_by_message.update(await self._load_translations_for_messages(
+                session, job_id, list(message_batch)
+            ))
 
-        evidence = []
+        evidence_by_run = defaultdict(list)
         for hit, chunk in hit_rows:
-            message_ids = parse_uuid_list(chunk.message_ids)
-            if not message_ids:
-                evidence.append(build_report_evidence_chunk(hit=hit, chunk=chunk, messages=[]))
-                continue
-
-            message_rows = list(
-                (
-                    await session.execute(
-                        select(TelegramMessage).where(
-                            TelegramMessage.job_id == question_run.job_id,
-                            TelegramMessage.id.in_(message_ids),
-                        )
-                    )
+            ordered_messages = [
+                build_report_message(
+                    messages_by_id[message_id],
+                    media_by_message.get(message_id, []),
+                    translation=translations_by_message.get(message_id),
+                    english_only=english_only,
                 )
-                .scalars()
-                .all()
+                for message_id in ids_by_chunk[chunk.id]
+                if message_id in messages_by_id
+            ]
+            evidence_by_run[hit.question_run_id].append(
+                build_report_evidence_chunk(hit=hit, chunk=chunk, messages=ordered_messages)
             )
-            messages_by_id = {message.id: message for message in message_rows}
-            media_by_message = await self._load_media_for_messages(
-                session,
-                question_run.job_id,
-                message_ids,
-            )
-            translations_by_message = await self._load_translations_for_messages(
-                session,
-                question_run.job_id,
-                message_ids,
-            )
-
-            ordered_messages = []
-            for message_id in message_ids:
-                message = messages_by_id.get(message_id)
-                if message is None:
-                    continue
-                ordered_messages.append(
-                    build_report_message(
-                        message,
-                        media_by_message.get(message.id, []),
-                        translation=translations_by_message.get(message.id),
-                        english_only=english_only,
-                    )
-                )
-
-            evidence.append(build_report_evidence_chunk(hit=hit, chunk=chunk, messages=ordered_messages))
-        return evidence
+        return evidence_by_run
 
     async def _load_media_for_messages(
         self,
@@ -605,6 +601,11 @@ class ReportWorker(Worker):
                         MediaAnalysis,
                         MediaTranscript,
                         MediaTranscriptTranslation,
+                    )
+                    .options(
+                        defer(MediaAnalysis.raw_response, raiseload=True),
+                        defer(MediaTranscript.raw_response, raiseload=True),
+                        defer(MediaTranscriptTranslation.raw_response, raiseload=True),
                     )
                     .outerjoin(
                         MediaAnalysis,
@@ -664,7 +665,9 @@ class ReportWorker(Worker):
         rows = list(
             (
                 await session.execute(
-                    select(MessageTranslation).where(
+                    select(MessageTranslation)
+                    .options(defer(MessageTranslation.raw_response, raiseload=True))
+                    .where(
                         MessageTranslation.job_id == job_id,
                         MessageTranslation.message_id.in_(message_ids),
                         MessageTranslation.provider == "libretranslate",
@@ -692,28 +695,17 @@ class ReportWorker(Worker):
         report_end_at = job.report_end_at or message_stats[2]
         chunks_total = await self._count(session, select(func.count()).select_from(MessageChunk).where(MessageChunk.job_id == job.id))
         questions_total = await self._count(session, select(func.count()).select_from(Question).where(Question.job_id == job.id))
-        media_total = await self._count(session, select(func.count()).select_from(TelegramMedia).where(TelegramMedia.job_id == job.id))
-        media_completed = await self._count(
-            session,
-            select(func.count()).select_from(TelegramMedia).where(
-                TelegramMedia.job_id == job.id,
-                TelegramMedia.status == StepStatus.completed,
-            ),
-        )
-        media_failed = await self._count(
-            session,
-            select(func.count()).select_from(TelegramMedia).where(
-                TelegramMedia.job_id == job.id,
-                TelegramMedia.status.in_([StepStatus.failed_retryable, StepStatus.failed_permanent]),
-            ),
-        )
-        media_missing = await self._count(
-            session,
-            select(func.count()).select_from(TelegramMedia).where(
-                TelegramMedia.job_id == job.id,
-                TelegramMedia.missing_reason.is_not(None),
-            ),
-        )
+        media_stats = (await session.execute(
+            select(
+                func.count(),
+                func.count().filter(TelegramMedia.status == StepStatus.completed),
+                func.count().filter(TelegramMedia.status.in_(
+                    [StepStatus.failed_retryable, StepStatus.failed_permanent]
+                )),
+                func.count().filter(TelegramMedia.missing_reason.is_not(None)),
+            ).where(TelegramMedia.job_id == job.id)
+        )).one()
+        media_total, media_completed, media_failed, media_missing = map(int, media_stats)
         evidence_chunks_total = await self._count(
             session,
             select(func.count()).select_from(RetrievalHit).join(QuestionRun, QuestionRun.id == RetrievalHit.question_run_id).where(

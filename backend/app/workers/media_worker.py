@@ -438,34 +438,20 @@ class MediaWorker(Worker):
         ).scalar_one_or_none()
 
     async def _stats(self, session: AsyncSession, job_id: uuid.UUID) -> dict[str, int]:
-        total = await self._count(session, job_id)
-        completed = await self._count(session, job_id, StepStatus.completed)
-        pending = await self._count(session, job_id, StepStatus.pending)
-        running = await self._count(session, job_id, StepStatus.running)
-        retryable = await self._count(session, job_id, StepStatus.failed_retryable)
-        permanent = await self._count(session, job_id, StepStatus.failed_permanent)
+        rows = (await session.execute(
+            select(TelegramMedia.status, func.count())
+            .where(TelegramMedia.job_id == job_id, TelegramMedia.media_type.in_(MEDIA_TYPES))
+            .group_by(TelegramMedia.status)
+        )).all()
+        counts = dict(rows)
         return {
-            "media_total": total,
-            "media_done": completed,
-            "media_pending": pending,
-            "media_running": running,
-            "media_retryable_failed": retryable,
-            "media_permanent_failed": permanent,
+            "media_total": sum(counts.values()),
+            "media_done": counts.get(StepStatus.completed, 0),
+            "media_pending": counts.get(StepStatus.pending, 0),
+            "media_running": counts.get(StepStatus.running, 0),
+            "media_retryable_failed": counts.get(StepStatus.failed_retryable, 0),
+            "media_permanent_failed": counts.get(StepStatus.failed_permanent, 0),
         }
-
-    async def _count(
-        self,
-        session: AsyncSession,
-        job_id: uuid.UUID,
-        status: StepStatus | None = None,
-    ) -> int:
-        query = select(func.count()).select_from(TelegramMedia).where(
-            TelegramMedia.job_id == job_id,
-            TelegramMedia.media_type.in_(MEDIA_TYPES),
-        )
-        if status is not None:
-            query = query.where(TelegramMedia.status == status)
-        return int((await session.execute(query)).scalar_one())
 
     def _progress_message(self, row: TelegramMedia, result: MediaWorkResult) -> str:
         if result.status == StepStatus.completed:

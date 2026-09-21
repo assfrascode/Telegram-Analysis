@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from itertools import batched
 
 from sqlalchemy import delete, desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,8 +213,9 @@ class TelegramSnapshotWorker(Worker):
             return
 
         source_to_job: dict[uuid.UUID, TelegramMessage] = {}
-        for source in source_messages:
+        for index, source in enumerate(source_messages, start=1):
             message = TelegramMessage(
+                id=uuid.uuid4(),
                 job_id=job.id,
                 telegram_message_id=source.telegram_message_id,
                 timestamp=source.timestamp,
@@ -228,97 +230,96 @@ class TelegramSnapshotWorker(Worker):
                 raw=source.raw,
             )
             session.add(message)
-            await session.flush()
             source_to_job[source.id] = message
+            if index % 500 == 0:
+                await session.flush()
+        await session.flush()
 
-        source_media = list(
-            (
-                await session.execute(
-                    select(CollectedTelegramMedia).where(
-                        CollectedTelegramMedia.message_id.in_(source_to_job.keys())
+        source_media = []
+        for message_ids in batched(source_to_job, 500):
+            source_media.extend(
+                (await session.execute(
+                    select(CollectedTelegramMedia, CollectedMediaAnalysis, CollectedMediaTranscript)
+                    .outerjoin(
+                        CollectedMediaAnalysis,
+                        (CollectedMediaAnalysis.media_id == CollectedTelegramMedia.id)
+                        & (CollectedMediaAnalysis.model_name == settings.vision_model)
+                        & (CollectedMediaAnalysis.prompt_version == settings.media_analysis_prompt_version),
                     )
-                )
+                    .outerjoin(
+                        CollectedMediaTranscript,
+                        (CollectedMediaTranscript.media_id == CollectedTelegramMedia.id)
+                        & (CollectedMediaTranscript.provider == "openai")
+                        & (CollectedMediaTranscript.model_name == settings.openai_transcription_model)
+                        & (CollectedMediaTranscript.response_format == "text"),
+                    )
+                    .where(CollectedTelegramMedia.message_id.in_(message_ids))
+                )).all()
             )
-            .scalars()
-            .all()
-        )
-        for source in source_media:
-            cached = (
-                await session.execute(
-                    select(CollectedMediaAnalysis).where(
-                        CollectedMediaAnalysis.media_id == source.id,
-                        CollectedMediaAnalysis.model_name == settings.vision_model,
-                        CollectedMediaAnalysis.prompt_version
-                        == settings.media_analysis_prompt_version,
-                    )
-                )
-            ).scalar_one_or_none()
-            cached_transcript = (
-                await session.execute(
-                    select(CollectedMediaTranscript).where(
-                        CollectedMediaTranscript.media_id == source.id,
-                        CollectedMediaTranscript.provider == "openai",
-                        CollectedMediaTranscript.model_name == settings.openai_transcription_model,
-                        CollectedMediaTranscript.response_format == "text",
-                    )
-                )
-            ).scalar_one_or_none()
-            analyzable = source.media_type in {"image", "video"}
-            media_status = source.status
-            if analyzable and source.minio_object_key and cached is None:
-                media_status = StepStatus.pending
-            elif analyzable and source.minio_object_key and cached is not None:
-                media_status = StepStatus.completed
-            elif source.status != StepStatus.completed:
-                media_status = StepStatus.failed_permanent
+        for media_batch in batched(source_media, 500):
+            cache_rows = []
+            for source, cached, cached_transcript in media_batch:
+                analyzable = source.media_type in {"image", "video"}
+                media_status = source.status
+                if analyzable and source.minio_object_key and cached is None:
+                    media_status = StepStatus.pending
+                elif analyzable and source.minio_object_key and cached is not None:
+                    media_status = StepStatus.completed
+                elif source.status != StepStatus.completed:
+                    media_status = StepStatus.failed_permanent
 
-            media = TelegramMedia(
-                job_id=job.id,
-                message_id=source_to_job[source.message_id].id,
-                source_media_id=source.id,
-                media_type=source.media_type,
-                original_path=telegram_desktop_media_path(
+                media = TelegramMedia(
+                    id=uuid.uuid4(),
+                    job_id=job.id,
+                    message_id=source_to_job[source.message_id].id,
+                    source_media_id=source.id,
                     media_type=source.media_type,
-                    telegram_message_id=source_to_job[source.message_id].telegram_message_id,
-                    timestamp=source_to_job[source.message_id].timestamp,
-                    filename=source.filename,
-                ),
-                minio_object_key=source.minio_object_key,
-                size_bytes=source.size_bytes,
-                sha256=source.sha256,
-                status=media_status,
-                missing_reason=source.error_message,
-            )
-            session.add(media)
+                    original_path=telegram_desktop_media_path(
+                        media_type=source.media_type,
+                        telegram_message_id=source_to_job[source.message_id].telegram_message_id,
+                        timestamp=source_to_job[source.message_id].timestamp,
+                        filename=source.filename,
+                    ),
+                    minio_object_key=source.minio_object_key,
+                    size_bytes=source.size_bytes,
+                    sha256=source.sha256,
+                    status=media_status,
+                    missing_reason=source.error_message,
+                )
+                session.add(media)
+                if cached is not None:
+                    cache_rows.append(
+                        MediaAnalysis(
+                            media_id=media.id,
+                            model_name=cached.model_name,
+                            prompt_version=cached.prompt_version,
+                            description=cached.description,
+                            raw_response=cached.raw_response,
+                        )
+                    )
+                    media.analyzed_at = cached.created_at
+                if cached_transcript is not None:
+                    cache_rows.append(
+                        MediaTranscript(
+                            job_id=job.id,
+                            media_id=media.id,
+                            provider=cached_transcript.provider,
+                            model_name=cached_transcript.model_name,
+                            response_format=cached_transcript.response_format,
+                            status=cached_transcript.status,
+                            attempts=cached_transcript.attempts,
+                            transcript_text=cached_transcript.transcript_text,
+                            error_message=cached_transcript.error_message,
+                            raw_response=cached_transcript.raw_response,
+                            created_at=cached_transcript.created_at,
+                            updated_at=cached_transcript.updated_at,
+                        )
+                    )
+
+            # Flush all parent media before inserting cached child records.
             await session.flush()
-            if cached is not None:
-                session.add(
-                    MediaAnalysis(
-                        media_id=media.id,
-                        model_name=cached.model_name,
-                        prompt_version=cached.prompt_version,
-                        description=cached.description,
-                        raw_response=cached.raw_response,
-                    )
-                )
-                media.analyzed_at = cached.created_at
-            if cached_transcript is not None:
-                session.add(
-                    MediaTranscript(
-                        job_id=job.id,
-                        media_id=media.id,
-                        provider=cached_transcript.provider,
-                        model_name=cached_transcript.model_name,
-                        response_format=cached_transcript.response_format,
-                        status=cached_transcript.status,
-                        attempts=cached_transcript.attempts,
-                        transcript_text=cached_transcript.transcript_text,
-                        error_message=cached_transcript.error_message,
-                        raw_response=cached_transcript.raw_response,
-                        created_at=cached_transcript.created_at,
-                        updated_at=cached_transcript.updated_at,
-                    )
-                )
+            session.add_all(cache_rows)
+            await session.flush()
 
         await self.emit_event(
             session,

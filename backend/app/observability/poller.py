@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import StepStatus, TelegramReportSchedule, WorkerDeadLetter, WorkerTask
+from app.models import StepStatus, TelegramReportSchedule, WorkerTask
 from app.nats_client import TASK_STREAM, connect_nats, ensure_streams, task_queue_backlog
 from app.observability.metrics import (
     DEPENDENCY_UP,
@@ -63,13 +63,6 @@ async def refresh_operational_metrics() -> None:
             or 0
         )
         FAILED_SCHEDULES.set(failed_schedules)
-
-        # Keep the direct count query here so the gauge remains available if the
-        # capacity response later stops exposing dead-letter internals.
-        dead_letters = int(
-            (await session.execute(select(func.count(WorkerDeadLetter.id)))).scalar() or 0
-        )
-        WORKER_DEAD_LETTERS.set(dead_letters)
 
     nc = await connect_nats()
     try:
