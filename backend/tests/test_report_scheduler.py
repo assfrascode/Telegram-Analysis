@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.models import Job, JobStatus, QuestionSet, TelegramChat, TelegramChatStatus, TelegramReportSchedule
 from app.schemas import (
+    MAX_TELEGRAM_REPORT_WINDOW,
     TelegramReportScheduleCreateRequest,
     TelegramReportScheduleResponse,
     TelegramReportScheduleUpdateRequest,
@@ -19,6 +20,7 @@ from app.workers import run_report_scheduler
 
 
 def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
+    maximum_days = MAX_TELEGRAM_REPORT_WINDOW.days
     default_request = TelegramReportScheduleCreateRequest(
         telegram_chat_id=uuid.uuid4(),
         question_set_id=uuid.uuid4(),
@@ -63,13 +65,21 @@ def test_report_schedule_schema_validates_time_timezone_and_window() -> None:
             rolling_window_days=1,
         )
 
-    flexible_request = TelegramReportScheduleCreateRequest(
+    maximum_request = TelegramReportScheduleCreateRequest(
         telegram_chat_id=uuid.uuid4(),
         question_set_id=uuid.uuid4(),
         run_time_local="05:00",
-        rolling_window_days=365,
+        rolling_window_days=maximum_days,
     )
-    assert flexible_request.rolling_window_days == 365
+    assert maximum_request.rolling_window_days == maximum_days
+
+    with pytest.raises(ValidationError):
+        TelegramReportScheduleCreateRequest(
+            telegram_chat_id=uuid.uuid4(),
+            question_set_id=uuid.uuid4(),
+            run_time_local="05:00",
+            rolling_window_days=maximum_days + 1,
+        )
 
     with pytest.raises(ValidationError):
         TelegramReportScheduleCreateRequest(

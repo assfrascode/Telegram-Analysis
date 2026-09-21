@@ -8,7 +8,7 @@ import { TelegramSourcesPanel } from "./components/TelegramSourcesPanel";
 import { Toast } from "./components/Toast";
 import { TutorialPage } from "./components/TutorialPage";
 import { useJobSocket } from "./hooks/useJobSocket";
-import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS, MAX_EVENTS, STAGES, STORAGE_JOB, STORAGE_TOKEN } from "./lib/constants";
+import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS, MAX_EVENTS, MAX_TELEGRAM_REPORT_DAYS, STAGES, STORAGE_JOB, STORAGE_TOKEN } from "./lib/constants";
 import { normalizeEvent, normalizeQuestions, optionsFromState } from "./lib/format";
 
 function makeDerivedEvent(stage, currentJob, message = `${stage.label} completed`) {
@@ -23,8 +23,6 @@ function makeDerivedEvent(stage, currentJob, message = `${stage.label} completed
 function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
-
-const MAX_TELEGRAM_REPORT_DAYS = 30;
 
 function requestErrorMessage(reason) {
   return reason?.message || String(reason);

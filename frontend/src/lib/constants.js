@@ -4,6 +4,7 @@ export const MAX_EVENTS = 300;
 
 export const TERMINAL_STATUSES = new Set(["completed", "cancelled", "failed"]);
 export const BAD_STATUSES = new Set(["failed", "cancelled"]);
+export const MAX_TELEGRAM_REPORT_DAYS = __MAX_TELEGRAM_REPORT_WINDOW__;
 
 export const STAGES = [
   {

@@ -11,7 +11,9 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "/telegram/connection/code" in panel
     assert "/telegram/connection/password" in panel
     assert "Collected chat" in create
-    assert "Use the last 30 days" in create
+    assert "Use the last {MAX_TELEGRAM_REPORT_DAYS} days" in create
+    assert "reportDateOrderValid" in create
+    assert "MAX_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000" in create
     assert "Allow partial report" in create
     assert "allow_partial_telegram_sync" in create
     assert "Force partial report" in create
@@ -20,7 +22,7 @@ def test_react_frontend_exposes_telegram_connection_and_report_flow() -> None:
     assert "analysis-page" in create
     assert "analysis-source-choice" in create
     assert "Processing enhancements" in create
-    assert "Use a period of 30 days or less" in create
+    assert "Use a period of ${MAX_TELEGRAM_REPORT_DAYS} days or less" in create
     assert "Scheduled reports" in panel
     assert "/telegram/report-schedules" in panel
     assert "allow_partial_telegram_sync" in panel
@@ -98,10 +100,24 @@ def test_react_frontend_exposes_static_beginner_report_tutorial() -> None:
     assert "Each question becomes one section" in tutorial
     assert "Download all" in tutorial
     assert "Use a collected chat instead" in tutorial
+    assert "MAX_TELEGRAM_REPORT_DAYS" in tutorial
     assert "Common problems" in tutorial
     assert "<button" not in tutorial
     assert ".tutorial-page" in styles
     assert ".sidebar-help.is-active" in styles
+
+
+def test_frontend_report_window_comes_from_workspace_environment() -> None:
+    root = Path("frontend")
+    vite = (root / "vite.config.js").read_text()
+    constants = (root / "src/lib/constants.js").read_text()
+    dockerfile = (root / "Dockerfile").read_text()
+    compose = Path("docker-compose.yml").read_text()
+
+    assert "MAX_TELEGRAM_REPORT_WINDOW" in vite
+    assert "__MAX_TELEGRAM_REPORT_WINDOW__" in constants
+    assert 'ARG MAX_TELEGRAM_REPORT_WINDOW="30"' in dockerfile
+    assert 'MAX_TELEGRAM_REPORT_WINDOW: "${MAX_TELEGRAM_REPORT_WINDOW:-30}"' in compose
 
 
 def test_frontends_expose_failed_job_retry_action() -> None:

@@ -201,6 +201,10 @@ messages while collection catches up in the background.
 Reports with `force_partial_telegram_sync` enabled use only messages already in
 the database and never request a report-specific synchronization or background
 coverage backfill.
+The maximum Telegram report range is configured in whole days with
+`MAX_TELEGRAM_REPORT_WINDOW` (30 by default). The same value is compiled into
+the React frontend so its date validation, preset, and tutorial match backend
+validation.
 The former `TELEGRAM_SYNC_TIMEOUT_SECONDS` and
 `TELEGRAM_EXTERNAL_COVERAGE_WAIT_SECONDS` names remain accepted as deprecated
 fallbacks.

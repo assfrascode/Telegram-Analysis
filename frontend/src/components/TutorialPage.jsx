@@ -1,3 +1,5 @@
+import { MAX_TELEGRAM_REPORT_DAYS } from "../lib/constants";
+
 function TutorialIcon({ name }) {
   if (name === "folder") {
     return (
@@ -243,7 +245,7 @@ export function TutorialPage() {
         />
         <div className="tutorial-alternative-copy">
           <p>
-            Choose the group or channel and a reporting period of 30 days or less. You can click “Use the last 30 days”
+            Choose the group or channel and a reporting period of {MAX_TELEGRAM_REPORT_DAYS} days or less. You can click “Use the last {MAX_TELEGRAM_REPORT_DAYS} days”
             for the quickest setup. Define the questions, start the analysis, wait for “Report ready”, then choose either download option.
           </p>
           <p>
@@ -264,7 +266,7 @@ export function TutorialPage() {
           <div><strong>The file is not accepted</strong><p>Select one file ending in .zip, not the uncompressed folder.</p></div>
           <div><strong>A question is incomplete</strong><p>Every visible question needs text. Remove any question you do not want to use.</p></div>
           <div><strong>No collected chats appear</strong><p>The chat must first be connected and synchronized in Telegram Setup.</p></div>
-          <div><strong>The date range is rejected</strong><p>Make sure “From” is earlier than “To” and the range is no longer than 30 days.</p></div>
+          <div><strong>The date range is rejected</strong><p>Make sure “From” is earlier than “To” and the range is no longer than {MAX_TELEGRAM_REPORT_DAYS} days.</p></div>
           <div><strong>Processing takes a long time</strong><p>Large exports and media analysis need more time. Check Recent analyses for the current status.</p></div>
         </div>
       </section>

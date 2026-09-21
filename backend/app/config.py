@@ -45,6 +45,13 @@ class Settings(BaseSettings):
         ),
     )
     telegram_external_initial_response_timeout_seconds: int = 60
+    # Maximum Telegram report range in whole days.
+    max_telegram_report_window: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        validation_alias="MAX_TELEGRAM_REPORT_WINDOW",
+    )
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
     metrics_enabled: bool = True

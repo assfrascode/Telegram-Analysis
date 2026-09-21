@@ -5,10 +5,12 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.config import get_settings
 
 ALLOWED_TELEGRAM_SYNC_INTERVAL_MINUTES = {0, 15, 60, 360, 1440}
 EXTERNAL_COLLECTOR_SYNC_INTERVAL_MINUTES = {15, 60, 360, 1440}
-MAX_TELEGRAM_REPORT_WINDOW = timedelta(days=30)
+settings = get_settings()
+MAX_TELEGRAM_REPORT_WINDOW = timedelta(days=settings.max_telegram_report_window)
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -107,7 +109,10 @@ class TelegramReportCreateRequest(BaseModel):
         if self.start_at.tzinfo is None or self.end_at.tzinfo is None:
             raise ValueError("start_at and end_at must include a timezone")
         if self.end_at - self.start_at > MAX_TELEGRAM_REPORT_WINDOW:
-            raise ValueError("Telegram reports can cover at most 30 days")
+            raise ValueError(
+                "Telegram reports can cover at most "
+                f"{settings.max_telegram_report_window} days"
+            )
         return self
 
 
@@ -288,7 +293,7 @@ class TelegramReportScheduleCreateRequest(BaseModel):
     question_set_id: uuid.UUID
     run_time_local: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     timezone: Literal["Europe/Berlin"] = "Europe/Berlin"
-    rolling_window_days: int = Field(ge=1)
+    rolling_window_days: int = Field(ge=1, le=settings.max_telegram_report_window)
     enabled: bool = True
     allow_partial_telegram_sync: bool = False
     force_partial_telegram_sync: bool = False
@@ -306,7 +311,11 @@ class TelegramReportScheduleUpdateRequest(BaseModel):
     question_set_id: uuid.UUID | None = None
     run_time_local: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     timezone: Literal["Europe/Berlin"] | None = None
-    rolling_window_days: int | None = Field(default=None, ge=1)
+    rolling_window_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=settings.max_telegram_report_window,
+    )
     enabled: bool | None = None
     allow_partial_telegram_sync: bool | None = None
     force_partial_telegram_sync: bool | None = None

@@ -13,6 +13,7 @@ x-common-environment: &common-environment
   METRICS_PORT: "${METRICS_PORT:-9100}"
   OBSERVABILITY_POLL_SECONDS: "${OBSERVABILITY_POLL_SECONDS:-30}"
   LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+  MAX_TELEGRAM_REPORT_WINDOW: "${MAX_TELEGRAM_REPORT_WINDOW:-30}"
 
 x-api-environment: &api-environment
   APP_BASE_URL: "${APP_BASE_URL:?Set APP_BASE_URL to the public HTTPS origin}"
@@ -431,6 +432,7 @@ services:
       args:
         NODE_BASE_IMAGE: "${NODE_BASE_IMAGE:-node:slim}"
         NGINX_BASE_IMAGE: "${NGINX_BASE_IMAGE:-nginxinc/nginx-unprivileged:latest}"
+        MAX_TELEGRAM_REPORT_WINDOW: "${MAX_TELEGRAM_REPORT_WINDOW:-30}"
     image: chat-analyse-react-frontend:local
     init: true
     restart: unless-stopped

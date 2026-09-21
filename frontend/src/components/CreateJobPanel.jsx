@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS } from "../lib/constants";
+import { DEFAULT_OPTIONS, DEFAULT_QUESTIONS, MAX_TELEGRAM_REPORT_DAYS } from "../lib/constants";
 import { formatBytes } from "../lib/format";
 import { QuestionBuilder } from "./QuestionBuilder";
 import { QuestionSetsPanel } from "./QuestionSetsPanel";
@@ -8,8 +8,6 @@ import { WorkspaceRail, WorkspaceTopbar } from "./WorkspaceChrome";
 function localDateTimeValue(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
-
-const DEFAULT_TELEGRAM_REPORT_DAYS = 30;
 
 function AnalysisIcon({ name }) {
   if (name === "upload") {
@@ -149,7 +147,7 @@ export function CreateJobPanel({
     && !Number.isNaN(reportEndDate.getTime());
   const reportDateOrderValid = reportDatesValid && reportStartDate < reportEndDate;
   const reportRangeValid = reportDateOrderValid
-    && reportEndDate.getTime() - reportStartDate.getTime() <= DEFAULT_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000;
+    && reportEndDate.getTime() - reportStartDate.getTime() <= MAX_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000;
   const sourceReady = sourceMode === "upload"
     ? Boolean(file?.name.toLowerCase().endsWith(".zip"))
     : Boolean(selectedChat && reportRangeValid);
@@ -161,7 +159,7 @@ export function CreateJobPanel({
         ? "Set a reporting period"
         : !reportDateOrderValid
           ? "Start time must be before end time"
-          : !reportRangeValid ? "Use a period of 30 days or less" : "";
+          : !reportRangeValid ? `Use a period of ${MAX_TELEGRAM_REPORT_DAYS} days or less` : "";
   const questionIssue = !questions.length
     ? "Add a report question"
     : firstIncompleteQuestion >= 0 ? `Complete question ${firstIncompleteQuestion + 1}` : "";
@@ -372,12 +370,12 @@ export function CreateJobPanel({
                   <input type="datetime-local" value={reportStart} onChange={(event) => setReportStart(event.target.value)} />
                 </label>
                 <label className="field">
-                  <FieldLabel help="The reporting period must end after it starts and can cover at most 30 days.">To</FieldLabel>
+                  <FieldLabel help={`The reporting period must end after it starts and can cover at most ${MAX_TELEGRAM_REPORT_DAYS} days.`}>To</FieldLabel>
                   <input type="datetime-local" value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} />
                 </label>
                 {selectedChat && reportDatesPresent && !reportRangeValid && (
                   <div className="analysis-source-error">
-                    {reportDateOrderValid ? "Reports can cover at most 30 days." : "The start time must be before the end time."}
+                    {reportDateOrderValid ? `Reports can cover at most ${MAX_TELEGRAM_REPORT_DAYS} days.` : "The start time must be before the end time."}
                   </div>
                 )}
                 <button
@@ -386,12 +384,12 @@ export function CreateJobPanel({
                   onClick={() => {
                     const end = new Date();
                     const start = new Date(end);
-                    start.setTime(start.getTime() - DEFAULT_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000);
+                    start.setTime(start.getTime() - MAX_TELEGRAM_REPORT_DAYS * 24 * 60 * 60 * 1000);
                     setReportStart(localDateTimeValue(start));
                     setReportEnd(localDateTimeValue(end));
                   }}
                 >
-                  Use the last 30 days
+                  Use the last {MAX_TELEGRAM_REPORT_DAYS} days
                 </button>
                 <label className="analysis-inline-option field-wide">
                   <input

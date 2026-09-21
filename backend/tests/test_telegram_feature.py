@@ -59,6 +59,23 @@ def test_sync_inactivity_settings_accept_new_names_and_legacy_aliases() -> None:
     assert legacy.telegram_external_inactivity_timeout_seconds == 300
 
 
+def test_telegram_report_window_setting_is_configurable_in_days() -> None:
+    configured = Settings(
+        _env_file=None,
+        secret_key="test",
+        MAX_TELEGRAM_REPORT_WINDOW=45,
+    )
+
+    assert configured.max_telegram_report_window == 45
+
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            secret_key="test",
+            MAX_TELEGRAM_REPORT_WINDOW=0,
+        )
+
+
 def test_telegram_report_requires_timezone_and_ordered_interval() -> None:
     default_request = TelegramReportCreateRequest(
         telegram_chat_id=uuid.uuid4(),

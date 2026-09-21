@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { MAX_TELEGRAM_REPORT_DAYS } from "../lib/constants";
 import { formatDate } from "../lib/format";
 import { WorkspaceRail, WorkspaceTopbar } from "./WorkspaceChrome";
 
@@ -572,7 +573,9 @@ function ScheduledReportsSection({
   const chatTitle = (id) => chats.find((chat) => chat.id === id)?.title || "Telegram chat";
   const questionSetName = (id) => questionSets.find((set) => set.id === id)?.name || "Question set";
   const parsedWindowDays = Number(rollingWindowDays);
-  const validWindowDays = Number.isSafeInteger(parsedWindowDays) && parsedWindowDays >= 1;
+  const validWindowDays = Number.isSafeInteger(parsedWindowDays)
+    && parsedWindowDays >= 1
+    && parsedWindowDays <= MAX_TELEGRAM_REPORT_DAYS;
   const formReady = Boolean(
     activeChats.length && questionSets.length && chatId && questionSetId && runTime && validWindowDays
   );
@@ -658,6 +661,7 @@ function ScheduledReportsSection({
                   <input
                     type="number"
                     min="1"
+                    max={MAX_TELEGRAM_REPORT_DAYS}
                     step="1"
                     value={rollingWindowDays}
                     onChange={(event) => setRollingWindowDays(event.target.value)}
@@ -666,7 +670,7 @@ function ScheduledReportsSection({
                   <span>days</span>
                 </div>
                 <small id="schedule-days-hint">
-                  Runs every {validWindowDays ? rollingWindowLabel(parsedWindowDays) : "chosen number of days"} and includes the same period.
+                  Runs every {validWindowDays ? rollingWindowLabel(parsedWindowDays) : "chosen number of days"} and includes the same period (maximum {MAX_TELEGRAM_REPORT_DAYS} days).
                 </small>
               </label>
             </fieldset>
