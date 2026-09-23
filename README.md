@@ -384,7 +384,7 @@ and exception records retain the exception type without the potentially
 sensitive exception message.
 
 - Capacity checks reject new jobs when required dependencies are unhealthy or configured queue/job thresholds are reached.
-- Workers record task attempts and dead letters for permanent failures.
+- Workers record task attempts and dead letters for permanent failures. Sequential workers fetch one task at a time. PostgreSQL session advisory locks serialize execution by stable `task_key`, survive handler commits, and release when a worker disconnects. Busy deliveries retry; completed tasks are acknowledged without re-execution. This requires direct PostgreSQL connections or session pooling (not transaction pooling). Restarted handlers may republish downstream messages; stable downstream task keys prevent duplicate execution after completion. External side effects performed before a crash still require handler-specific idempotency.
 - Stale queued jobs are recovered on backend/worker startup when `RECOVER_STALE_QUEUED_JOBS=true`.
 - Media row failures are not job-fatal by default; set `MEDIA_FAIL_JOB_ON_ERROR=true` when any permanent media failure should fail the job.
 - Compose keeps vLLM credentials and network access on the worker role; API and scheduler capacity checks therefore cover the data plane but intentionally skip model endpoints.

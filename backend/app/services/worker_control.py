@@ -1,7 +1,10 @@
 
 import asyncio
+import hashlib
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -11,10 +14,11 @@ try:
 except Exception:  # pragma: no cover - httpx is present in the app container
     httpx = None  # type: ignore[assignment]
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.config import get_settings
+from app.db import engine
 from app.models import Job, JobEvent, JobStatus, StepStatus, WorkerDeadLetter, WorkerTask
 from app.services.events import record_event, record_event_db_only
 
@@ -298,3 +302,39 @@ async def count_worker_backlog(session: AsyncSession) -> int:
         )
     )
     return int(result.scalar() or 0)
+
+
+@asynccontextmanager
+async def claim_worker_task(task_key: str) -> AsyncIterator[AsyncConnection | None]:
+    """Hold exclusive ownership across handler commits, retries and cancellation.
+
+    Session advisory locks are released by PostgreSQL when a process disconnects,
+    so a persisted running task needs no timeout-based takeover. Hash collisions
+    only serialize unrelated tasks. Never return a locked connection to the pool.
+    The handler must bind its session to this connection.
+    """
+    lock_id = int.from_bytes(
+        hashlib.sha256(f"worker-task:{task_key}".encode()).digest()[:8],
+        "big", signed=True,
+    )
+    async with engine.connect() as connection:
+        acquired = None
+        try:
+            acquired = await connection.scalar(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id},
+            )
+            await connection.commit()
+            yield connection if acquired else None
+        finally:
+            # Also covers cancellation during acquisition or commit, when the
+            # client may not know whether PostgreSQL acquired the lock.
+            try:
+                if acquired is not False and not connection.invalidated:
+                    await connection.rollback()
+                    await connection.execute(
+                        text("SELECT pg_advisory_unlock(:key)"), {"key": lock_id},
+                    )
+                    await connection.commit()
+            except BaseException:
+                await connection.invalidate()
+                raise

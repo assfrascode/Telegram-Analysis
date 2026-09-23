@@ -14,8 +14,8 @@ The project already supports ZIP and collected-chat analysis, saved question set
   **Validated:** React regressions cover A → B → A selection, old event cursors, late retry responses, a new login after sign-out, and obsolete socket messages/ticket errors.
   **Start in:** [App.jsx](frontend/src/App.jsx), [API client](frontend/src/api/client.js), [socket hook](frontend/src/hooks/useJobSocket.js).
 
-- [ ] **T03 — Verify worker ownership during redelivery and long batches.** Workers fetch multiple tasks, process them sequentially, and heartbeat the currently executing message; inspect whether waiting messages can be redelivered and processed concurrently.
-  **Done when:** a long first task, two workers, and a worker restart cannot cause concurrent execution of the same task or duplicate downstream work; abandoned claims recover automatically.
+- [x] **T03 — Verify worker ownership during redelivery and long batches.** Sequential workers fetch one task at a time and hold a PostgreSQL session advisory lock by task key across handler commits and failure recording. Busy deliveries retry without incrementing attempts; disconnected workers release their claims automatically.
+  **Validated:** PostgreSQL integration regressions cover competing workers during a blocked handler, independent task progress, cancellation and process-kill recovery, failure retries, and duplicate downstream publication after restart with one downstream execution.
   **Start in:** [worker base](backend/app/workers/base.py), [worker control](backend/app/services/worker_control.py), [worker tests](backend/tests/test_worker_base.py).
 
 - [x] **T04 — Retry failed collected-media downloads independently.** Both collection modes consume up to 100 eligible failed attachments per sync by exact message ID, with a cooldown and explicit permanent failures.

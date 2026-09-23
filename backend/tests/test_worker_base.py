@@ -31,6 +31,7 @@ class AsyncioTimeoutSubscription:
 
 class MessageSubscription:
     async def fetch(self, batch: int, timeout: int):
+        assert batch == 1
         return ["message"]
 
 
@@ -79,7 +80,7 @@ def test_worker_persists_attempt_before_handler_failure(monkeypatch):
     session = Session()
 
     @asynccontextmanager
-    async def session_local():
+    async def session_local(**kwargs):
         yield session
 
     async def get_job(session, job_id):
@@ -90,10 +91,15 @@ def test_worker_persists_attempt_before_handler_failure(monkeypatch):
             operations.append("handle")
             raise RuntimeError("boom")
 
-        async def _record_failure(self, job_id, task_key, payload, exc):
+        async def _record_failure(self, job_id, task_key, payload, exc, **kwargs):
             operations.append("record_failure")
             return "nak"
 
+    @asynccontextmanager
+    async def claim(task_key):
+        yield SimpleNamespace(invalidated=False)
+
+    monkeypatch.setattr(base, "claim_worker_task", claim)
     monkeypatch.setattr(base, "SessionLocal", session_local)
     monkeypatch.setattr(base, "get_job", get_job)
 
@@ -106,3 +112,12 @@ def test_worker_persists_attempt_before_handler_failure(monkeypatch):
     assert action == "nak"
     assert operations.index("commit") < operations.index("handle")
     assert operations.index("rollback") < operations.index("record_failure")
+
+
+def test_busy_claim_does_not_start_or_ack_task(monkeypatch):
+    @asynccontextmanager
+    async def busy(task_key):
+        yield None
+
+    monkeypatch.setattr(base, "claim_worker_task", busy)
+    assert asyncio.run(DummyWorker()._handle_message({"job_id": str(uuid.uuid4())})) == "nak"

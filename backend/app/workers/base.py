@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from nats.errors import TimeoutError as NATSTimeoutError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -26,6 +26,7 @@ from app.services.worker_control import (
     NON_RUNNABLE_JOB_STATUSES,
     PermanentWorkerError,
     WorkerCancelled,
+    claim_worker_task,
     classify_worker_exception,
     create_dead_letter,
     get_job,
@@ -43,7 +44,8 @@ class Worker(abc.ABC):
     subject: str
     durable: str
     queue: str
-    fetch_batch_size = 8
+    # Sequential handlers must not reserve messages they cannot heartbeat yet.
+    fetch_batch_size = 1
     fetch_timeout_seconds = 1
     idle_sleep_seconds = 0.25
     ack_heartbeat_seconds = 10
@@ -213,7 +215,17 @@ class Worker(abc.ABC):
         job_id = uuid.UUID(payload["job_id"])
         task_key = payload.get("task_key") or f"{self.subject}:{job_id}"
 
-        async with SessionLocal() as session:
+        async with claim_worker_task(task_key) as connection:
+            if connection is None:
+                # Another worker still owns this task. Do not ACK: its process
+                # may die before completion and this delivery must remain retryable.
+                return "nak"
+            return await self._handle_owned_message(payload, job_id, task_key, connection)
+
+    async def _handle_owned_message(
+        self, payload: dict[str, Any], job_id: uuid.UUID, task_key: str, connection: AsyncConnection,
+    ) -> AckAction:
+        async with SessionLocal(bind=connection) as session:
             job = await get_job(session, job_id)
             if job is None:
                 exc = PermanentWorkerError(f"Job not found: {job_id}")
@@ -323,7 +335,13 @@ class Worker(abc.ABC):
                 return "ack"
             except Exception as exc:
                 await session.rollback()
-                return await self._record_failure(job_id, task_key, payload, exc)
+                if connection.invalidated:
+                    # The database released our lock. Never reconnect to record
+                    # an old owner's failure over a replacement worker's state.
+                    raise
+                return await self._record_failure(
+                    job_id, task_key, payload, exc, connection=connection,
+                )
 
     def fail_job_on_dead_letter(self, payload: dict[str, Any], exc: Exception, reason: str) -> bool:
         """Whether a permanent task failure should fail the whole job.
@@ -339,8 +357,10 @@ class Worker(abc.ABC):
         task_key: str,
         payload: dict[str, Any],
         exc: Exception,
+        *,
+        connection: AsyncConnection,
     ) -> AckAction:
-        async with SessionLocal() as session:
+        async with SessionLocal(bind=connection) as session:
             task = (await session.execute(select(WorkerTask).where(WorkerTask.task_key == task_key))).scalar_one_or_none()
             job = await get_job(session, job_id)
             attempts = task.attempts if task else 1
