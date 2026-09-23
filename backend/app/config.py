@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     )
     report_scheduler_poll_seconds: int = 30
     report_scheduler_lease_minutes: int = 5
+    cleanup_interval_seconds: int = Field(default=60, ge=1)
+    upload_expiry_hours: int = Field(default=24, ge=1)
     metrics_enabled: bool = True
     metrics_port: int = Field(default=9100, ge=1024, le=65535)
     observability_poll_seconds: int = Field(default=30, ge=5, le=3600)

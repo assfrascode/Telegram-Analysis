@@ -83,6 +83,7 @@ async def _reserve_upload(session: AsyncSession, upload: Upload, user: User) -> 
             Upload.id == upload.id,
             Upload.owner_user_id == user.id,
             Upload.status == UploadStatus.created,
+            Upload.deletion_requested_at.is_(None),
         )
         .with_for_update(skip_locked=True)
     )
@@ -101,7 +102,7 @@ async def upload_content(
 ) -> dict:
     upload = await get_owned_upload_or_404(session, upload_id=upload_id, user=user)
 
-    if upload.status != UploadStatus.created:
+    if upload.deletion_requested_at is not None or upload.status != UploadStatus.created:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload is not writable")
 
     if upload.size_bytes > settings.max_upload_bytes:

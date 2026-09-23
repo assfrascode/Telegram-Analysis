@@ -56,6 +56,7 @@ function MonitorIcon({ name }) {
 
 function monitorState(currentJob) {
   if (!currentJob) return "empty";
+  if (currentJob.deletion_requested_at) return "working";
   if (currentJob.status === "completed") return "ready";
   if (BAD_STATUSES.has(currentJob.status)) return "attention";
   return "working";
@@ -182,6 +183,9 @@ function focusContent(currentJob, current, currentPhase) {
   if (!currentJob) {
     return { kicker: "Analysis", title: "Loading analysis", detail: "Fetching the latest processing state." };
   }
+  if (currentJob.deletion_requested_at) {
+    return { kicker: "Deleting", title: "Removing analysis", detail: currentJob.cleanup_error ? "Cleanup is waiting for storage to become available. It will retry automatically." : "Stored reports and artifacts are being removed. Cleanup continues automatically if interrupted." };
+  }
   if (currentJob.status === "completed") {
     return { kicker: "Complete", title: "Your report is ready", detail: "The analysis finished successfully. Choose a download package below." };
   }
@@ -189,7 +193,7 @@ function focusContent(currentJob, current, currentPhase) {
     return { kicker: currentPhase?.label || "Analysis", title: "Analysis stopped", detail: currentJob.error_message || "The current processing step could not be completed." };
   }
   if (currentJob.status === "cancelled") {
-    return { kicker: "Cancelled", title: "Analysis cancelled", detail: "Processing stopped at your request." };
+    return { kicker: "Cancelled", title: "Analysis cancelled", detail: "Processing stopped at your request. Restart to create a new analysis with the same source and questions." };
   }
   if (currentJob.status === "cancelling") {
     return { kicker: currentPhase?.label || "Analysis", title: "Stopping analysis", detail: "The current operation is being stopped safely." };
@@ -261,6 +265,8 @@ export function JobMonitorPanel({
   onRefresh,
   onCancel,
   onRetry,
+  onDelete,
+  deleteInProgress = false,
   onDownload,
   downloadInProgress,
 }) {
@@ -270,7 +276,8 @@ export function JobMonitorPanel({
   const currentPhase = phaseForStage(phases, current?.stage?.key);
   const focus = focusContent(currentJob, current, currentPhase);
   const activity = normalizeActivity(events, stageStates);
-  const stateCopy = {
+  const deleting = Boolean(currentJob?.deletion_requested_at);
+  const stateCopy = deleting ? { badge: "Deleting", title: "Removing analysis" } : {
     empty: { badge: "Loading", title: "Analysis" },
     ready: { badge: "Report ready", title: "Analysis complete" },
     attention: { badge: currentJob?.status === "cancelled" ? "Cancelled" : "Attention needed", title: "Analysis stopped" },
@@ -290,11 +297,14 @@ export function JobMonitorPanel({
           <button className="button button-secondary button-small button-with-icon" type="button" onClick={onRefresh}>
             <MonitorIcon name="refresh" /> Refresh
           </button>
-          {currentJob?.status === "failed" && (
-            <button className="button button-primary button-small" type="button" onClick={onRetry}>Retry analysis</button>
+          {!deleting && ["failed", "cancelled"].includes(currentJob?.status) && (
+            <button className="button button-primary button-small" type="button" onClick={onRetry} disabled={deleteInProgress}>{currentJob.status === "cancelled" ? "Restart analysis" : "Retry analysis"}</button>
           )}
-          {currentJob && !TERMINAL_STATUSES.has(currentJob.status) && (
-            <button className="button button-ghost button-small danger-text" type="button" onClick={onCancel}>Cancel analysis</button>
+          {!deleting && currentJob && !TERMINAL_STATUSES.has(currentJob.status) && (
+            <button className="button button-ghost button-small danger-text" type="button" onClick={onCancel} disabled={currentJob.status === "cancelling"}>Cancel analysis</button>
+          )}
+          {!deleting && currentJob && TERMINAL_STATUSES.has(currentJob.status) && (
+            <button className="button button-ghost button-small danger-text" type="button" onClick={onDelete} disabled={deleteInProgress}>{deleteInProgress ? "Requesting deletion…" : "Delete analysis"}</button>
           )}
           </>
         )}
@@ -310,7 +320,7 @@ export function JobMonitorPanel({
             <h1>{focus.title}</h1>
             <p>{focus.detail}</p>
           </div>
-          {currentJob?.status === "completed" && (
+          {!deleting && currentJob?.status === "completed" && (
             <div className="monitor-download-actions" aria-label={currentJob.source_type === "upload" ? "Download all" : "Download report"}>
               <button className="button button-primary button-large button-with-icon" type="button" onClick={() => onDownload("complete")} disabled={downloadInProgress}>
                 <MonitorIcon name="download" /> {downloadInProgress ? "Preparing download…" : "Complete chat + files"}

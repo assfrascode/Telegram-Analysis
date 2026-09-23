@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -83,11 +84,23 @@ class TelegramSyncStatus(str, enum.Enum):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "job_retention_days IS NULL OR job_retention_days BETWEEN 1 AND 36500",
+            name="job_retention_days_range",
+        ),
+        CheckConstraint(
+            "upload_retention_days IS NULL OR upload_retention_days BETWEEN 1 AND 36500",
+            name="upload_retention_days_range",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    job_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    upload_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
@@ -354,6 +367,10 @@ class Upload(Base):
     status: Mapped[UploadStatus] = mapped_column(Enum(UploadStatus), default=UploadStatus.created)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    cleanup_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Job(Base):
@@ -379,6 +396,10 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    cleanup_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     upload: Mapped[Upload | None] = relationship("Upload")
 

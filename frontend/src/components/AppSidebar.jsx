@@ -71,8 +71,8 @@ function AnalysisList({ jobs, chats, currentJobId, onSelectJob }) {
   return (
     <div className="analysis-list">
       {jobs.map((job) => {
-        const label = statusLabel(job.status);
-        const tone = job.status === "completed"
+        const label = job.deletion_requested_at ? "Deleting" : statusLabel(job.status);
+        const tone = job.deletion_requested_at ? "warning" : job.status === "completed"
           ? "success"
           : ["failed", "cancelled"].includes(job.status) ? "danger" : "warning";
         return (
@@ -161,6 +161,15 @@ export function AppSidebar({
         >
           <span className="nav-icon"><SidebarIcon name="telegram" /></span>
           <span className="nav-copy"><strong>Telegram Setup</strong><small>Sources, chats, and schedules</small></span>
+        </button>
+        <button
+          className={`nav-item${activeView === "retention" ? " is-active" : ""}`}
+          type="button"
+          aria-current={activeView === "retention" ? "page" : undefined}
+          onClick={() => onNavigate("retention")}
+        >
+          <span className="nav-icon"><SidebarIcon name="history" /></span>
+          <span className="nav-copy"><strong>Storage &amp; retention</strong><small>Preview automatic cleanup</small></span>
         </button>
       </nav>
 

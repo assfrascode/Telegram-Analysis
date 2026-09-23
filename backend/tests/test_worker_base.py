@@ -96,7 +96,7 @@ def test_worker_persists_attempt_before_handler_failure(monkeypatch):
             return "nak"
 
     @asynccontextmanager
-    async def claim(task_key):
+    async def claim(task_key, **kwargs):
         yield SimpleNamespace(invalidated=False)
 
     monkeypatch.setattr(base, "claim_worker_task", claim)
@@ -116,7 +116,7 @@ def test_worker_persists_attempt_before_handler_failure(monkeypatch):
 
 def test_busy_claim_does_not_start_or_ack_task(monkeypatch):
     @asynccontextmanager
-    async def busy(task_key):
+    async def busy(task_key, **kwargs):
         yield None
 
     monkeypatch.setattr(base, "claim_worker_task", busy)

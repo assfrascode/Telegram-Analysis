@@ -1,5 +1,6 @@
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -57,11 +58,16 @@ async def _load_owned_upload(
     owner_user_id: uuid.UUID,
 ) -> Upload:
     result = await session.execute(
-        select(Upload).where(Upload.id == upload_id, Upload.owner_user_id == owner_user_id)
+        select(Upload)
+        .where(Upload.id == upload_id, Upload.owner_user_id == owner_user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     upload = result.scalar_one_or_none()
     if not upload:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
+    if upload.deletion_requested_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Upload is being deleted")
     if upload.status != UploadStatus.uploaded:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload not completed")
     return upload
@@ -223,6 +229,8 @@ async def _latest_dead_letter_for_job(session: AsyncSession, job_id: uuid.UUID) 
 
 
 async def prepare_job_retry(session: AsyncSession, job: Job) -> JobRetryTarget:
+    if job.deletion_requested_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is being deleted")
     dead_letter = await _latest_dead_letter_for_job(session, job.id)
     target = retry_target_for_job(job, dead_letter)
     reset_job_for_retry(job)
@@ -248,6 +256,86 @@ async def prepare_job_retry(session: AsyncSession, job: Job) -> JobRetryTarget:
     )
     await session.flush()
     return target
+
+
+async def restart_cancelled_job(session: AsyncSession, job: Job) -> Job:
+    """Create a fresh run using the cancelled job's immutable inputs.
+
+    A cancelled job can have both running handlers and queued messages from any
+    pipeline stage. Keeping its ID terminal fences all of them from the new run.
+    The caller must commit before publishing the new job's initial task.
+    """
+    if job.deletion_requested_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is being deleted")
+    if job.status != JobStatus.cancelled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only cancelled jobs can be restarted")
+
+    if job.source_type == JobSourceType.upload:
+        await _load_owned_upload(session, upload_id=job.upload_id, owner_user_id=job.owner_user_id)
+    else:
+        chat = (
+            await session.execute(
+                select(TelegramChat).where(
+                    TelegramChat.id == job.telegram_chat_id,
+                    TelegramChat.owner_user_id == job.owner_user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if chat is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telegram chat not found")
+        if chat.status == TelegramChatStatus.archived:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Telegram chat is archived")
+        await ensure_chat_sync_source_available(session, chat)
+
+    questions = (
+        await session.execute(
+            select(Question).where(Question.job_id == job.id).order_by(Question.question_index)
+        )
+    ).scalars().all()
+    if not questions:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job has no questions to restart")
+
+    restarted = Job(
+        owner_user_id=job.owner_user_id,
+        source_type=job.source_type,
+        upload_id=job.upload_id,
+        telegram_chat_id=job.telegram_chat_id,
+        report_start_at=job.report_start_at,
+        report_end_at=job.report_end_at,
+        source_name=job.source_name,
+        status=JobStatus.queued,
+        options=deepcopy(job.options or {}),
+    )
+    session.add(restarted)
+    await session.flush()
+    for question in questions:
+        session.add(
+            Question(
+                job_id=restarted.id,
+                question_index=question.question_index,
+                client_question_id=question.client_question_id,
+                text=question.text,
+            )
+        )
+
+    await record_event_db_only(
+        session,
+        job_id=restarted.id,
+        owner_user_id=restarted.owner_user_id,
+        event_type="job.restart.started",
+        message="Abgebrochene Analyse wurde als neuer Lauf eingeplant.",
+        payload={"previous_job_id": str(job.id)},
+    )
+    await record_event_db_only(
+        session,
+        job_id=job.id,
+        owner_user_id=job.owner_user_id,
+        event_type="job.restarted",
+        message="Analyse wurde als neuer Lauf gestartet.",
+        payload={"restarted_job_id": str(restarted.id)},
+    )
+    await session.flush()
+    return restarted
 
 
 async def publish_retry_job_task(session: AsyncSession, js, job: Job, target: JobRetryTarget) -> None:

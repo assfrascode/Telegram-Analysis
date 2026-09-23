@@ -203,6 +203,7 @@ def test_raw_upload_counts_chunked_bytes_and_rejects_declared_size_bypass(monkey
     upload = SimpleNamespace(
         id=uuid.uuid4(),
         object_key="users/u/uploads/test.zip",
+        deletion_requested_at=None,
         size_bytes=5,
         status=UploadStatus.created,
         completed_at=None,

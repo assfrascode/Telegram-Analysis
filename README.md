@@ -301,6 +301,41 @@ OPENAI_TRANSCRIPTION_BASE_URL=https://api.openai.com/v1
 OPENAI_TRANSCRIPTION_MODEL=whisper-1
 ```
 
+## Job deletion and retention
+
+Owners can delete completed, failed, or cancelled jobs from the job monitor.
+Deletion first records a durable request. Workers wait for active handlers to stop,
+then remove job vectors, objects under the job's storage prefix, and dependent
+rows. A storage outage or worker restart leaves the request pending for automatic
+retry; the monitor shows any cleanup error. Run the updated API and all workers
+together after `alembic upgrade head` (revision `20260923_0004`), so every worker
+participates in the lifecycle locks.
+
+Deleting the last job using an uploaded archive also removes that archive. Archives
+referenced by another job, Telegram collected messages/media and their cached
+analysis, question sets, and schedules are preserved. Schedule and sync-history
+links to the deleted job are cleared.
+
+The **Storage & retention** screen previews eligible jobs and unused uploads before
+saving a policy. Each user can set separate retention periods of 1–36500 days;
+blank disables that automatic policy. Job age is measured from completion (creation
+for older records without a completion time). An uploaded archive is eligible only
+when no job references it. Abandoned incomplete or rejected uploads expire after
+`UPLOAD_EXPIRY_HOURS` (default 24), even when optional retention is disabled; active
+upload transactions are skipped. `CLEANUP_INTERVAL_SECONDS` defaults to 60.
+Already requested deletions continue if a policy is subsequently disabled.
+
+The API exposes `DELETE /jobs/{id}`, `GET /jobs/retention`, read-only
+`POST /jobs/retention/preview`, and `PUT /jobs/retention`. The preview/save body is
+`{"job_retention_days": 30, "upload_retention_days": 7}`; either value can be `null`.
+Previews return totals and up to 200 examples of each resource type.
+
+**Restart analysis** uses `POST /jobs/{id}/retry` for cancelled jobs and starts a new
+run with the original source, date range, options, and question snapshots. The old
+run remains cancelled so delayed messages cannot affect the new run. Failed-job
+retry continues to resume the failed task. A restart/retry may briefly return 409
+while an old handler is finishing its stop; retry once it has stopped.
+
 ## Development And Tests
 
 ```bash
@@ -314,7 +349,8 @@ database and refuses any database name that does not end in `_migration_test`:
 
 ```bash
 MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost/chat_analyse_migration_test \
-  PYTHONPATH=. pytest tests/test_migrations_integration.py
+  PYTHONPATH=. pytest tests/test_migrations_integration.py tests/test_job_cleanup_integration.py \
+    tests/test_job_restart_integration.py tests/test_worker_ownership_integration.py
 ```
 
 That test resets the database, verifies a clean `upgrade head`, recreates the

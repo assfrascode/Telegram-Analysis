@@ -304,37 +304,50 @@ async def count_worker_backlog(session: AsyncSession) -> int:
     return int(result.scalar() or 0)
 
 
-@asynccontextmanager
-async def claim_worker_task(task_key: str) -> AsyncIterator[AsyncConnection | None]:
-    """Hold exclusive ownership across handler commits, retries and cancellation.
+def _lock_id(key: str) -> int:
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big", signed=True)
 
-    Session advisory locks are released by PostgreSQL when a process disconnects,
-    so a persisted running task needs no timeout-based takeover. Hash collisions
-    only serialize unrelated tasks. Never return a locked connection to the pool.
-    The handler must bind its session to this connection.
-    """
-    lock_id = int.from_bytes(
-        hashlib.sha256(f"worker-task:{task_key}".encode()).digest()[:8],
-        "big", signed=True,
-    )
+
+@asynccontextmanager
+async def _claim_locks(keys: list[tuple[str, bool]]) -> AsyncIterator[AsyncConnection | None]:
+    """Pin session locks across handler commits; a disconnect releases all claims."""
     async with engine.connect() as connection:
-        acquired = None
+        attempted = []
         try:
-            acquired = await connection.scalar(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id},
-            )
+            acquired = True
+            for key, shared in keys:
+                lock_id = _lock_id(key)
+                suffix = "_shared" if shared else ""
+                attempted.append((lock_id, suffix))
+                if not await connection.scalar(
+                    text(f"SELECT pg_try_advisory_lock{suffix}(:key)"), {"key": lock_id},
+                ):
+                    attempted.pop()
+                    acquired = False
+                    break
             await connection.commit()
             yield connection if acquired else None
         finally:
-            # Also covers cancellation during acquisition or commit, when the
-            # client may not know whether PostgreSQL acquired the lock.
+            # Acquisition may have succeeded on the server even if cancelled
+            # before its response reached the client. Always release attempted locks.
             try:
-                if acquired is not False and not connection.invalidated:
+                if not connection.invalidated:
                     await connection.rollback()
-                    await connection.execute(
-                        text("SELECT pg_advisory_unlock(:key)"), {"key": lock_id},
-                    )
+                    for lock_id, suffix in reversed(attempted):
+                        await connection.execute(
+                            text(f"SELECT pg_advisory_unlock{suffix}(:key)"), {"key": lock_id},
+                        )
                     await connection.commit()
             except BaseException:
                 await connection.invalidate()
                 raise
+
+
+def claim_worker_task(task_key: str, *, job_id: uuid.UUID | None = None):
+    # Different stages may overlap, but deletion/retry require every stage to stop.
+    keys = [(f"job-lifecycle:{job_id}", True)] if job_id else []
+    return _claim_locks([*keys, (f"worker-task:{task_key}", False)])
+
+
+def claim_job_lifecycle(job_id: uuid.UUID):
+    return _claim_locks([(f"job-lifecycle:{job_id}", False)])

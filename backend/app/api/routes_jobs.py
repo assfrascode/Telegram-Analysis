@@ -10,7 +10,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import SessionLocal, get_session
 from app.dependencies import get_current_user
 from app.models import (
     Job,
@@ -30,6 +30,7 @@ from app.schemas import (
     EventResponse,
     JobCreateRequest,
     JobResponse,
+    RetentionPolicyRequest,
     ScheduledReportJobMetadata,
     TelegramReportCreateRequest,
     WebSocketTicketResponse,
@@ -45,9 +46,11 @@ from app.services.jobs import (
     publish_initial_job_task,
     publish_retry_job_task,
     request_cancel,
+    restart_cancelled_job,
 )
 from app.services.events import publish_event, record_event_db_only
-from app.services.worker_control import mark_job_cancelled
+from app.services.worker_control import claim_job_lifecycle, mark_job_cancelled
+from app.services.job_cleanup import request_job_deletion, retention_preview
 from app.services.websocket_tickets import issue_websocket_ticket
 from app.services.minio_store import get_bytes, minio_client
 from app.services.report_bundle import (
@@ -96,6 +99,8 @@ def _job_response(job: Job) -> JobResponse:
         completed_at=job.completed_at,
         error_message=job.error_message,
         scheduled_report=_scheduled_report_metadata(job),
+        deletion_requested_at=getattr(job, "deletion_requested_at", None),
+        cleanup_error=getattr(job, "cleanup_error", None),
     )
 
 
@@ -174,6 +179,47 @@ async def list_jobs(
     return [_job_response(job) for job in result.scalars().all()]
 
 
+@router.get("/retention")
+async def get_retention(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await retention_preview(session, user, user.job_retention_days, user.upload_retention_days)
+
+
+@router.post("/retention/preview")
+async def preview_retention(
+    payload: RetentionPolicyRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await retention_preview(session, user, payload.job_retention_days, payload.upload_retention_days)
+
+
+@router.put("/retention")
+async def save_retention(
+    payload: RetentionPolicyRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    policy = await session.scalar(select(User).where(User.id == user.id).with_for_update())
+    policy.job_retention_days = payload.job_retention_days
+    policy.upload_retention_days = payload.upload_retention_days
+    await session.commit()
+    return await retention_preview(session, policy, policy.job_retention_days, policy.upload_retention_days)
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_202_ACCEPTED)
+async def delete_job(
+    job_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await request_job_deletion(session, job_id, user.id)
+    await session.commit()
+    return {"ok": True, "status": "deleting"}
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: uuid.UUID,
@@ -206,6 +252,8 @@ async def cancel_job(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     job = await get_owned_job_or_404(session, job_id=job_id, user=user)
+    if getattr(job, "deletion_requested_at", None) is not None:
+        raise HTTPException(409, "Job is being deleted")
     await request_cancel(session, job)
     requested_event = await record_event_db_only(
         session,
@@ -244,25 +292,46 @@ async def retry_job(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> JobResponse:
-    job = await get_owned_job_or_404(session, job_id=job_id, user=user)
-    retry_target = await prepare_job_retry(session, job)
-    await session.commit()
-
-    try:
-        async with nats_context() as (_, js):
-            await publish_retry_job_task(session, js, job, retry_target)
-            await session.commit()
-    except Exception as exc:
-        logger.exception("Failed to publish retry task for job %s", job.id)
-        await session.rollback()
-        await mark_job_retry_enqueue_failed_db_only(session, job.id, retry_target, exc)
-        await session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Analysis retry could not be enqueued. Please retry again.",
-        ) from exc
-
-    return _job_response(job)
+    # Check ownership before locking; refresh inside the lock so delete/retry
+    # cannot act on a stale terminal state.
+    await get_owned_job_or_404(session, job_id=job_id, user=user)
+    async with claim_job_lifecycle(job_id) as connection:
+        if connection is None:
+            raise HTTPException(409, "Job is still stopping or another lifecycle operation is running")
+        async with SessionLocal(bind=connection) as retry_session:
+            job = await retry_session.scalar(select(Job).where(
+                Job.id == job_id, Job.owner_user_id == user.id,
+            ).with_for_update().execution_options(populate_existing=True))
+            if job is None:
+                raise HTTPException(404, "Resource not found")
+            if job.status == JobStatus.cancelled:
+                await ensure_accepting_jobs(retry_session)
+                job = await restart_cancelled_job(retry_session, job)
+                retry_target = None
+            else:
+                retry_target = await prepare_job_retry(retry_session, job)
+            await retry_session.commit()
+            retried_job_id = job.id
+            try:
+                async with nats_context() as (_, js):
+                    if retry_target is None:
+                        await publish_initial_job_task(retry_session, js, job)
+                    else:
+                        await publish_retry_job_task(retry_session, js, job, retry_target)
+                    await retry_session.commit()
+            except Exception as exc:
+                logger.exception("Failed to publish retry task for job %s", retried_job_id)
+                await retry_session.rollback()
+                if retry_target is None:
+                    await mark_job_start_failed_db_only(retry_session, retried_job_id, exc)
+                else:
+                    await mark_job_retry_enqueue_failed_db_only(retry_session, retried_job_id, retry_target, exc)
+                await retry_session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Analysis retry could not be enqueued. Please retry again.",
+                ) from exc
+            return _job_response(job)
 
 
 @router.get("/{job_id}/events", response_model=list[EventResponse])
@@ -332,7 +401,7 @@ async def download_report(
     session: AsyncSession = Depends(get_session),
 ):
     job, report = await get_owned_report_or_404(session, job_id=job_id, user=user)
-    if job.status != JobStatus.completed:
+    if getattr(job, "deletion_requested_at", None) is not None or job.status != JobStatus.completed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
 
     data = await asyncio.to_thread(get_bytes, report.object_key)
@@ -353,7 +422,7 @@ async def download_all(
     session: AsyncSession = Depends(get_session),
 ):
     job = await get_owned_job_or_404(session, job_id=job_id, user=user)
-    if job.status != JobStatus.completed:
+    if getattr(job, "deletion_requested_at", None) is not None or job.status != JobStatus.completed:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is not completed")
     report = (
         await session.execute(select(Report).where(Report.job_id == job.id))

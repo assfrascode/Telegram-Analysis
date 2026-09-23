@@ -138,7 +138,14 @@ class JobResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     error_message: str | None = None
+    deletion_requested_at: datetime | None = None
+    cleanup_error: str | None = None
     scheduled_report: ScheduledReportJobMetadata | None = None
+
+
+class RetentionPolicyRequest(BaseModel):
+    job_retention_days: int | None = Field(default=None, ge=1, le=36500)
+    upload_retention_days: int | None = Field(default=None, ge=1, le=36500)
 
 
 class EventResponse(BaseModel):

@@ -215,7 +215,7 @@ class Worker(abc.ABC):
         job_id = uuid.UUID(payload["job_id"])
         task_key = payload.get("task_key") or f"{self.subject}:{job_id}"
 
-        async with claim_worker_task(task_key) as connection:
+        async with claim_worker_task(task_key, job_id=job_id) as connection:
             if connection is None:
                 # Another worker still owns this task. Do not ACK: its process
                 # may die before completion and this delivery must remain retryable.
@@ -231,6 +231,9 @@ class Worker(abc.ABC):
                 exc = PermanentWorkerError(f"Job not found: {job_id}")
                 WORKER_DEAD_LETTERS_CREATED.labels(self.subject, "job_not_found").inc()
                 await publish_json(self.js, f"dlq.{self.subject}", {**payload, "error": str(exc), "reason": "job_not_found"})
+                return "ack"
+
+            if getattr(job, "deletion_requested_at", None) is not None:
                 return "ack"
 
             result = await session.execute(select(WorkerTask).where(WorkerTask.task_key == task_key))
@@ -512,6 +515,8 @@ class Worker(abc.ABC):
             async with SessionLocal() as session:
                 job = await get_job(session, job_id)
                 if job is None:
+                    return False
+                if getattr(job, "deletion_requested_at", None) is not None:
                     return False
                 if job.status in NON_RUNNABLE_JOB_STATUSES:
                     if job.status in {JobStatus.cancelling, JobStatus.cancelled}:

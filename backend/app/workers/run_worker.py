@@ -5,6 +5,7 @@ from app.db import SessionLocal, init_db
 from app.config import get_settings
 from app.nats_client import nats_context
 from app.services.job_recovery import recover_stale_queued_jobs
+from app.services.job_cleanup import run_cleanup_loop
 from app.observability.logging import configure_logging
 from app.observability.metrics import start_metrics_server
 from app.workers.ingest_worker import ValidateWorker, ExtractWorker
@@ -53,7 +54,7 @@ async def main() -> None:
     else:
         workers = [WORKERS[name]() for name in selected]
 
-    await asyncio.gather(*(worker.run_forever() for worker in workers))
+    await asyncio.gather(run_cleanup_loop(), *(worker.run_forever() for worker in workers))
 
 
 if __name__ == "__main__":

@@ -4905,3 +4905,95 @@ summary:focus-visible {
     transition: none;
   }
 }
+
+
+.retention-page {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.retention-content {
+  display: grid;
+  gap: 1.25rem;
+  overflow-y: auto;
+  padding: 1.25rem 0;
+}
+
+.retention-policy,
+.retention-preview {
+  padding: 1.5rem;
+}
+
+.retention-policy h1 {
+  font-size: 1.5rem;
+}
+
+.retention-fields,
+.retention-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.retention-fields label {
+  display: grid;
+  gap: 0.5rem;
+  color: var(--text-soft);
+}
+
+.retention-fields input {
+  min-width: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.retention-policy form > p {
+  margin: 0.8rem 0;
+  font-size: 0.85rem;
+}
+
+.retention-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.retention-candidates {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.retention-candidates li {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.retention-candidates button {
+  justify-self: start;
+  padding-left: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.retention-candidates strong {
+  overflow-wrap: anywhere;
+}
+
+.retention-candidates span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .retention-fields,
+  .retention-preview-grid { grid-template-columns: minmax(0, 1fr); }
+}

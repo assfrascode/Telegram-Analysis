@@ -4,6 +4,7 @@ import { AppSidebar } from "./components/AppSidebar";
 import { CreateJobPanel } from "./components/CreateJobPanel";
 import { JobMonitorPanel } from "./components/JobMonitorPanel";
 import { LoginView } from "./components/LoginView";
+import { RetentionPanel } from "./components/RetentionPanel";
 import { TelegramSourcesPanel } from "./components/TelegramSourcesPanel";
 import { Toast } from "./components/Toast";
 import { TutorialPage } from "./components/TutorialPage";
@@ -145,6 +146,7 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [downloadInProgress, setDownloadInProgress] = useState(false);
+  const [deletingJobId, setDeletingJobId] = useState(null);
   const [sourceMode, setSourceMode] = useState("upload");
   const [telegramConnection, setTelegramConnection] = useState(null);
   const [telegramCollectorConnection, setTelegramCollectorConnection] = useState(null);
@@ -162,6 +164,7 @@ export default function App() {
   const lastEventIdRef = useRef(0);
   const sessionExpiryHandledRef = useRef(false);
   const submissionRef = useRef(false);
+  const deletionRef = useRef(false);
   const sessionRef = useRef({ token });
   const monitorScopeRef = useRef({});
   const sessionScope = sessionRef.current;
@@ -337,10 +340,20 @@ export default function App() {
       return job;
     } catch (error) {
       if (monitorScopeRef.current !== monitorScope) return null;
+      if (error?.status === 404) {
+        monitorScopeRef.current = {};
+        setCurrentJobId(null);
+        setCurrentJob(null);
+        resetJobEvents();
+        sessionStorage.removeItem(STORAGE_JOB);
+        setActiveView((view) => view === "monitor" ? "retention" : view);
+        refreshJobs();
+        return null;
+      }
       addLocalLog(`Could not load analysis status: ${error.message}`, "error");
       return null;
     }
-  }, [addLocalLog, currentJobId, monitorScope, request, token]);
+  }, [addLocalLog, currentJobId, monitorScope, refreshJobs, request, resetJobEvents, token]);
 
   const loadEventBacklog = useCallback(async () => {
     if (!token || !currentJobId || monitorScopeRef.current !== monitorScope) return;
@@ -371,6 +384,12 @@ export default function App() {
     if (!token || !currentJobId) return;
     pollLatest();
   }, [currentJobId, pollLatest, token]);
+
+  useEffect(() => {
+    if (!currentJob?.deletion_requested_at) return undefined;
+    const timer = window.setInterval(refreshJobStatus, 5000);
+    return () => window.clearInterval(timer);
+  }, [currentJob?.deletion_requested_at, refreshJobStatus]);
 
   useJobSocket({
     scope: monitorScope,
@@ -661,19 +680,48 @@ export default function App() {
 
   const retryJob = async () => {
     if (!token || !currentJobId) return;
-    if (!window.confirm("Retry this failed analysis from the last failed step?")) return;
+    const restarting = currentJob?.status === "cancelled";
+    if (!window.confirm(restarting
+      ? "Restart this cancelled analysis as a new job with the same source and questions?"
+      : "Retry this failed analysis from the last failed step?")) return;
     try {
       const job = await request(`/jobs/${currentJobId}/retry`, { method: "POST" });
       if (monitorScopeRef.current !== monitorScope) return;
-      setCurrentJob(job);
-      addLocalLog(`Retry requested: ${job.status}`, "warning");
-      showToast("Retry started");
-      await Promise.allSettled([pollLatest(), refreshJobs(), refreshCapacity()]);
+      showToast(restarting ? "Analysis restarted" : "Retry started");
+      if (job.id !== currentJobId) {
+        await selectJob(job.id);
+        setCurrentJob(job);
+        await Promise.allSettled([refreshJobs(), refreshCapacity()]);
+      } else {
+        setCurrentJob(job);
+        addLocalLog(`Retry requested: ${job.status}`, "warning");
+        await Promise.allSettled([pollLatest(), refreshJobs(), refreshCapacity()]);
+      }
     } catch (error) {
       if (monitorScopeRef.current !== monitorScope) return;
       showToast(`Retry failed: ${error.message}`, "error");
       addLocalLog(`Retry failed: ${error.message}`, "error");
       await refreshJobStatus();
+    }
+  };
+
+  const deleteJob = async () => {
+    if (!token || !currentJobId || deletionRef.current || currentJob?.deletion_requested_at) return;
+    if (!window.confirm("Permanently delete this analysis, its reports, and stored artifacts? Shared collected messages and media still in use will be preserved. This cannot be undone.")) return;
+    deletionRef.current = true;
+    setDeletingJobId(currentJobId);
+    try {
+      await request(`/jobs/${currentJobId}`, { method: "DELETE" });
+      if (monitorScopeRef.current !== monitorScope) return;
+      setCurrentJob((job) => job ? { ...job, deletion_requested_at: new Date().toISOString() } : job);
+      showToast("Deletion queued. Cleanup continues automatically.");
+      await Promise.allSettled([refreshJobStatus(), refreshJobs()]);
+    } catch (error) {
+      if (monitorScopeRef.current !== monitorScope) return;
+      showToast(`Could not delete analysis: ${error.message}`, "error");
+    } finally {
+      deletionRef.current = false;
+      setDeletingJobId(null);
     }
   };
 
@@ -746,11 +794,15 @@ export default function App() {
               onRefresh={pollLatest}
               onCancel={cancelJob}
               onRetry={retryJob}
+              onDelete={deleteJob}
+              deleteInProgress={deletingJobId === currentJobId}
               onDownload={downloadResult}
               downloadInProgress={downloadInProgress}
             />
         ) : activeView === "tutorial" ? (
             <TutorialPage />
+        ) : activeView === "retention" ? (
+            <RetentionPanel request={request} showToast={showToast} onSelectJob={selectJob} onRefreshJobs={refreshJobs} />
         ) : activeView === "telegram" ? (
             <TelegramSourcesPanel
               connection={telegramConnection}

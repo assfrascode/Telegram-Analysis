@@ -12,6 +12,7 @@ vi.mock("./api/client", () => ({
 vi.mock("./components/AppSidebar", () => ({ AppSidebar: (props) => <sidebar {...props} /> }));
 vi.mock("./components/CreateJobPanel", () => ({ CreateJobPanel: (props) => <create-panel {...props} /> }));
 vi.mock("./components/JobMonitorPanel", () => ({ JobMonitorPanel: (props) => <job-monitor {...props} /> }));
+vi.mock("./components/RetentionPanel", () => ({ RetentionPanel: (props) => <retention-panel {...props} /> }));
 vi.mock("./components/LoginView", () => ({ LoginView: (props) => <login-view {...props} /> }));
 vi.mock("./components/TelegramSourcesPanel", () => ({ TelegramSourcesPanel: () => null }));
 vi.mock("./components/Toast", () => ({ Toast: () => null }));
@@ -193,5 +194,74 @@ describe("monitor request ownership", () => {
     });
     expect(props("job-monitor").currentJob.id).toBe("C");
     expect(props("job-monitor").events).toEqual([]);
+  });
+});
+
+
+describe("job lifecycle", () => {
+  it("restarts a cancelled job and selects the new job returned by the API", async () => {
+    intercept = (path) => {
+      if (path === "/jobs/A") return { id: "A", status: "cancelled" };
+      if (path === "/jobs/A/retry") return { id: "restarted", status: "queued" };
+    };
+    await mount("A");
+    await act(async () => props("job-monitor").onRetry());
+    expect(props("job-monitor").currentJobId).toBe("restarted");
+    expect(props("job-monitor").currentJob.id).toBe("restarted");
+    expect(sessionStorage.getItem(STORAGE_JOB)).toBe("restarted");
+  });
+
+  it("does not delete when confirmation is declined", async () => {
+    await mount("A");
+    window.confirm = () => false;
+    await act(async () => props("job-monitor").onDelete());
+    expect(apiJson.mock.calls.filter(([, config]) => config.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("keeps a deleting job visible and clears the selection after cleanup", async () => {
+    let deleting = false, removed = false;
+    intercept = (path, config) => {
+      if (path === "/jobs/A" && config.method === "DELETE") {
+        deleting = true;
+        return { ok: true, status: "deleting" };
+      }
+      if (path === "/jobs/A") {
+        if (removed) return Promise.reject(Object.assign(new Error("Not found"), { status: 404 }));
+        return { id: "A", status: "completed", deletion_requested_at: deleting ? "2026-09-23T00:00:00Z" : null };
+      }
+    };
+    await mount("A");
+    await act(async () => props("job-monitor").onDelete());
+    expect(props("job-monitor").currentJob.deletion_requested_at).toBeTruthy();
+    removed = true;
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(sessionStorage.getItem(STORAGE_JOB)).toBeNull();
+    expect(renderer.root.findAllByType("job-monitor")).toHaveLength(0);
+    expect(renderer.root.findAllByType("retention-panel")).toHaveLength(1);
+  });
+
+  it("does not mark a newly selected job as deleting after a late response", async () => {
+    const deletion = deferred();
+    intercept = (path, config) => path === "/jobs/A" && config.method === "DELETE" ? deletion.promise : undefined;
+    await mount("A");
+    let pending;
+    act(() => { pending = props("job-monitor").onDelete(); });
+    await act(async () => props("sidebar").onSelectJob("B"));
+    await act(async () => { deletion.resolve({ ok: true, status: "deleting" }); await pending; });
+    expect(props("job-monitor").currentJob.id).toBe("B");
+    expect(props("job-monitor").currentJob.deletion_requested_at).toBeUndefined();
+  });
+
+  it("offers restart and delete for cancelled jobs and hides actions during deletion", async () => {
+    const { JobMonitorPanel } = await vi.importActual("./components/JobMonitorPanel");
+    const config = { currentJobId: "A", currentJob: { id: "A", status: "cancelled" }, stageStates: [] };
+    await act(async () => { renderer = create(<JobMonitorPanel {...config} />); });
+    const buttons = () => renderer.root.findAllByType("button").flatMap((button) => button.children);
+    expect(buttons()).toContain("Restart analysis");
+    expect(buttons()).toContain("Delete analysis");
+    await act(async () => renderer.update(<JobMonitorPanel {...config} currentJob={{ ...config.currentJob, deletion_requested_at: "2026-09-23T00:00:00Z" }} />));
+    expect(buttons()).not.toContain("Restart analysis");
+    expect(buttons()).not.toContain("Delete analysis");
+    expect(buttons()).not.toContain("Cancel analysis");
   });
 });
